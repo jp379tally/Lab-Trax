@@ -25,7 +25,8 @@ artifacts/mockup-sandbox/
 # Large assets not needed for mobile build
 attached_assets/
 
-# Workspace-only tooling, documentation, and local recovery data
+# Workspace-only tooling, documentation, local recovery data, and TestFlight
+# release approval/status state. Never include the one-shot token or owner records.
 .github/
 .production-api/
 .production-runtime/
@@ -61,6 +62,7 @@ uploads/
 *.log
 logs/
 tmp/
+/generated-artifacts/
 .local/
 
 # LabTrax web/server output and local source-download bundles

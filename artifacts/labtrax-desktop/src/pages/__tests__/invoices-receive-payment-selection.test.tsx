@@ -83,7 +83,10 @@ describe("editor entry guard", () => {
     install([inv(0, status), inv(1)]);
     mount("/invoices?invoiceId=invoice-0");
     await screen.findByTestId("invoice-preview");
-    expect(await screen.findByText(/read-only here/)).toBeInTheDocument();
+    const notice = status === "recovery_draft"
+      ? /Historical reconstructed invoice remains held and is not collectible/
+      : /read-only here/;
+    expect(await screen.findByText(notice)).toBeInTheDocument();
     expect(screen.queryByTestId("invoice-preview-edit")).toBeNull();
     expect(screen.queryByTestId("invoice-preview-record-payment")).toBeNull();
     expect(screen.queryByRole("button", { name: /Create Invoice|Save/ })).toBeNull();

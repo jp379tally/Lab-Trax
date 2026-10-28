@@ -57,6 +57,7 @@ import {
   updateConnectorChoices,
   validateToothConnectors,
   toothAssignmentSummary,
+  toothBridgeLabels,
 } from "@workspace/case-taxonomy";
 import { useMe, editableLabMemberships, adminLabMemberships, type MeMembership } from "@/lib/auth-me";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -98,7 +99,7 @@ interface RestorationDraft extends ImplantDetails {
   /** Level-3 cascade key (materialSubtype) — a static taxonomy key or a `custom:<id>` token. */
   materialSubtypeKey?: string;
   arch?: ArchSelection | null;
-  assignmentRole?: "Crown" | "Pontic";
+  assignmentRole?: "Crown" | "Pontic" | "Veneer";
 }
 
 function parseChartTeeth(value: string): Set<string> {
@@ -245,6 +246,9 @@ export default function NewCaseScreen() {
   const [restorations, setRestorations] = useState<RestorationDraft[]>([blankRestoration()]);
   const [toothPickerKey, setToothPickerKey] = useState<string | null>(null);
   const [assignmentTooth, setAssignmentTooth] = useState<string | null>(null);
+  const [assignmentMultiMode, setAssignmentMultiMode] = useState(false);
+  const [assignmentSelectedTeeth, setAssignmentSelectedTeeth] = useState<string[]>([]);
+  const [pendingAssignmentBatch, setPendingAssignmentBatch] = useState<{ payload: ToothActionPayload; targets: string[] } | null>(null);
   const [draftConnectors, setDraftConnectors] = useState("");
   const [assignmentUndo, setAssignmentUndo] = useState<{ rows: RestorationDraft[]; connectors: string } | null>(null);
   function captureAssignmentUndo() {
@@ -663,14 +667,21 @@ export default function NewCaseScreen() {
     captureAssignmentUndo();
     setRestorations((prev) => [...prev, blankRestoration()]);
   }
-  function applyManualAssignment(payload: ToothActionPayload) {
+  function applyManualAssignment(payload: ToothActionPayload, approvedTargets?: string[]) {
     if (submitting) return;
+    const targets = approvedTargets ?? (assignmentMultiMode && assignmentSelectedTeeth.length ? assignmentSelectedTeeth : "toothId" in payload ? [payload.toothId] : []);
+    if (!approvedTargets && assignmentMultiMode && (payload.kind === "add_crown" || payload.kind === "add_pontic") &&
+        targets.some((tooth) => restorations.some((row) => row.assignmentRole && parseChartTeeth(row.toothNumber).has(tooth)))) {
+      setPendingAssignmentBatch({ payload, targets: [...targets] });
+      setAssignmentTooth(null);
+      return;
+    }
     captureAssignmentUndo();
     let rows = restorations.flatMap((row) => {
       const teeth = row.caseTypeKey === "restorative" ? expandToothAssignmentIdentifiers(row.toothNumber) : [];
       return teeth.length > 1 ? teeth.map((tooth) => ({ ...row, key: blankRestoration().key, toothNumber: tooth })) : [row];
     }).filter((row) => row.restorationType || row.caseTypeKey || row.toothNumber || row.material);
-    function assign(tooth: string, role: "Crown" | "Pontic", material: string, shade?: string, subtype?: string) {
+    function assign(tooth: string, role: "Crown" | "Pontic" | "Veneer", material: string, shade?: string, subtype?: string) {
       const previous = rows.find((row) => row.caseTypeKey === "restorative" && row.toothNumber === tooth);
       const hierarchy = deriveCaseHierarchy("Crown", subtype ?? previous?.restorationSubtype, material);
       const row: RestorationDraft = { ...(previous ?? blankRestoration()), toothNumber: tooth, assignmentRole: role,
@@ -682,7 +693,7 @@ export default function NewCaseScreen() {
     }
     const current = rows.find((row) => row.caseTypeKey === "restorative" && row.toothNumber === assignmentTooth);
     if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
-      assign(payload.toothId, payload.kind === "add_pontic" ? "Pontic" : "Crown", payload.material, payload.shade, payload.restorationSubtype);
+      for (const tooth of targets) assign(tooth, payload.kind === "add_pontic" ? "Pontic" : payload.restorationType === "Veneer" ? "Veneer" : "Crown", payload.material, payload.shade, payload.restorationSubtype);
     } else if (payload.kind === "copy_assignment") {
       for (const tooth of payload.toothNumbers) assign(tooth, payload.role, payload.material, payload.shade, payload.restorationSubtype);
     } else if (payload.kind === "change_role" && current) {
@@ -694,6 +705,9 @@ export default function NewCaseScreen() {
     }
     setRestorations(rows);
     setAssignmentTooth(null);
+    setAssignmentMultiMode(false);
+    setAssignmentSelectedTeeth([]);
+    setPendingAssignmentBatch(null);
   }
   function removeRestoration(key: string) {
     captureAssignmentUndo();
@@ -920,6 +934,7 @@ export default function NewCaseScreen() {
   }
 
   async function handleSubmit() {
+    if (pendingAssignmentBatch) return;
     setAttemptedSubmit(true);
     if (hasErrors || !selectedLabId || !providerOrgId) {
       if (errors.doctor) {
@@ -1208,16 +1223,46 @@ export default function NewCaseScreen() {
             </Pressable>
           </View>
           <ToothChart
-            selected={new Set(expandToothAssignmentIdentifiers(previewRestorations.map((row) => row.toothNumber ?? "").join(", ")))}
+            selected={assignmentMultiMode ? new Set(assignmentSelectedTeeth) : assignmentTooth ? new Set([assignmentTooth]) : undefined}
             crownTeeth={new Set(previewRestorations.filter((row) => row.restorationType === "Crown").map((row) => row.toothNumber!))}
             ponticTeeth={new Set(previewRestorations.filter((row) => row.restorationType === "Pontic").map((row) => row.toothNumber!))}
+            veneerTeeth={new Set(previewRestorations.filter((row) => row.restorationType === "Veneer").map((row) => row.toothNumber!))}
             connectedPairs={draftConnectorState.active} connectorSuggestions={draftConnectorState.suggested}
             connectorIssue={!draftConnectorValidation.valid ? draftConnectorValidation.errors.join(" ") : draftAssignmentSummary.unresolvedPontics.length ? `Review pontics ${draftAssignmentSummary.unresolvedPontics.join(", ")}` : null}
-            summaryText={`${draftAssignmentSummary.units} units · ${draftAssignmentSummary.groups.length} connected groups · Unsaved draft`}
-            onToothClick={(tooth) => { if (!submitting) setAssignmentTooth(tooth); }}
+            summaryText={`${[...toothBridgeLabels(previewRestorations, draftConnectorText), `${draftAssignmentSummary.units} units${draftAssignmentSummary.veneers ? ` (${draftAssignmentSummary.veneers} veneer${draftAssignmentSummary.veneers === 1 ? "" : "s"})` : ""}`, `${draftAssignmentSummary.groups.length} connected groups`, "Unsaved draft"].join(" · ")}`}
+            onToothClick={(tooth) => {
+              if (submitting || pendingAssignmentBatch) return;
+              if (assignmentMultiMode) setAssignmentSelectedTeeth((selected) => selected.includes(tooth) ? selected.filter((id) => id !== tooth) : [...selected, tooth]);
+              else setAssignmentTooth(tooth);
+            }}
             onConnectedPairsChange={(pairs) => { if (submitting) return; captureAssignmentUndo(); setDraftConnectors(updateConnectorChoices(draftConnectorState, pairs)); }}
           />
+          <View style={{ gap: 10, marginVertical: 12 }}>
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: assignmentMultiMode }}
+              disabled={submitting || !!pendingAssignmentBatch}
+              style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 14, borderWidth: 1, borderColor: colors.tint, borderRadius: 10 }}
+              onPress={() => { setAssignmentMultiMode((active) => !active); setAssignmentSelectedTeeth([]); }}>
+              <Text style={{ color: colors.tint, fontWeight: "600" }}>{assignmentMultiMode ? "Cancel tooth selection" : "Select teeth, then assign"}</Text>
+            </Pressable>
+            {assignmentMultiMode && <Pressable accessibilityRole="button" disabled={!assignmentSelectedTeeth.length || submitting || !!pendingAssignmentBatch}
+              style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 14, backgroundColor: colors.tint, borderRadius: 10, opacity: assignmentSelectedTeeth.length ? 1 : 0.5 }}
+              onPress={() => setAssignmentTooth(assignmentSelectedTeeth[0])}>
+              <Text style={{ color: "#fff", fontWeight: "600" }}>Assign {assignmentSelectedTeeth.length} selected teeth</Text>
+            </Pressable>}
+            {pendingAssignmentBatch && <View accessibilityRole="alert" style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: "#B45309", borderRadius: 10, backgroundColor: "#FFFBEB" }}>
+              <Text style={{ color: "#78350F", fontWeight: "600" }}>Review replacement</Text>
+              <Text style={{ color: "#78350F" }}>Replace existing settings on {pendingAssignmentBatch.targets.map((tooth) => `#${tooth}`).join(", ")}?</Text>
+              <Pressable accessibilityRole="button" style={{ minHeight: 48, justifyContent: "center" }} onPress={() => setPendingAssignmentBatch(null)}>
+                <Text style={{ color: "#78350F" }}>Keep current assignments</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" style={{ minHeight: 48, justifyContent: "center" }}
+                onPress={() => applyManualAssignment(pendingAssignmentBatch.payload, pendingAssignmentBatch.targets)}>
+                <Text style={{ color: "#78350F", fontWeight: "700" }}>Replace selected assignments</Text>
+              </Pressable>
+            </View>}
+          </View>
           <ToothActionSheet allowMarkMissing={false} toothId={assignmentTooth} labOrganizationId={selectedLabId ?? undefined} submitting={submitting}
+            existingLabel={assignmentMultiMode ? undefined : restorations.find((row) => row.assignmentRole && parseChartTeeth(row.toothNumber).has(assignmentTooth ?? ""))?.assignmentRole}
             existingRestorationId={restorations.find((row) => row.assignmentRole && parseChartTeeth(row.toothNumber).has(assignmentTooth ?? ""))?.key}
             existingAssignment={(() => { const row = restorations.find((unit) => unit.assignmentRole && parseChartTeeth(unit.toothNumber).has(assignmentTooth ?? ""));
               return row ? { restorationType: row.assignmentRole!, material: row.material, shade: row.shade, restorationSubtype: row.restorationSubtype } : undefined; })()}
@@ -1296,6 +1341,7 @@ export default function NewCaseScreen() {
                   {([
                     ["Crown", "Prepared crown"],
                     ["Pontic", "Pontic"],
+                    ["Veneer", "Veneer"],
                   ] as const).map(([role, label]) => (
                     <Pressable
                       key={role}
@@ -1340,6 +1386,7 @@ export default function NewCaseScreen() {
                 selected={parseChartTeeth(r.toothNumber)}
                 crownTeeth={new Set(previewRestorations.filter((unit) => unit.restorationType === "Crown").map((unit) => unit.toothNumber))}
                 ponticTeeth={new Set(previewRestorations.filter((unit) => unit.restorationType === "Pontic").map((unit) => unit.toothNumber))}
+                veneerTeeth={new Set(previewRestorations.filter((unit) => unit.restorationType === "Veneer").map((unit) => unit.toothNumber))}
                 connectedPairs={draftConnectorState.active}
                 connectorSuggestions={draftConnectorState.suggested}
                 onConnectedPairsChange={(pairs) => {
@@ -1347,7 +1394,7 @@ export default function NewCaseScreen() {
                   setDraftConnectors(updateConnectorChoices(draftConnectorState, pairs));
                 }}
                 connectorIssue={!draftConnectorValidation.valid ? draftConnectorValidation.errors[0] : draftAssignmentSummary.unresolvedPontics.length ? "Review unconnected pontics before saving." : null}
-                summaryText={`${draftAssignmentSummary.units} units · ${draftAssignmentSummary.groups.length} connected groups · Unsaved draft`}
+                summaryText={`${[...toothBridgeLabels(previewRestorations, draftConnectorText), `${draftAssignmentSummary.units} units${draftAssignmentSummary.veneers ? ` (${draftAssignmentSummary.veneers} veneer${draftAssignmentSummary.veneers === 1 ? "" : "s"})` : ""}`, `${draftAssignmentSummary.groups.length} connected groups`, "Unsaved draft"].join(" · ")}`}
                 onToothClick={(toothId) => {
                   const owner = restorations.find((row) => row.key !== r.key && parseChartTeeth(row.toothNumber).has(toothId));
                   if (owner) {
@@ -2194,7 +2241,7 @@ export default function NewCaseScreen() {
         <View style={[styles.footerSurface, { paddingBottom: Math.max(insets.bottom, Spacing.sm) }]}>
           <Pressable
             onPress={handleSubmit}
-            disabled={submitting}
+            disabled={submitting || !!pendingAssignmentBatch}
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting, busy: submitting }}
             style={[styles.submitBtn, submitting && styles.saveBtnDisabled]}

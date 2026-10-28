@@ -13,7 +13,6 @@ import {
   Platform,
   UIManager,
   Image,
-  useWindowDimensions,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
@@ -609,8 +608,6 @@ export function deriveCaseTypeIndicator(
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { width: screenWidth } = useWindowDimensions();
-  const isPhone = screenWidth < 600;
   const unassignedYRef = useRef<number>(0);
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -1186,10 +1183,10 @@ export default function DashboardScreen() {
   }
 
   function renderDueTomorrow() {
-    if (dueTomorrowCases.length === 0) return null;
     return (
       <View
         style={styles.section}
+        testID="dashboard-section-due-tomorrow"
         onLayout={(e) => {
           dueTomorrowYRef.current = e.nativeEvent.layout.y;
         }}
@@ -1197,6 +1194,8 @@ export default function DashboardScreen() {
         <Pressable
           style={styles.sectionHeader}
           onPress={toggleDueTomorrow}
+          accessibilityRole="button"
+          accessibilityLabel={dueTomorrowOpen ? "Collapse due tomorrow" : "Expand due tomorrow"}
           hitSlop={8}
         >
           <View style={styles.sectionTitleRow}>
@@ -1249,6 +1248,13 @@ export default function DashboardScreen() {
 
         {dueTomorrowOpen && (
           <View style={styles.list}>
+            {casesQuery.isLoading ? (
+              <Text style={styles.emptyText}>Loading cases…</Text>
+            ) : casesQuery.isError ? (
+              <Text style={styles.emptyText}>Couldn't load cases. Tap the summary to retry.</Text>
+            ) : dueTomorrowCases.length === 0 ? (
+              <Text style={styles.emptyText}>Nothing due tomorrow.</Text>
+            ) : null}
             {(dueTomorrowExpanded
               ? dueTomorrowCases
               : dueTomorrowCases.slice(0, DUE_TOMORROW_CAP)
@@ -1693,13 +1699,59 @@ export default function DashboardScreen() {
           />
         }
       >
-      <View style={styles.greetingRow}>
+      <View style={styles.greetingRow} testID="dashboard-greeting">
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Dashboard</Text>
           <Text style={styles.subtitle}>
             {getGreeting(meUser?.firstName)} - your lab at a glance
           </Text>
         </View>
+      </View>
+
+      {isAdminRole && !todaySalesQuery.isError && (
+        <Pressable
+          testID="dashboard-today-sales"
+          style={({ pressed }) => [
+            styles.todaySalesCard,
+            pressed && { opacity: 0.75 },
+          ]}
+          onPress={() => router.push(TODAY_SALES_ROUTE as never)}
+          accessibilityRole="button"
+          accessibilityLabel="Today's sales — tap to open finance report"
+        >
+          <View style={styles.todaySalesHeader}>
+            <Text style={[styles.todaySalesLabel, { color: colors.textSecondary }]}>
+              Today's sales
+            </Text>
+            <View style={styles.todaySalesLiveDot} />
+          </View>
+          {todaySalesQuery.isLoading ? (
+            <View style={[styles.todaySalesSkeleton, { backgroundColor: colors.border }]} />
+          ) : (
+            <>
+              <Text style={[styles.todaySalesAmount, { color: colors.text }]}>
+                {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+                  Number(todaySalesQuery.data?.totalSales ?? 0),
+                )}
+              </Text>
+              <Text style={[styles.todaySalesInvoiceCount, { color: colors.textTertiary }]}>
+                {todaySalesQuery.data?.invoices ?? 0}{" "}
+                {(todaySalesQuery.data?.invoices ?? 0) === 1 ? "invoice" : "invoices"} today
+              </Text>
+              {todaySalesQuery.dataUpdatedAt ? (
+                <Text style={[styles.todaySalesUpdated, { color: colors.textTertiary }]}>
+                  Updated{" "}
+                  {new Date(todaySalesQuery.dataUpdatedAt).toLocaleTimeString([], {
+                    hour: "2-digit", minute: "2-digit",
+                  })}
+                </Text>
+              ) : null}
+            </>
+          )}
+        </Pressable>
+      )}
+
+      <View style={styles.primaryActions} testID="dashboard-primary-actions">
         <Pressable
           style={styles.addCaseBtn}
           onPress={() => router.push("/new-case" as never)}
@@ -1709,6 +1761,16 @@ export default function DashboardScreen() {
         >
           <Ionicons name="add" size={18} color="#fff" />
           <Text style={styles.addCaseText}>Add case</Text>
+        </Pressable>
+        <Pressable
+          style={styles.addCaseBtn}
+          onPress={() => router.push("/ai-assistant" as never)}
+          accessibilityRole="button"
+          accessibilityLabel="LabTrax Assistant"
+          testID="dashboard-ai-assistant-btn"
+        >
+          <Ionicons name="sparkles" size={18} color="#fff" />
+          <Text style={styles.addCaseText}>LabTrax Assistant</Text>
         </Pressable>
       </View>
 
@@ -1752,6 +1814,24 @@ export default function DashboardScreen() {
               },
             },
             {
+              id: "due-tomorrow",
+              title: "Due tomorrow",
+              color: "#1D5FD8",
+              bg: "#DBEAFE",
+              icon: "calendar-outline" as IconName,
+              loading: casesQuery.isLoading,
+              error: casesQuery.isError,
+              count: dueTomorrowCases.length,
+              retry: () => casesQuery.refetch(),
+              onPress: () => {
+                if (!dueTomorrowOpen) toggleDueTomorrow();
+                setTimeout(
+                  () => scrollViewRef.current?.scrollTo({ y: dueTomorrowYRef.current, animated: true }),
+                  50,
+                );
+              },
+            },
+            {
               id: "unassigned",
               title: "Unassigned documents",
               color: "#B45309",
@@ -1773,7 +1853,7 @@ export default function DashboardScreen() {
         ).map((card) => (
           <Pressable
             key={card.id}
-            style={[styles.summaryCard, isPhone && styles.summaryCardPhone]}
+            style={[styles.summaryCard, styles.summaryCardPhone]}
             onPress={card.error ? card.retry : card.onPress}
             accessibilityRole="button"
             accessibilityLabel={
@@ -1789,7 +1869,7 @@ export default function DashboardScreen() {
             <Text style={[styles.summaryCount, { color: card.color }]}>
               {card.loading ? "..." : card.error ? "--" : card.count}
             </Text>
-            <Text style={[styles.summaryTitle, isPhone && { flex: 1, order: 3 } as object]} numberOfLines={2}>
+            <Text style={[styles.summaryTitle, { flex: 1, order: 3 } as object]} numberOfLines={2}>
               {card.error ? "Tap to retry" : card.title}
             </Text>
           </Pressable>
@@ -1823,21 +1903,6 @@ export default function DashboardScreen() {
       </View>
 
       <View style={styles.header}>
-        <Pressable
-          style={styles.actionBtn}
-          onPress={() => router.push("/ai-assistant" as never)}
-          testID="dashboard-ai-assistant-btn"
-        >
-          <Ionicons name="sparkles" size={18} color="#fff" />
-          <Text
-            style={styles.actionBtnText}
-            numberOfLines={1}
-            adjustsFontSizeToFit
-            minimumFontScale={0.7}
-          >
-            LabTrax Assistant
-          </Text>
-        </Pressable>
         <Pressable
           style={styles.actionBtn}
           onPress={() => router.push("/batch-locate" as never)}
@@ -1887,7 +1952,7 @@ export default function DashboardScreen() {
         </Pressable>
       </View>
 
-      {(rushCases.length > 0 || dueTomorrowCases.length > 0) && (
+      {rushCases.length > 0 && (
         <View style={styles.statsChips}>
           {rushCases.length > 0 && (
             <Pressable
@@ -1907,41 +1972,6 @@ export default function DashboardScreen() {
               </Text>
             </Pressable>
           )}
-          {dueTomorrowCases.length > 0 && (
-            <Pressable
-              style={styles.statsChip}
-              onPress={() => {
-                if (!dueTomorrowOpen) {
-                  LayoutAnimation.configureNext(
-                    LayoutAnimation.Presets.easeInEaseOut,
-                  );
-                  setDueTomorrowOpen(true);
-                  savePrefs({ dueTomorrowOpen: true });
-                }
-                // Small delay lets any expand animation start before we scroll
-                setTimeout(() => {
-                  scrollViewRef.current?.scrollTo({
-                    y: dueTomorrowYRef.current,
-                    animated: true,
-                  });
-                }, 50);
-              }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Scroll to Due Tomorrow section"
-            >
-              <Ionicons
-                name="calendar-outline"
-                size={12}
-                color={colors.textSecondary}
-              />
-              <Text
-                style={[styles.statsChipText, { color: colors.textSecondary }]}
-              >
-                Due tomorrow: {dueTomorrowCases.length}
-              </Text>
-            </Pressable>
-          )}
         </View>
       )}
 
@@ -1953,76 +1983,6 @@ export default function DashboardScreen() {
           <View style={{ paddingHorizontal: Spacing.lg }} onLayout={(e) => { unassignedYRef.current = e.nativeEvent.layout.y; }}>
             <UnassignedDocumentsCard />
           </View>
-          {isAdminRole && !todaySalesQuery.isError && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.todaySalesCard,
-                pressed && { opacity: 0.75 },
-              ]}
-              onPress={() => router.push(TODAY_SALES_ROUTE as never)}
-              accessibilityRole="button"
-              accessibilityLabel="Today's sales — tap to open finance report"
-            >
-              <View style={styles.todaySalesHeader}>
-                <Text
-                  style={[
-                    styles.todaySalesLabel,
-                    { color: colors.textSecondary },
-                  ]}
-                >
-                  Today's sales
-                </Text>
-                <View style={styles.todaySalesLiveDot} />
-              </View>
-              {todaySalesQuery.isLoading ? (
-                <View
-                  style={[
-                    styles.todaySalesSkeleton,
-                    { backgroundColor: colors.border },
-                  ]}
-                />
-              ) : (
-                <>
-                  <Text
-                    style={[styles.todaySalesAmount, { color: colors.text }]}
-                  >
-                    {new Intl.NumberFormat("en-US", {
-                      style: "currency",
-                      currency: "USD",
-                    }).format(Number(todaySalesQuery.data?.totalSales ?? 0))}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.todaySalesInvoiceCount,
-                      { color: colors.textTertiary },
-                    ]}
-                  >
-                    {todaySalesQuery.data?.invoices ?? 0}{" "}
-                    {(todaySalesQuery.data?.invoices ?? 0) === 1
-                      ? "invoice"
-                      : "invoices"}{" "}
-                    today
-                  </Text>
-                  {todaySalesQuery.dataUpdatedAt ? (
-                    <Text
-                      style={[
-                        styles.todaySalesUpdated,
-                        { color: colors.textTertiary },
-                      ]}
-                    >
-                      Updated{" "}
-                      {new Date(
-                        todaySalesQuery.dataUpdatedAt,
-                      ).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-            </Pressable>
-          )}
           {renderExceptions()}
           {renderRecentCases()}
           {renderPastDue()}
@@ -2092,16 +2052,24 @@ function makeStyles(c: ThemeColors) {
       gap: Spacing.sm,
     },
     profileText: { flex: 1, gap: 1 },
+    primaryActions: {
+      flexDirection: "row",
+      alignItems: "stretch",
+      gap: Spacing.xs,
+      paddingHorizontal: Spacing.lg,
+    },
     addCaseBtn: {
+      flex: 1,
       flexDirection: "row",
       alignItems: "center",
+      justifyContent: "center",
       gap: 4,
       backgroundColor: "#1D5FD8",
       paddingHorizontal: Spacing.md,
       minHeight: 44,
       borderRadius: 6,
     },
-    addCaseText: { ...Typography.bodySemibold, color: "#fff" },
+    addCaseText: { ...Typography.bodySemibold, color: "#fff", flexShrink: 1, textAlign: "center" },
     summaryRow: {
       flexDirection: "row",
       flexWrap: "wrap",
@@ -2271,7 +2239,15 @@ function makeStyles(c: ThemeColors) {
       alignSelf: "center",
     },
     dashboardScroll: { flex: 1, minHeight: 0 },
-    section: { gap: Spacing.md, paddingHorizontal: Spacing.lg },
+    section: {
+      gap: Spacing.md,
+      marginHorizontal: Spacing.lg,
+      padding: Spacing.md,
+      backgroundColor: c.surface,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+    },
     pastDueDescription: {
       ...Typography.caption,
       color: c.textSecondary,

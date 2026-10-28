@@ -1829,6 +1829,7 @@ export function InvoicesTab({
   const invoiceQueryPath = useMemo(() => {
     const params = new URLSearchParams({
       practiceId: practice.id,
+      customerCenter: "true",
       limit: "10",
       offset: String(invoiceOffset),
     });
@@ -1877,7 +1878,7 @@ export function InvoicesTab({
   const invCols = useTableColumns<Invoice>(
     [
       { id: "invoiceNumber", label: "Num", menuLabel: "Num", align: "left", defaultWidth: 100, render: (inv) => <span className="font-mono text-xs">{inv.invoiceNumber}</span> },
-      { id: "issuedAt", label: "Date", menuLabel: "Date", align: "left", defaultWidth: 100, render: (inv) => <span className="text-muted-foreground">{formatDate(inv.issuedAt)}</span> },
+      { id: "createdAt", label: "Entered Date", menuLabel: "Entered Date", align: "left", defaultWidth: 120, render: (inv) => <span className="text-muted-foreground">{formatDate(inv.createdAt)}</span> },
       { id: "patient", label: "Patient", menuLabel: "Patient", align: "left", defaultWidth: 130, render: (inv) => {
         const patientName = inv.displayMetadata?.patientName ?? inv.displayMetadataJson?.patientName ?? null;
         return patientName ?? <span className="text-muted-foreground/50">—</span>;
@@ -1938,6 +1939,7 @@ export function InvoicesTab({
 
   async function handleExportStatementPdf() {
     const exportParams = new URLSearchParams({ practiceId: practice.id });
+    exportParams.set("customerCenter", "true");
     if (filterBy !== "all") {
       exportParams.set("status", filterBy === "open" ? "open" : filterBy);
     }

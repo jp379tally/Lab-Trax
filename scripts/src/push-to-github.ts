@@ -136,6 +136,16 @@ export function computeChunkBoundaries(
   return boundaries;
 }
 
+/** Paths that belong to private runtime storage, including in old commits. */
+export function isPrivateBackupPath(file: string): boolean {
+  const normalized = file.replaceAll("\\", "/").toLowerCase();
+  return /(^|\/)(attached_assets|uploads|generated-artifacts|\.private-operator-reports|support)(\/|$)/.test(normalized)
+    || /(^|\/)\.env(?:\.|$)/.test(normalized)
+    || /(?:\.p8|\.dump(?:\.sha256)?|\.enc)$/.test(normalized)
+    || /(^|\/)(?:labtrax[_-])?(?:prod|production)[^/]*\.sql$/.test(normalized)
+    || normalized === "scripts/database-fingerprint.json";
+}
+
 /** Minimal slice of the isomorphic-git surface that {@link run} depends on. */
 export interface GitLike {
   resolveRef(args: { fs: unknown; dir: string; ref: string }): Promise<string>;
@@ -144,6 +154,7 @@ export interface GitLike {
     url: string;
     onAuth: unknown;
   }): Promise<{ refs?: { heads?: Record<string, string> } }>;
+  listFiles(args: { fs: unknown; dir: string; ref: string }): Promise<string[]>;
   log(args: {
     fs: unknown;
     dir: string;
@@ -251,6 +262,16 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
     return { pushedChunks: 0 };
   }
 
+  // A clean HEAD or a new .gitignore does not remove private data from
+  // history. Validate every commit before sending even the first chunk.
+  for (const ref of ordered) {
+    const files = await gitClient.listFiles({ fs: fsImpl, dir, ref });
+    if (files.some(isPrivateBackupPath)) {
+      throw new BackupExitError(5,
+        "Private runtime files exist in outgoing history. Create a reviewed source-only snapshot; do not force-push this history.");
+    }
+  }
+
   log(`commits to push: ${ordered.length} (chunk size ${chunkSize})`);
 
   const boundaries = computeChunkBoundaries(ordered, chunkSize);
@@ -303,6 +324,15 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
     url: remoteUrl,
     onAuth,
   });
+  const expectedTip = boundaries[pushed - 1];
+  const verifiedTip = finalRemote.refs?.heads?.[branch];
+  if (verifiedTip !== expectedTip) {
+    console.error(
+      `[github-backup] Remote verification failed: expected ${expectedTip}, ` +
+        `received ${verifiedTip ?? "(branch missing)"}.`,
+    );
+    throw new BackupExitError(4, "remote verification failed");
+  }
   log(
     `done in ${Math.round(
       (now() - startedAt) / 1000,

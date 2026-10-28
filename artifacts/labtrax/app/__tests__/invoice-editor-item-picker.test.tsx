@@ -16,6 +16,7 @@ import { router } from "expo-router";
 import { queryClient } from "@/lib/query-client";
 import {
   mockUpdateInvoiceMutateAsync,
+  mockInvalidateQueries,
   resetMockAppState,
   setMockAppState,
   setMockSearchParams,
@@ -94,6 +95,25 @@ afterEach(() => {
 });
 
 describe("InvoiceEditorScreen — item picker", () => {
+  it("keeps status and line-item actions large enough for touch", async () => {
+    seedInvoiceWithLine();
+    const screen = await render(<InvoiceEditorScreen />);
+
+    const statusStyle = StyleSheet.flatten(
+      screen.getByTestId("invoice-editor-status-open").props.style,
+    );
+    const addStyle = StyleSheet.flatten(
+      screen.getByTestId("invoice-editor-add-line").props.style,
+    );
+    const removeStyle = StyleSheet.flatten(
+      screen.getByTestId("invoice-editor-remove-line-0").props.style,
+    );
+    expect(statusStyle.minHeight).toBe(44);
+    expect(addStyle.minHeight).toBe(44);
+    expect(removeStyle.width).toBe(44);
+    expect(removeStyle.height).toBe(44);
+  });
+
   it("selecting a catalog item updates the line description and unit price", async () => {
     seedInvoiceWithLine();
     const screen = await render(<InvoiceEditorScreen />);
@@ -238,9 +258,9 @@ describe("InvoiceEditorScreen — committed invoice edits", () => {
         }),
       );
       expect(router.back).toHaveBeenCalled();
-      expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["invoices"] });
-      const predicate = vi.mocked(queryClient.invalidateQueries).mock.calls
-        .map(([filter]) => filter?.predicate)
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["invoices"] });
+      const predicate = mockInvalidateQueries.mock.calls
+        .map(([filter]) => (filter as { predicate?: (query: { queryKey: unknown[] }) => boolean })?.predicate)
         .find((value) => value !== undefined);
       expect(predicate).toBeDefined();
       expect(predicate!({ queryKey: ["reports", "sales-forecast", "lab-1"] } as never)).toBe(true);
@@ -259,12 +279,12 @@ describe("InvoiceEditorScreen — committed invoice edits", () => {
     await waitFor(() => expect(alert).toHaveBeenCalledWith("Couldn't save invoice", "Server refused update"));
     expect(router.back).not.toHaveBeenCalled();
     expect(screen.getByTestId("invoice-editor-line-price-0").props.value).toBe("10");
-    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
   it("does not present a committed edit as a failed save if report refresh fails", async () => {
     seedInvoiceWithLine();
-    vi.mocked(queryClient.invalidateQueries).mockRejectedValueOnce(new Error("Offline during refresh"));
+    mockInvalidateQueries.mockRejectedValueOnce(new Error("Offline during refresh"));
     const alert = vi.spyOn(Alert, "alert");
     const screen = await render(<InvoiceEditorScreen />);
     await waitFor(() => expect(screen.getByTestId("invoice-editor-save")).toBeTruthy());

@@ -104,8 +104,17 @@ export type PayableStatement = {
 };
 
 export type PayableCustomer = {
+  /** Selection identity; doctor accounts use a practice-qualified synthetic id. */
   id: string;
   name: string;
+  /** The organization row that owns this account; equal to `id` for practice accounts. */
+  practiceOrganizationId?: string;
+  practiceName?: string;
+  doctorIdentity?: string | null;
+  doctorDisplayName?: string | null;
+  doctorLabelQualifier?: string;
+  isDoctorAccount?: boolean;
+  accountLabel?: string;
   initials: string;
   accountNumber: string | null;
   city: string | null;
@@ -224,6 +233,9 @@ export function buildPayableCustomers(
           // covers only part of the account.
           outstandingInvoices: invoiceRow?.outstandingInvoices ?? statementRow.outstandingInvoices,
           doctors: statementRow.doctors?.length ? statementRow.doctors : invoiceRow?.doctors,
+          doctorProfiles: statementRow.doctorProfiles?.length
+            ? statementRow.doctorProfiles
+            : invoiceRow?.doctorProfiles,
         }
       : invoiceRow!;
     const name = account.providerName;
@@ -340,6 +352,138 @@ export function buildPayableCustomers(
     });
   }
   return customers.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const doctorKey = (invoice: PayableInvoice): string | null => {
+  const name = invoice.doctorName?.trim();
+  if (!name) return null;
+  return invoice.source.doctorIdentity?.trim() || name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+};
+
+/**
+ * Creates selectable accounts for multi-doctor practices while keeping the
+ * original practice account as the explicit whole-practice choice. Stable
+ * profile IDs are preferred; legacy invoices use their normalized name key.
+ */
+export function buildSelectablePayableCustomers(
+  practices: readonly PayableCustomer[],
+): PayableCustomer[] {
+  const result: PayableCustomer[] = [];
+  for (const practice of practices) {
+    const practiceId = practice.account.providerOrganizationId;
+    const profilesById = new Map(
+      (practice.account.doctorProfiles ?? []).map((profile) => [profile.id, profile]),
+    );
+    type DoctorAccount = {
+      identity: string;
+      invoices: PayableInvoice[];
+      profile: NonNullable<EligibleAccount["doctorProfiles"]>[number] | undefined;
+      displayName: string;
+    };
+    const byDoctor = new Map<string, DoctorAccount>();
+    for (const invoice of practice.invoices) {
+      const key = doctorKey(invoice);
+      if (!key) continue;
+      const profile = profilesById.get(key);
+      const current: DoctorAccount = byDoctor.get(key) ?? {
+        identity: key,
+        invoices: [],
+        profile,
+        displayName: invoice.doctorName!,
+      };
+      current.invoices.push(invoice);
+      byDoctor.set(key, current);
+    }
+    const doctorsByDisplayName = new Map<string, DoctorAccount[]>();
+    for (const doctor of byDoctor.values()) {
+      const displayKey = doctor.displayName.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+      const duplicates = doctorsByDisplayName.get(displayKey) ?? [];
+      duplicates.push(doctor);
+      doctorsByDisplayName.set(displayKey, duplicates);
+    }
+    const qualifiers = new Map<string, string>();
+    for (const duplicates of doctorsByDisplayName.values()) {
+      if (duplicates.length < 2) continue;
+      const originalNames = duplicates.map((doctor) => doctor.profile?.doctorName?.trim() ?? "");
+      const normalizedOriginalNames = originalNames.map((name) =>
+        name.replace(/\s+/g, " ").toLocaleLowerCase(),
+      );
+      const allOriginalNamesDistinct =
+        originalNames.every(Boolean) && new Set(normalizedOriginalNames).size === duplicates.length;
+      for (const [index, doctor] of duplicates.entries()) {
+        const qualifier = allOriginalNamesDistinct
+          ? `Profile name: ${originalNames[index]}`
+          : `Invoice${doctor.invoices.length === 1 ? "" : "s"}: ${doctor.invoices
+              .slice(0, 2)
+              .map((invoice) => invoice.invoiceNumber)
+              .join(", ")}`;
+        qualifiers.set(doctor.identity, qualifier);
+      }
+    }
+
+    const practiceAccount = {
+      ...practice,
+      practiceOrganizationId: practiceId,
+      practiceName: practice.name,
+      accountLabel: byDoctor.size > 1 ? "Entire practice" : undefined,
+    };
+    result.push(practiceAccount);
+    if (byDoctor.size < 2) continue;
+
+    for (const [identity, doctor] of byDoctor) {
+      const invoices = doctor.invoices;
+      const balance = cents(invoices.reduce((sum, invoice) => sum + invoice.balance, 0));
+      const oldest = oldestInvoice(invoices);
+      const doctorLastPayment = practice.account.doctorLastPayments?.find(
+        (payment) => payment.doctorIdentity === identity,
+      );
+      const labelQualifier = qualifiers.get(identity);
+      const doctorLabel = labelQualifier
+        ? `${doctor.displayName} (${labelQualifier})`
+        : doctor.displayName;
+      const doctorAccount: EligibleAccount = {
+        ...practice.account,
+        statementId: null,
+        statementCount: 0,
+        statements: [],
+        outstandingInvoices: invoices.map((invoice) => invoice.source),
+        invoiceCount: invoices.length,
+        currentBalanceDue: balance.toFixed(2),
+        lastPaymentAt: doctorLastPayment?.lastPaymentAt ?? null,
+        lastPaymentAmount: doctorLastPayment?.lastPaymentAmount ?? null,
+        doctors: [{ doctorIdentity: identity, doctorDisplayName: doctor.displayName }],
+        doctorNames: [doctor.displayName],
+        doctorLastPayments: doctorLastPayment ? [doctorLastPayment] : [],
+      };
+      result.push({
+        ...practice,
+        id: `doctor:${encodeURIComponent(practiceId)}:${encodeURIComponent(identity)}`,
+        name: `${doctorLabel} · ${practice.name}`,
+        practiceOrganizationId: practiceId,
+        practiceName: practice.name,
+        doctorIdentity: identity,
+        doctorDisplayName: doctor.displayName,
+        doctorLabelQualifier: labelQualifier,
+        isDoctorAccount: true,
+        accountLabel: labelQualifier ? undefined : doctor.displayName,
+        initials: initials(doctor.displayName),
+        doctorNames: [doctor.displayName],
+        invoices,
+        unpaidCount: invoices.length,
+        totalBalance: balance,
+        lastPaymentAt: doctorLastPayment?.lastPaymentAt ?? null,
+        lastPaymentAmount: doctorLastPayment
+          ? amountOf(doctorLastPayment.lastPaymentAmount)
+          : null,
+        statement: null,
+        oldest,
+        overdue: invoices.some((invoice) => (invoice.daysPastDue ?? 0) > 0),
+        partiallyPaid: invoices.some((invoice) => invoice.partiallyPaid),
+        account: doctorAccount,
+      });
+    }
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ---------------------------------------------------------------------------
@@ -690,11 +834,63 @@ export function selectCustomers(
   selection: Selection,
   customers: readonly PayableCustomer[],
 ): Selection {
-  const added = customers.filter((customer) => !selection.ids.includes(customer.id));
-  if (!added.length) return selection;
+  const byPractice = new Map<string, PayableCustomer[]>();
+  for (const customer of customers) {
+    const practiceId = customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+    const rows = byPractice.get(practiceId) ?? [];
+    rows.push(customer);
+    byPractice.set(practiceId, rows);
+  }
+  let ids = [...selection.ids];
   const scopes = { ...selection.scopes };
-  for (const customer of added) scopes[customer.id] = defaultScope(customer);
-  return { ids: [...selection.ids, ...added.map((customer) => customer.id)], scopes };
+  for (const [practiceId, requested] of byPractice) {
+    const selectedRows = requested.some((customer) => !customer.isDoctorAccount)
+      ? requested.filter((customer) => !customer.isDoctorAccount).slice(0, 1)
+      : requested.filter((customer) => customer.isDoctorAccount);
+    const incomingIds = new Set(selectedRows.map((customer) => customer.id));
+    const hasPracticeSelection = selectedRows.some((customer) => !customer.isDoctorAccount);
+    const remove = ids.filter((id) => {
+      const existingPracticeId = selectionPracticeId(id);
+      return existingPracticeId === practiceId &&
+        (hasPracticeSelection ? id !== practiceId : id === practiceId);
+    });
+    ids = ids.filter((id) => !remove.includes(id));
+    for (const id of remove) delete scopes[id];
+    for (const customer of selectedRows) {
+      if (!ids.includes(customer.id) && incomingIds.has(customer.id)) {
+        ids.push(customer.id);
+        scopes[customer.id] = defaultScope(customer);
+      }
+    }
+  }
+  return ids.length === selection.ids.length &&
+    ids.every((id, index) => id === selection.ids[index]) &&
+    Object.keys(scopes).length === Object.keys(selection.scopes).length
+    ? selection
+    : { ids, scopes };
+}
+
+function selectionPracticeId(id: string): string {
+  if (!id.startsWith("doctor:")) return id;
+  const encodedPracticeId = id.slice("doctor:".length).split(":")[0]!;
+  try {
+    return decodeURIComponent(encodedPracticeId);
+  } catch {
+    return encodedPracticeId;
+  }
+}
+
+function withoutOverlappingSelection(
+  selection: Selection,
+  customer: PayableCustomer,
+): Selection {
+  const practiceId = customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+  const remove = selection.ids.filter((id) =>
+    selectionPracticeId(id) === practiceId &&
+    (customer.isDoctorAccount ? id === practiceId : id !== customer.id),
+  );
+  if (!remove.length) return selection;
+  return deselectCustomers(selection, remove);
 }
 
 export function deselectCustomers(selection: Selection, ids: readonly string[]): Selection {
@@ -709,9 +905,10 @@ export function deselectCustomers(selection: Selection, ids: readonly string[]):
 export function selectStatementScope(selection: Selection, customer: PayableCustomer): Selection {
   if (!customer.statement) return selectCustomers(selection, [customer]);
   const scope: CustomerScope = { mode: "statement", invoiceIds: null };
+  const nonOverlapping = withoutOverlappingSelection(selection, customer);
   return {
-    ids: selection.ids.includes(customer.id) ? selection.ids : [...selection.ids, customer.id],
-    scopes: { ...selection.scopes, [customer.id]: scope },
+    ids: nonOverlapping.ids.includes(customer.id) ? nonOverlapping.ids : [...nonOverlapping.ids, customer.id],
+    scopes: { ...nonOverlapping.scopes, [customer.id]: scope },
   };
 }
 
@@ -778,7 +975,8 @@ export function pickInvoices(
   invoiceIds: readonly string[],
   picked: boolean,
 ): Selection {
-  const existing = selection.scopes[customer.id];
+  const nonOverlapping = withoutOverlappingSelection(selection, customer);
+  const existing = nonOverlapping.scopes[customer.id];
   const chosen = new Set(existing ? coveredInvoiceIds(customer, existing) : []);
   for (const id of invoiceIds) {
     if (picked) chosen.add(id);
@@ -788,10 +986,10 @@ export function pickInvoices(
     ? existing.mode === "statement" || !!existing.switchedFromStatement
     : !!customer.statement;
   const scope = scopeForPicks(customer, chosen, statementPreferred);
-  if (!scope) return deselectCustomers(selection, [customer.id]);
+  if (!scope) return deselectCustomers(nonOverlapping, [customer.id]);
   return {
-    ids: selection.ids.includes(customer.id) ? selection.ids : [...selection.ids, customer.id],
-    scopes: { ...selection.scopes, [customer.id]: scope },
+    ids: nonOverlapping.ids.includes(customer.id) ? nonOverlapping.ids : [...nonOverlapping.ids, customer.id],
+    scopes: { ...nonOverlapping.scopes, [customer.id]: scope },
   };
 }
 
@@ -1057,5 +1255,23 @@ export function restoreSavedSelection(
     ids.push(customer.id);
     scopes[customer.id] = scope;
   }
-  return { selection: { ids, scopes }, narrowed, unselected, missing };
+  const wholePracticeIds = new Set(
+    ids.filter((id) => {
+      const customer = customers.get(id);
+      return !!customer && !customer.isDoctorAccount;
+    }),
+  );
+  const wholePracticeOrganizations = new Set(
+    [...wholePracticeIds].map((id) => {
+      const customer = customers.get(id)!;
+      return customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+    }),
+  );
+  const compatibleIds = ids.filter((id) => {
+    const customer = customers.get(id)!;
+    return !customer.isDoctorAccount ||
+      !wholePracticeOrganizations.has(customer.practiceOrganizationId ?? customer.account.providerOrganizationId);
+  });
+  const compatibleScopes = Object.fromEntries(compatibleIds.map((id) => [id, scopes[id]!]));
+  return { selection: { ids: compatibleIds, scopes: compatibleScopes }, narrowed, unselected, missing };
 }

@@ -1,10 +1,11 @@
+import { writeProductionUpload } from "../lib/production-media-local-write";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import sharp from "sharp";
 import { Router } from "express";
-import { createRateLimit, createCheckEmailThrottle } from "../lib/rate-limit";
+import { createRateLimit } from "../lib/rate-limit";
 import { resolveLabLookupToken } from "../lib/lab-lookup-token";
 import { enqueueJoinRequestNotification } from "../lib/join-request-notifications";
 import {
@@ -176,11 +177,6 @@ const registerRateLimit = createRateLimit({
   windowMs: 60_000,
   max: 5,
   message: "Too many registration attempts. Please wait a minute and try again.",
-});
-const checkEmailThrottle = createCheckEmailThrottle({
-  windowMs: 60_000,
-  maxPerEmail: 5,
-  maxPerIp: 5,
 });
 const lookupProviderMatchesRateLimit = createRateLimit({
   windowMs: 60_000,
@@ -526,25 +522,15 @@ router.get(
 
 router.get(
   "/check-email",
-  checkEmailThrottle,
   asyncHandler(async (req, res) => {
     const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
     if (!email || !email.includes("@")) {
       throw new HttpError(400, "A valid email address is required.");
     }
-    // Enforce a minimum response time so "email exists" and "email not found"
-    // paths cannot be distinguished by a timing oracle.
-    const minMs = 200;
-    const startedAt = Date.now();
-    const match = await db.query.users.findFirst({
-      where: sql`lower(${users.email}) = ${email.toLowerCase()}`,
-      columns: { id: true },
-    });
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < minMs) {
-      await new Promise<void>((resolve) => setTimeout(resolve, minMs - elapsed));
-    }
-    ok(res, { available: !match });
+    // Keep the legacy response shape for signup clients, but do not reveal
+    // whether the address belongs to an existing account. Registration remains
+    // responsible for rejecting duplicate addresses when the user submits.
+    ok(res, { available: true });
   })
 );
 
@@ -2349,7 +2335,7 @@ router.post(
     } catch {
       throw new HttpError(400, "This image could not be read. Choose a valid JPEG, PNG, WebP or GIF image.");
     }
-    await fs.promises.writeFile(outputPath, normalized);
+    await writeProductionUpload(outputPath, normalized, "profile-photo");
 
     const photoUrl = `/uploads/profile-photos/${filename}`;
 

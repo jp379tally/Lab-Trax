@@ -402,6 +402,7 @@ maybe("Invoices (db integration)", () => {
         status: "open",
         total: "25.00",
         balanceDue: "25.00",
+        notes: "Provider note visibility check",
         displayMetadataJson: { billTo: "Dr Invoice Parity Allowed" },
         createdByUserId: allowedProviderUserId,
       },
@@ -673,7 +674,13 @@ maybe("Invoices (db integration)", () => {
     const { db, users, organizations, organizationMemberships } = dbMod as any;
 
     await db.insert(users).values([
-      { id: labOwnerId, username: `invowner_${labOwnerId}`, password: "x" },
+      {
+        id: labOwnerId,
+        username: `invowner_${labOwnerId}`,
+        password: "x",
+        firstName: "Invoice",
+        lastName: "Reviewer",
+      },
       { id: billingUserId, username: `invbilling_${billingUserId}`, password: "x" },
       { id: outsiderId, username: `invout_${outsiderId}`, password: "x" },
     ]);
@@ -1365,6 +1372,53 @@ maybe("Invoices (db integration)", () => {
     expect(ids).toContain(invoiceId);
   });
 
+  it("records the AI invoice reviewer and time and returns the reviewer name on detail", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const created = await request(appMod.default)
+      .post("/api/invoices")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        invoiceNumber: rid("AIREVIEW"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+      });
+    expect(created.status).toBe(201);
+    const invoiceId = created.body.data.id;
+    const { db, invoices } = dbMod as any;
+    await db
+      .update(invoices)
+      .set({ aiGenerated: true })
+      .where(eq(invoices.id, invoiceId));
+
+    const acknowledgment = await request(appMod.default)
+      .patch(`/api/invoices/${invoiceId}/ai-review`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ acknowledged: true });
+    expect(acknowledgment.status).toBe(200);
+    expect(acknowledgment.body.data).toMatchObject({
+      aiReviewedByUserId: labOwnerId,
+      aiReviewedByName: "Invoice Reviewer",
+    });
+    expect(acknowledgment.body.data.aiReviewedAt).toEqual(expect.any(String));
+
+    const persisted = await db.query.invoices.findFirst({
+      where: eq(invoices.id, invoiceId),
+    });
+    expect(persisted.aiReviewedByUserId).toBe(labOwnerId);
+    expect(persisted.aiReviewedAt).toBeInstanceOf(Date);
+
+    const detail = await request(appMod.default)
+      .get(`/api/invoices/${invoiceId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject({
+      aiGenerated: true,
+      aiReviewedByUserId: labOwnerId,
+      aiReviewedByName: "Invoice Reviewer",
+    });
+    expect(detail.body.data.aiReviewedAt).toEqual(acknowledgment.body.data.aiReviewedAt);
+  });
+
   it("keeps invoice read routes aligned with the lab/provider billing matrix", async () => {
     const fixture = await createInvoiceReadParityFixture();
     const { access } = await makeSession(fixture.mixedIdentityId);
@@ -1403,6 +1457,11 @@ maybe("Invoices (db integration)", () => {
               routeFixture.invoiceIds.unrelated,
             ]),
           );
+          expect(
+            response.body.data.find(
+              (invoice: any) => invoice.id === routeFixture.invoiceIds.allowedProvider,
+            )?.notes,
+          ).toBeNull();
         },
       },
       {
@@ -1646,6 +1705,7 @@ maybe("Invoices (db integration)", () => {
           expect(response.body.data).toEqual(
             expect.objectContaining({ id: routeFixture.invoiceIds.allowedProvider }),
           );
+          expect(response.body.data.notes).toBeNull();
         },
       },
       {
@@ -1735,6 +1795,37 @@ maybe("Invoices (db integration)", () => {
         ).toBe(route.expectedStatus);
         route.assertScope(response, fixture);
       }
+
+      const { db, invoices } = dbMod as any;
+      const providerInvoice = await db.query.invoices.findFirst({
+        where: eq(invoices.id, fixture.invoiceIds.allowedProvider),
+      });
+      await db
+        .update(invoices)
+        .set({
+          displayMetadataJson: {
+            ...(providerInvoice.displayMetadataJson ?? {}),
+            shareNotesWithProvider: true,
+          },
+        })
+        .where(eq(invoices.id, fixture.invoiceIds.allowedProvider));
+      const sharedProviderRead = await request(appMod.default)
+        .get(`/api/invoices/${fixture.invoiceIds.allowedProvider}`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(sharedProviderRead.status).toBe(200);
+      expect(sharedProviderRead.body.data.notes).toBe(
+        "Provider note visibility check",
+      );
+
+      const preferenceSave = await request(appMod.default)
+        .patch(`/api/invoices/${fixture.invoiceIds.lab}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ shareNotesWithProvider: true });
+      expect(preferenceSave.status).toBe(200);
+      expect(preferenceSave.body.data.displayMetadataJson).toMatchObject({
+        billTo: "Dr Invoice Parity Lab",
+        shareNotesWithProvider: true,
+      });
     } finally {
       await fixture.cleanup();
     }

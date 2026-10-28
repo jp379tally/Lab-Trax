@@ -5,9 +5,12 @@
  *
  * The OpenAI SDK is fully mocked here so the suite is deterministic and does NOT
  * depend on the live Replit AI proxy or on which models it currently serves.
- * It does not touch the database (the route is stateless, called anonymously).
+ * It does not touch the database (authentication is isolated to a test-only
+ * middleware stub so these route tests stay self-contained).
  *
  * Coverage:
+ *  - 401 for unauthenticated requests to each paid image route
+ *  - 429 after the shared per-user budget is exhausted across route aliases
  *  - 400 when no image is provided
  *  - 400 IMAGE_TOO_SMALL for a truncated/corrupt payload
  *  - 400 for unsupported HEIC input
@@ -43,6 +46,24 @@ vi.mock("openai", () => {
   }
   return { default: FakeOpenAI, toFile: vi.fn() };
 });
+vi.mock("../middlewares/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../middlewares/auth")>();
+  return {
+    ...actual,
+    requireAuth: (req: any, res: any, next: any) => {
+      const authorization = req.headers.authorization;
+      const userId = typeof authorization === "string" && authorization.startsWith("Bearer ")
+        ? authorization.slice(7)
+        : "";
+      if (!userId) {
+        return res.status(401).json({ ok: false, message: "Authentication required." });
+      }
+      req.user = { id: userId };
+      req.auth = { userId, sessionId: "test-session" };
+      return next();
+    },
+  };
+});
 
 // A non-HEIC, non-PDF JPEG data URI whose raw base64 clears the 5000-char floor.
 const VALID_IMAGE = `data:image/jpeg;base64,${"A".repeat(6000)}`;
@@ -53,6 +74,9 @@ function aiJson(obj: Record<string, unknown>) {
 
 describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   let appMod: { default: import("express").Express };
+  let nextAuthUserId = 0;
+  const postAsUser = (route: string, userId = `analyze-rx-test-${++nextAuthUserId}`) =>
+    request(appMod.default).post(route).set("Authorization", `Bearer ${userId}`);
   let savedKey: string | undefined;
   let savedBaseUrl: string | undefined;
 
@@ -81,7 +105,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
 
   it("sends every supplied page through the accurate desktop chain without hidden SDK retries", async () => {
     mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Fixture", confidence: 0.9 }));
-    const result = await request(appMod.default).post("/api/analyze-prescription").send({
+    const result = await postAsUser("/api/analyze-prescription").send({
       imageBase64: VALID_IMAGE, additionalImages: [VALID_IMAGE, VALID_IMAGE, VALID_IMAGE], desktopReader: true,
     });
     expect(result.status).toBe(200);
@@ -97,7 +121,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   it("retains native fast mode and explicit fallback rather than SDK retry multiplication", async () => {
     mockCreate.mockRejectedValueOnce(Object.assign(new Error("timeout"), { name: "APIConnectionTimeoutError" }));
     mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Fixture", confidence: 0.9 }));
-    const result = await request(appMod.default).post("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, fast: true });
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, fast: true });
     expect(result.status).toBe(200);
     expect(mockCreate.mock.calls.map(([params]) => params.model)).toEqual(["gpt-5-mini", "gpt-5"]);
     for (const [, options] of mockCreate.mock.calls) {
@@ -108,7 +132,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
 
   it("stops fallback after the client disconnects even when the model adapter ignores cancellation", async () => {
     mockCreate.mockImplementation(() => new Promise(() => {}));
-    const pending = request(appMod.default).post("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, desktopReader: true });
+    const pending = postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE, desktopReader: true });
     pending.end(() => {});
     await vi.waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     const signal = mockCreate.mock.calls[0][1].signal as AbortSignal;
@@ -118,15 +142,14 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   });
 
   it("returns 400 when no image is provided", async () => {
-    const r = await request(appMod.default).post("/api/analyze-prescription").send({});
+    const r = await postAsUser("/api/analyze-prescription").send({});
     expect(r.status).toBe(400);
     expect(r.body.success).toBe(false);
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("returns 400 IMAGE_TOO_SMALL for a truncated payload", async () => {
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: `data:image/jpeg;base64,${"A".repeat(100)}` });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("IMAGE_TOO_SMALL");
@@ -134,8 +157,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   });
 
   it("returns 400 for unsupported HEIC input", async () => {
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: `data:image/heic;base64,${"A".repeat(6000)}` });
     expect(r.status).toBe(400);
     expect(String(r.body.error)).toContain("HEIC");
@@ -155,8 +177,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -177,8 +198,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   it("uses the fast (gpt-5-mini) chain for live-scan detection requests", async () => {
     mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Pat Roe", confidence: 0.4 }));
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE, fast: true });
 
     expect(r.status).toBe(200);
@@ -194,8 +214,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       .mockRejectedValueOnce(new Error("model gpt-5 not available"))
       .mockResolvedValueOnce(aiJson({ patientName: "Pat Roe" }));
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -212,8 +231,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   it("bounds stalled model attempts, preserves accurate fallback order, and returns actionable timeout guidance", async () => {
     mockCreate.mockRejectedValue(new Error("request timed out"));
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE, desktopReader: true });
 
     expect(r.status).toBe(504);
@@ -234,8 +252,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   it("returns 500 when every model in the chain fails", async () => {
     mockCreate.mockRejectedValue(new Error("proxy down"));
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(500);
@@ -246,8 +263,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
   it("sends anyOf-based nullable fields in the strict JSON schema (regression guard)", async () => {
     mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Pat Roe", confidence: 0.8 }));
 
-    await request(appMod.default)
-      .post("/api/analyze-prescription")
+    await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
@@ -317,8 +333,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -339,8 +354,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -365,8 +379,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -389,8 +402,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsUser("/api/analyze-prescription")
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -398,6 +410,35 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(r.body.data.caseType).toBe("Crown & Bridge");
     // No material in extraction → subtype must be absent regardless of confidence.
     expect(r.body.data.restorationSubtype).toBeUndefined();
+  });
+
+  it("rejects anonymous requests to all paid image-analysis routes before AI work", async () => {
+    const routes = [
+      "/api/analyze-prescription",
+      "/api/cases/analyze-rx",
+      "/api/crop-document",
+    ];
+
+    for (const route of routes) {
+      const response = await request(appMod.default).post(route).send({ imageBase64: VALID_IMAGE });
+      expect(response.status, route).toBe(401);
+    }
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("shares the 10-per-minute per-user budget across prescription analysis and cropping", async () => {
+    const userId = "shared-image-ai-budget-test";
+
+    for (let i = 0; i < 10; i++) {
+      const response = await postAsUser("/api/cases/analyze-rx", userId).send({});
+      expect(response.status).toBe(400);
+    }
+
+    const blocked = await postAsUser("/api/crop-document", userId).send({});
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toMatch(/too many ai image requests/i);
+    expect(blocked.headers["retry-after"]).toBeDefined();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   // Guards the "AI not configured" branch without needing a database, so it
@@ -412,6 +453,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
       const freshApp = (await import("../app.js")).default;
       const r = await request(freshApp)
         .post("/api/analyze-prescription")
+        .set("Authorization", "Bearer analyze-rx-unconfigured")
         .send({ imageBase64: VALID_IMAGE });
       expect(r.status).toBe(503);
       expect(r.body.success).toBe(false);

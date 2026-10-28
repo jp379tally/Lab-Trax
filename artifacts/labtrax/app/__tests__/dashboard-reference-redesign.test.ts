@@ -7,10 +7,10 @@ const card = readFileSync(join(__dirname, "../../components/UnassignedDocumentsC
 
 describe("mobile dashboard reference redesign", () => {
   it("has summary cards with truthful states and stacked phone layout", () => {
-    for (const id of ["past-due", "due-today", "unassigned"]) expect(src).toContain(`id: "${id}"`);
+    for (const id of ["past-due", "due-today", "due-tomorrow", "unassigned"]) expect(src).toContain(`id: "${id}"`);
     expect(src).toContain('card.error ? "--"');
     expect(src).toContain("summaryCardPhone");
-    expect(src).toContain("useWindowDimensions");
+    expect(src).toContain("styles.summaryCard, styles.summaryCardPhone");
   });
   it("unassigned summary scrolls to the real documents section and reveals it", () => {
     expect(src).toContain("unassignedYRef.current");

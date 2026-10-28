@@ -1280,6 +1280,19 @@ maybe("statement payment sessions (db integration)", () => {
         { doctorIdentity: firstProfileId, doctorDisplayName: "Dr. Same" },
         { doctorIdentity: secondProfileId, doctorDisplayName: "Dr. Same" },
       ]));
+      expect(eligible.body.data[0].doctorProfiles).toEqual(expect.arrayContaining([
+        { id: firstProfileId, doctorName: "Dr. Alpha", doctorDisplayName: "Dr. Alpha" },
+        { id: secondProfileId, doctorName: "Dr. Beta", doctorDisplayName: "Dr. Beta" },
+      ]));
+
+      const invoiceEligible = await request(app)
+        .get(`/api/billing/${labId}/eligible-invoice-accounts`)
+        .set(auth);
+      expect(invoiceEligible.status).toBe(200);
+      expect(invoiceEligible.body.data[0].doctorProfiles).toEqual(expect.arrayContaining([
+        { id: firstProfileId, doctorName: "Dr. Alpha", doctorDisplayName: "Dr. Alpha" },
+        { id: secondProfileId, doctorName: "Dr. Beta", doctorDisplayName: "Dr. Beta" },
+      ]));
 
       const ledger = await request(app)
         .get(`/api/billing/${labId}/accounts/${providerId}/statement-charges`)
@@ -3929,6 +3942,7 @@ maybe("statement payment sessions (db integration)", () => {
       state: null,
       lastPaymentAt: null,
       lastPaymentAmount: null,
+      doctorLastPayments: [],
     });
     // The statement row names the payable statement's own invoices, which is
     // what a statement payment may settle.
@@ -3960,6 +3974,7 @@ maybe("statement payment sessions (db integration)", () => {
         paymentMethod: "check",
         checkNumber: "8100",
         paymentDate: backdated.toISOString(),
+        doctorName: "Dr. Live",
         idempotencyKey: rid("last_payment_overpay"),
         applications: [{ invoiceId: firstInvoice.id, amount: 15 }],
       });
@@ -3967,6 +3982,11 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: backdated.toISOString(),
       lastPaymentAmount: "20.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
     });
 
     // A payment recorded directly against one invoice is newer.
@@ -3981,6 +4001,11 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: directPaidAt.toISOString(),
       lastPaymentAmount: "10.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
     });
 
     // A later Receive Payments session becomes the most recent payment...
@@ -3994,6 +4019,7 @@ maybe("statement payment sessions (db integration)", () => {
         paymentMethod: "check",
         checkNumber: "8102",
         paymentDate: laterDate.toISOString(),
+        doctorName: "Dr. Live",
         idempotencyKey: rid("last_payment_later"),
         applications: [{ invoiceId: thirdInvoice.id, amount: 12 }],
       });
@@ -4001,6 +4027,11 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: laterDate.toISOString(),
       lastPaymentAmount: "12.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: laterDate.toISOString(),
+        lastPaymentAmount: "12.00",
+      }],
     });
 
     // ...but not while a reversal holds it, the same reservation the
@@ -4015,6 +4046,11 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: directPaidAt.toISOString(),
       lastPaymentAmount: "10.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
     });
     await db.update(statementPaymentReversals)
       .set({ status: "failed", failureReason: "last payment coverage" })
@@ -4022,6 +4058,11 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: laterDate.toISOString(),
       lastPaymentAmount: "12.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: laterDate.toISOString(),
+        lastPaymentAmount: "12.00",
+      }],
     });
     await db.delete(statementPaymentReversals)
       .where(eq(statementPaymentReversals.paymentSessionId, later.body.data.id));
@@ -4034,6 +4075,37 @@ maybe("statement payment sessions (db integration)", () => {
     await expectBoth({
       lastPaymentAt: directPaidAt.toISOString(),
       lastPaymentAmount: "10.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
+    });
+
+    // An unattributed legacy-style session can update practice-wide history,
+    // but must not be assigned to the doctor's summary.
+    const unattributedDate = new Date(directPaidAt.getTime() + 2_000);
+    const unattributed = await request(app).post("/api/billing/payment-sessions")
+      .set(auth).send({
+        labOrganizationId: labId,
+        providerOrganizationId: customerId,
+        statementId: fixture.statementId,
+        receivedAmount: 5,
+        paymentMethod: "check",
+        checkNumber: "8103",
+        paymentDate: unattributedDate.toISOString(),
+        idempotencyKey: rid("last_payment_unattributed"),
+        applications: [{ invoiceId: firstInvoice.id, amount: 5 }],
+      });
+    expect(unattributed.status, JSON.stringify(unattributed.body)).toBe(201);
+    await expectBoth({
+      lastPaymentAt: unattributedDate.toISOString(),
+      lastPaymentAmount: "5.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
     });
 
     // Applying existing credit receives no money, so it is not a payment.
@@ -4045,7 +4117,7 @@ maybe("statement payment sessions (db integration)", () => {
         receivedAmount: 0,
         existingCreditAmount: 5,
         paymentMethod: "check",
-        paymentDate: new Date(directPaidAt.getTime() + 2_000).toISOString(),
+        paymentDate: new Date(unattributedDate.getTime() + 2_000).toISOString(),
         idempotencyKey: rid("last_payment_credit_only"),
         applications: [{ invoiceId: thirdInvoice.id, amount: 0, creditAmount: 5 }],
       });
@@ -4054,8 +4126,13 @@ maybe("statement payment sessions (db integration)", () => {
       accountNumber,
       city: "Austin",
       state: "TX",
-      lastPaymentAt: directPaidAt.toISOString(),
-      lastPaymentAmount: "10.00",
+      lastPaymentAt: unattributedDate.toISOString(),
+      lastPaymentAmount: "5.00",
+      doctorLastPayments: [{
+        doctorIdentity: "dr. live",
+        lastPaymentAt: backdated.toISOString(),
+        lastPaymentAmount: "20.00",
+      }],
     });
   });
 

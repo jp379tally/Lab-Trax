@@ -46,7 +46,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-itero-link");
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-itero-link", "case-media");
 
 // Hoisted spies so the vi.mock factories below can reference them.
 const { mockChatCreate, mockConvertPdf, mockWriteCaseMediaToObjectStorage } =
@@ -88,7 +88,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-itero-link"),
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-itero-link", "case-media"),
   extractMediaFileName: () => null,
 }));
 vi.mock("../lib/case-media-object-storage.js", () => ({

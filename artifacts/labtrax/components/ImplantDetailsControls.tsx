@@ -4,13 +4,27 @@ import { useQueryClient } from "@tanstack/react-query";
 import { IMPLANT_FIELDS, IMPLANT_RETENTIONS, IMPLANT_MANUFACTURERS, IMPLANT_PLATFORM_PLACEHOLDER, type ImplantDetails } from "@workspace/case-taxonomy";
 import { useTheme } from "@/lib/theme-context";
 import { resilientFetch } from "@/lib/query-client";
+import { CaseDetailField, CaseDetailSelect, CaseDetailOptions, caseDetailFieldStyles } from "@/components/case-detail/CaseDetailField";
 
-export function ImplantDetailsControls({ value, onChange, disabled = false }: {
+export function ImplantDetailsControls({ value, onChange, disabled = false, fieldLayout = "standard" }: {
   value: ImplantDetails; onChange: (value: ImplantDetails) => void; disabled?: boolean;
+  fieldLayout?: "standard" | "overview";
 }) {
   const { colors } = useTheme();
   const [open, setOpen] = useState<string | null>(null);
   function picker(field: "implantRetention" | "implantManufacturer", label: string, options: readonly string[]) {
+    if (fieldLayout === "overview") return <View style={{ width: "100%", minWidth: 0, gap: 4 }}>
+      <CaseDetailSelect label={label} valueLabel={value[field] || "—"}
+        testID={`overview-${field}-select`} expanded={open === field} disabled={disabled}
+        onPress={() => setOpen(open === field ? null : field)} />
+      {open === field ? <CaseDetailOptions label={label}
+        options={["", ...new Set([...options, ...(value[field] ? [value[field]!] : [])])].map((option) => ({ key: option, label: option || "None" }))}
+        selected={value[field] || ""} disabled={disabled} optionTestID={(key) => `overview-${field}-${key || "none"}`}
+        onSelect={(key) => {
+          setOpen(null);
+          if (key !== (value[field] || "")) onChange({ ...value, [field]: key || null });
+        }} /> : null}
+    </View>;
     return <View style={{ gap: 6 }}>
       <Text style={{ color: colors.textSecondary }}>{label}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, expanded: open === field }}
@@ -29,7 +43,7 @@ export function ImplantDetailsControls({ value, onChange, disabled = false }: {
   return <View style={{ width: "100%", gap: 12, paddingVertical: 8 }} testID="implant-details-controls">
     {picker("implantRetention", "Implant Retention", IMPLANT_RETENTIONS)}
     {picker("implantManufacturer", "Implant Manufacturer", IMPLANT_MANUFACTURERS)}
-    <Text style={{ color: colors.textSecondary }}>Implant Platform Notes</Text>
+    <Text style={[{ color: colors.textSecondary }, fieldLayout === "overview" && caseDetailFieldStyles.heading]}>Implant Platform Notes</Text>
     <TextInput accessibilityLabel="Implant Platform Notes" testID="implant-platform-notes" value={value.implantPlatformNotes ?? ""}
       onChangeText={(text) => onChange({ ...value, implantPlatformNotes: text || null })} editable={!disabled} multiline maxLength={10000}
       placeholder={IMPLANT_PLATFORM_PLACEHOLDER} placeholderTextColor={colors.textTertiary}
@@ -37,8 +51,9 @@ export function ImplantDetailsControls({ value, onChange, disabled = false }: {
   </View>;
 }
 
-export function SavedImplantDetails({ row, caseId, canEdit }: {
+export function SavedImplantDetails({ row, caseId, canEdit, fieldLayout = "standard" }: {
   row: ImplantDetails & { id?: string | null; toothNumber?: string | null }; caseId: string; canEdit: boolean;
+  fieldLayout?: "standard" | "overview";
 }) {
   const { colors } = useTheme();
   const qc = useQueryClient();
@@ -73,10 +88,14 @@ export function SavedImplantDetails({ row, caseId, canEdit }: {
   return <View style={{ gap: 6, width: "100%" }}>
     <Text style={{ color: colors.text, fontWeight: "600" }}>Implant · Tooth {row.toothNumber || "—"}</Text>
     {canEdit && row.id ? <>
-      <ImplantDetailsControls value={draft} onChange={setDraft} disabled={saving} />
+      <ImplantDetailsControls value={draft} onChange={setDraft} disabled={saving} fieldLayout={fieldLayout} />
       <Pressable accessible accessibilityRole="button" accessibilityLabel="Save implant details" accessibilityState={{ disabled: saving || IMPLANT_FIELDS.every((key) => (draft[key] || null) === (confirmed[key] || null)) }} disabled={saving || IMPLANT_FIELDS.every((key) => (draft[key] || null) === (confirmed[key] || null))} onPress={save} style={{ padding: 12 }}>
         <Text style={{ color: colors.tint }}>{saving ? "Saving…" : "Save implant details"}</Text>
       </Pressable>
-    </> : IMPLANT_FIELDS.map((key) => row[key] ? <Text key={key} style={{ color: colors.text }}>{key === "implantRetention" ? "Retention" : key === "implantManufacturer" ? "Implant Manufacturer" : "Implant Platform Notes"}: {row[key]}</Text> : null)}
+    </> : IMPLANT_FIELDS.map((key) => row[key] ? fieldLayout === "overview" ?
+      <CaseDetailField key={key} label={key === "implantRetention" ? "Implant Retention" : key === "implantManufacturer" ? "Implant Manufacturer" : "Implant Platform Notes"}>
+        <Text style={{ color: colors.text }}>{row[key]}</Text>
+      </CaseDetailField> :
+      <Text key={key} style={{ color: colors.text }}>{key === "implantRetention" ? "Retention" : key === "implantManufacturer" ? "Implant Manufacturer" : "Implant Platform Notes"}: {row[key]}</Text> : null)}
   </View>;
 }

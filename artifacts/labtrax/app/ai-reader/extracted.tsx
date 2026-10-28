@@ -316,7 +316,7 @@ export default function AiReaderExtractedScreen() {
   const [toothIndices, setToothIndices] = useState(
     userOverrides.toothIndices !== undefined ? userOverrides.toothIndices : (extracted?.toothIndices ?? ""),
   );
-  const [assignmentRoles, setAssignmentRoles] = useState<Record<string, "Crown" | "Pontic">>(
+  const [assignmentRoles, setAssignmentRoles] = useState<Record<string, "Crown" | "Pontic" | "Veneer">>(
     userOverrides.assignmentRoles ?? Object.fromEntries(readExplicitAiToothAssignments(extracted?.toothAssignments).map((unit) => [unit.toothNumber, unit.restorationType as "Crown" | "Pontic"])),
   );
   const [assignmentValues, setAssignmentValues] = useState<Record<string, ToothAssignmentValues>>({
@@ -342,7 +342,7 @@ export default function AiReaderExtractedScreen() {
   const toothIds = useMemo(() => expandToothIdentifiers(toothIndices), [toothIndices]);
   const requiresExplicitToothRoles =
     normalizeCaseHierarchy({ caseType, material }).hierarchy.caseType === "restorative";
-  function setToothRole(toothId: string, role: "Crown" | "Pontic") {
+  function setToothRole(toothId: string, role: "Crown" | "Pontic" | "Veneer") {
     captureAssignmentUndo();
     const next = { ...assignmentRoles, [toothId]: role };
     setAssignmentRoles(next);
@@ -482,7 +482,7 @@ export default function AiReaderExtractedScreen() {
         const assignedMaterial = assignmentValues[r.toothNumber]?.material ?? material ?? r.material;
         const hasValidAssignment =
           requiresExplicitToothRoles &&
-          /^(Crown|Pontic)$/.test(role ?? "") &&
+          /^(Crown|Pontic|Veneer)$/.test(role ?? "") &&
           !!assignedMaterial?.trim();
         const rowMaterial = hasValidAssignment ? assignedMaterial : r.material;
         const rowShade = hasValidAssignment
@@ -546,7 +546,7 @@ export default function AiReaderExtractedScreen() {
     const values = { ...assignmentValues };
     const teeth = new Set(toothIds);
     if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
-      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : "Crown";
+      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : payload.restorationType === "Veneer" ? "Veneer" : "Crown";
       values[payload.toothId] = { material: payload.material, shade: payload.shade ?? "", restorationSubtype: payload.restorationSubtype };
       teeth.add(payload.toothId);
     } else if (payload.kind === "change_role") roles[payload.toothId] = payload.role;
@@ -2260,9 +2260,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               </Text>
               <ToothChart
                 readOnly={false}
-                selected={new Set(toothIds)}
+                selected={activeAssignmentTooth ? new Set([activeAssignmentTooth]) : undefined}
                 crownTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Crown"))}
                 ponticTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Pontic"))}
+                veneerTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Veneer"))}
                 connectedPairs={draftConnectorState.active}
                 connectorSuggestions={draftConnectorState.suggested}
                 connectorIssue={!draftConnectorValidation.valid ? draftConnectorValidation.errors.join(" ") : draftAssignmentSummary.unresolvedPontics.length ? `Review pontics ${draftAssignmentSummary.unresolvedPontics.join(", ")}` : null}
@@ -2478,6 +2479,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                 {isAdminForSelectedLab && editedLines !== null ? (
                   /* Admin: full-line editable table */
                   <>
+                    {!invoicePreviewLoading && !invoicePreviewError && editedLines.length === 0 &&
+                      (invoicePreview?.lineItems?.length ?? 0) === 0 && (
+                        <Text style={styles.invoiceMuted}>No billable line items were found in the prescription.</Text>
+                      )}
                     {editedLines.map((line) => {
                       const lineTotal = (Number(line.qty) || 0) * (Number(line.unitPrice) || 0);
                       return (

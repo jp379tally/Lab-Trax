@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { AuthContext, type AuthContextValue } from "@/lib/auth-context";
+import { clearSessionSecret, setSessionSecret } from "@/lib/platform-admin-session";
 
 export function makeQueryClient() {
   return new QueryClient({
@@ -68,10 +69,20 @@ export function makeWrapper(initialPath = "/", queryClient = makeQueryClient()) 
 export function makeAuthWrapper(
   initialPath = "/",
   authOverrides: Partial<AuthContextValue> = {},
+  options: { adminSettingsPin?: string | null } = {},
 ) {
   const queryClient = makeQueryClient();
   const { hook } = memoryLocation({ path: initialPath });
   const authValue: AuthContextValue = { ...MOCK_AUTH_DEFAULTS, ...authOverrides };
+  const isAdminSettingsRoute =
+    initialPath.startsWith("/settings") && authValue.user?.role === "admin";
+  clearSessionSecret();
+  const fixturePin = options.adminSettingsPin === undefined
+    ? isAdminSettingsRoute
+      ? "1234"
+      : null
+    : options.adminSettingsPin;
+  if (fixturePin) setSessionSecret(fixturePin);
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>

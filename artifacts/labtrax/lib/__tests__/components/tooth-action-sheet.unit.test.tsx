@@ -49,6 +49,29 @@ async function renderSheet(
 // ─── Crown wizard ─────────────────────────────────────────────────────────────
 
 describe("ToothActionSheet — crown wizard", () => {
+  it("labels and saves the existing assignment's veneer role explicitly", async () => {
+    const { getByText, onConfirm } = await renderSheet({
+      existingLabel: "Crown", existingRestorationId: "rest-14",
+      existingAssignment: { toothNumber: "14", restorationType: "Crown", material: "Zirconia", shade: "A2" },
+    });
+    await fireEvent.press(getByText("Veneer"));
+    await fireEvent.press(getByText("Save role"));
+    expect(onConfirm).toHaveBeenCalledWith({
+      kind: "change_role", role: "Veneer", restorationId: "rest-14", toothId: "14",
+    });
+  });
+  it("assigns a veneer with its material and shade without changing it into a crown", async () => {
+    const { getByTestId, onConfirm } = await renderSheet();
+    await fireEvent.press(getByTestId("tooth-kind-veneer"));
+    await fireEvent.press(getByTestId("tooth-material-Lithium Disilicate (Emax)"));
+    await fireEvent.press(getByTestId("tooth-material-next"));
+    await fireEvent.press(getByTestId("tooth-shade-A1"));
+    await fireEvent.press(getByTestId("tooth-shade-confirm"));
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "add_crown", restorationType: "Veneer", toothId: "14",
+      material: "Lithium Disilicate (Emax)", shade: "A1",
+    }));
+  });
   it("renders the kind-selection step initially", async () => {
     const { getByTestId } = await renderSheet();
     expect(getByTestId("tooth-kind-crown")).toBeTruthy();

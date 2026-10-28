@@ -317,17 +317,6 @@ maybe("Join-a-lab flow (db integration)", () => {
         .send({ username });
       expect(blockedUsername.status).toBe(429);
 
-      const email = `rate-${randomBytes(4).toString("hex")}@example.com`;
-      for (let i = 0; i < 5; i++) {
-        const response = await request(appMod.default)
-          .get(`/api/auth/check-email?email=${encodeURIComponent(email)}`)
-          .set("X-Forwarded-For", "198.51.100.79");
-        expect(response.status).toBe(200);
-      }
-      const blockedEmail = await request(appMod.default)
-        .get(`/api/auth/check-email?email=${encodeURIComponent(email)}`)
-        .set("X-Forwarded-For", "198.51.100.79");
-      expect(blockedEmail.status).toBe(429);
     } finally {
       if (savedVitest === undefined) delete process.env.VITEST;
       else process.env.VITEST = savedVitest;

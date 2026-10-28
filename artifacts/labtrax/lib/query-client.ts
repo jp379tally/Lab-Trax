@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { isUnauthenticatedPath } from "./unauthenticated-paths";
+import { clearAdminSettingsPin, getAdminSettingsPin } from "./admin-settings-pin";
 
 let cachedBaseUrl: string | null = null;
 
@@ -221,6 +222,7 @@ export async function saveTokens(accessToken: string, refreshToken: string) {
 export async function clearTokens() {
   _accessToken = null;
   _refreshToken = null;
+  clearAdminSettingsPin();
   // Reset the singleton so a post-logout loadTokens() starts fresh. Without
   // this reset, the resolved hydration promise would short-circuit the next
   // SecureStore read, preventing a re-authenticated user from loading their
@@ -453,6 +455,10 @@ async function resilientFetch(
   const primaryUrl = getApiUrl();
   const primaryFullUrl = new URL(path, primaryUrl).toString();
   const authedOptions = injectAuthHeaders(options) as any;
+  if (/\/api\/admin\//.test(path)) {
+    const pin = getAdminSettingsPin();
+    if (pin) authedOptions.headers.set("X-Platform-Admin-Pin", pin);
+  }
 
   try {
     let res = await fetch(primaryFullUrl, authedOptions);

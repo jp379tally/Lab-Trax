@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { cleanupPaymentFixtures } from "../test-utils/payment-cleanup.js";
+import { logger } from "./logger.js";
 
 const {
   paymentIntentCreate,
@@ -218,6 +219,7 @@ maybe("provider auto-pay scheduler (db integration)", () => {
         })
         .returning({ id: tables.invoices.id })
     ).map((row) => row.id);
+
   });
 
   afterEach(async () => {
@@ -282,8 +284,12 @@ maybe("provider auto-pay scheduler (db integration)", () => {
     const { runProviderAutoPayJob } = await import("./billing-jobs.js");
 
     const reminderDay = new Date("2026-09-04T12:00:00.000Z");
+    const schedulerErrors = vi.spyOn(logger, "error");
     await runProviderAutoPayJob(reminderDay);
     await runProviderAutoPayJob(reminderDay);
+    const recordedErrors = schedulerErrors.mock.calls;
+    schedulerErrors.mockRestore();
+    expect(recordedErrors).toEqual([]);
     expect(paymentIntentCreate).not.toHaveBeenCalled();
 
     const reminders = await db
@@ -479,7 +485,7 @@ maybe("provider auto-pay scheduler (db integration)", () => {
       savePaymentMethod: false,
       status: "succeeded",
       stripePaymentIntentId: "pi_already_settled",
-      settledAt: new Date(),
+      settledAt: new Date("2026-09-07T11:00:00.000Z"),
     }).returning();
     const [attempt] = await db.insert(tables.providerAutoPayAttempts).values({
       providerOrganizationId,
@@ -488,10 +494,12 @@ maybe("provider auto-pay scheduler (db integration)", () => {
       scheduledFor: new Date("2026-09-06T00:00:00.000Z"),
       amount: "40.00",
       status: "processing",
+      // Make this abandoned attempt deterministically older than the stale cutoff.
+      updatedAt: new Date("2026-09-07T11:00:00.000Z"),
     }).returning();
     const { reconcileStaleProviderAutoPayAttempts } = await import("./billing-jobs.js");
 
-    await reconcileStaleProviderAutoPayAttempts(new Date(), 0);
+    await reconcileStaleProviderAutoPayAttempts(new Date("2026-09-07T12:00:00.000Z"));
 
     const [recovered] = await db.select().from(tables.providerAutoPayAttempts)
       .where(eq(tables.providerAutoPayAttempts.id, attempt.id));

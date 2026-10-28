@@ -36,7 +36,7 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import AdmZip from "adm-zip";
 
-const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-ai-repair");
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-ai-repair", "case-media");
 
 // Hoisted spies so vi.mock factories can reference them.
 const { mockChatCreate, mockFilesCreate, mockConvertPdf, mockWriteObjectStorage } =
@@ -70,7 +70,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-repair"),
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-repair", "case-media"),
   extractMediaFileName: () => null,
   extractMediaFilenamesFromText: () => [],
 }));

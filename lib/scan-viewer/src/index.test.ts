@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  arrayBufferToBase64,
   PARSERS_AND_HELPERS_JS,
   buildThumbnailHtml,
   buildViewerHtml,
@@ -11,19 +12,27 @@ import {
 // (atob, TextDecoder, DataView, typed arrays); window-touching helpers
 // (postMsg/postError) are defined but never invoked by the parser path.
 const factory = new Function(
-  `${PARSERS_AND_HELPERS_JS}\nreturn { parsePLY: parsePLY, parseScanBuffer: parseScanBuffer };`,
+  `${PARSERS_AND_HELPERS_JS}\nreturn { parsePLY: parsePLY, parseScanBuffer: parseScanBuffer, scanFallbackStatus: scanFallbackStatus };`,
 );
-const { parsePLY, parseScanBuffer } = factory() as {
+const { parsePLY, parseScanBuffer, scanFallbackStatus } = factory() as {
   parsePLY: (buf: ArrayBuffer) => {
     vertices: Float32Array;
     normals: Float32Array;
     colors?: Float32Array;
+    uvs?: Float32Array;
     colorWarning?: string;
+    textureDeclared?: boolean;
+    textureFileName?: string;
   } | null;
   parseScanBuffer: (
     buf: ArrayBuffer,
     format: string,
   ) => { vertices: Float32Array; colors?: Float32Array; uvs?: Float32Array } | null;
+  scanFallbackStatus: (
+    parsed: { textureDeclared?: boolean; textureFileName?: string },
+    hasColor: boolean,
+    reason: "missing" | "unmapped" | "unreadable" | "none" | null,
+  ) => string | null;
 };
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -72,6 +81,47 @@ const ASCII_NO_COLOR_PLY = [
   "1 0 0",
   "0 1 0",
   "3 0 1 2",
+  "",
+].join("\n");
+
+const ASCII_TEXTURE_PLY = [
+  "ply",
+  "format ascii 1.0",
+  "comment TextureFile dental-texture.jpg",
+  "element vertex 3",
+  "property float x",
+  "property float y",
+  "property float z",
+  "element face 1",
+  "property list uchar int vertex_indices",
+  "property list uchar float texcoord",
+  "end_header",
+  "0 0 0",
+  "1 0 0",
+  "0 1 0",
+  "3 0 1 2 6 0 0 1 0 0 1",
+  "",
+].join("\n");
+
+const ASCII_TEXTURED_COLOR_PLY = [
+  "ply",
+  "format ascii 1.0",
+  "comment TextureFile synthetic-texture.jpg",
+  "element vertex 3",
+  "property float x",
+  "property float y",
+  "property float z",
+  "property uchar red",
+  "property uchar green",
+  "property uchar blue",
+  "element face 1",
+  "property list uchar int vertex_indices",
+  "property list uchar float texcoord",
+  "end_header",
+  "0 0 0 220 190 170",
+  "1 0 0 205 175 155",
+  "0 1 0 235 210 190",
+  "3 0 1 2 6 0 0 1 0 0 1",
   "",
 ].join("\n");
 
@@ -225,6 +275,83 @@ describe("parsePLY vertex colors", () => {
     );
     expect(result!.colors).toBeInstanceOf(Float32Array);
     expect(Array.from(result!.colors!)).toEqual(EXPECTED_COLORS);
+  });
+});
+
+describe("parsePLY texture declaration and fallback status", () => {
+  it("retains one safe TextureFile name and usable UV coordinates", () => {
+    const parsed = parsePLY(asciiToArrayBuffer(ASCII_TEXTURE_PLY));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.textureDeclared).toBe(true);
+    expect(parsed!.textureFileName).toBe("dental-texture.jpg");
+    expect(parsed!.uvs).toBeInstanceOf(Float32Array);
+    expect(parsed!.colors).toBeUndefined();
+  });
+
+  it("preserves vertex colors alongside a declared texture and UVs", () => {
+    const parsed = parsePLY(asciiToArrayBuffer(ASCII_TEXTURED_COLOR_PLY));
+    expect(parsed?.textureFileName).toBe("synthetic-texture.jpg");
+    expect(parsed?.uvs).toBeInstanceOf(Float32Array);
+    const expectedColors = [
+      220 / 255, 190 / 255, 170 / 255,
+      205 / 255, 175 / 255, 155 / 255,
+      235 / 255, 210 / 255, 190 / 255,
+    ];
+    Array.from(parsed!.colors!).forEach((value, index) => {
+      expect(value).toBeCloseTo(expectedColors[index]!, 6);
+    });
+    expect(
+      scanFallbackStatus(parsed!, true, "missing"),
+    ).toBe(
+      'Declared texture "synthetic-texture.jpg" is unavailable; using vertex colors.',
+    );
+    const viewer = buildViewerHtml(
+      arrayBufferToBase64(asciiToArrayBuffer(ASCII_TEXTURED_COLOR_PLY)),
+      "ply",
+      { base64: "aGVsbG8=", mimeType: "image/jpeg" },
+    );
+    expect(viewer).toContain("vertexColors:true");
+    expect(viewer).toContain("map:tex");
+  });
+
+  it("does not retain unsafe or ambiguous texture declarations", () => {
+    const unsafe = ASCII_TEXTURE_PLY.replace(
+      "dental-texture.jpg",
+      "../private.jpg",
+    );
+    expect(parsePLY(asciiToArrayBuffer(unsafe))?.textureFileName).toBeUndefined();
+
+    const repeated = ASCII_TEXTURE_PLY.replace(
+      "comment TextureFile dental-texture.jpg",
+      "comment TextureFile dental-texture.jpg\ncomment TextureFile second.jpg",
+    );
+    expect(parsePLY(asciiToArrayBuffer(repeated))?.textureFileName).toBeUndefined();
+  });
+
+  it("distinguishes an unavailable declared texture from absent mesh colors", () => {
+    const coloredViewer = buildViewerHtml("cGx5", "ply");
+    const colorlessViewer = buildViewerHtml("cGx5", "ply");
+    expect(coloredViewer).toContain("Declared texture");
+    expect(colorlessViewer).toContain("No mesh color data; showing neutral mesh.");
+    expect(coloredViewer).toContain('id="notice" role="status" aria-live="polite"');
+    expect(
+      scanFallbackStatus(
+        { textureDeclared: true, textureFileName: "dental-texture.jpg" },
+        true,
+        "missing",
+      ),
+    ).toBe('Declared texture "dental-texture.jpg" is unavailable; using vertex colors.');
+    expect(
+      scanFallbackStatus({ textureDeclared: true }, false, "missing"),
+    ).toBe(
+      "Declared texture is unavailable; using neutral mesh; no mesh color data is present.",
+    );
+    expect(scanFallbackStatus({}, false, "none")).toBe(
+      "No mesh color data; showing neutral mesh.",
+    );
+    expect(scanFallbackStatus({}, true, "unreadable")).toBe(
+      "Texture could not be loaded; using vertex colors.",
+    );
   });
 });
 
@@ -599,7 +726,26 @@ describe("textured viewer HTML safety and material setup", () => {
       expect(html).toContain("TextureLoader");
       expect(html).toContain("data:image/png;base64,aGVsbG8=");
       expect(html).toContain("SRGBColorSpace");
-      expect(html).not.toContain("TextureFile");
+      expect(html).toContain("TEXTURE_URI=\"data:image/png;base64,aGVsbG8=\"");
+      expect(html).toContain("AmbientLight(0xffffff,0.8)");
+      expect(html).toContain("DirectionalLight(0xffffff,0.15)");
+      expect(html).toContain("DirectionalLight(0x88aaff,0.05)");
+      expect(html).toContain("shininess:10");
+      expect(html).toContain("specular:0x222222");
+    }
+  });
+
+  it("uses readable, low-glare lights and materials for the neutral formats", () => {
+    for (const html of [
+      buildViewerHtml("c3Rs", "stl"),
+      buildViewerHtml("b2Jq", "obj"),
+      buildViewerHtml("cGx5", "ply"),
+      buildThumbnailHtml("c3Rs", "stl"),
+      buildThumbnailHtml("b2Jq", "obj"),
+      buildThumbnailHtml("cGx5", "ply"),
+    ]) {
+      expect(html).toContain("AmbientLight(0xffffff,0.8)");
+      expect(html).toContain("color:0xe2e8f0,specular:0x222222,shininess:15");
     }
   });
 

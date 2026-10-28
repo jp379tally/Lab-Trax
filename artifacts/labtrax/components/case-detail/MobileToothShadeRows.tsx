@@ -6,7 +6,6 @@ import {
   Text,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   getGetVocabularyQueryKey,
@@ -17,6 +16,7 @@ import {
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { useTheme } from "@/lib/theme-context";
 import { deriveRxSummary, formatRxTeethLabel } from "@/lib/rx-summary";
+import { CaseDetailSelect, CaseDetailOptions, caseDetailFieldStyles } from "./CaseDetailField";
 
 export interface MobileToothShadeRowsProps {
   restorations: ReadonlyArray<ToothShadeRestoration> | null | undefined;
@@ -198,99 +198,19 @@ function ToothShadeRow({
 
   return (
     <View style={styles.row} testID={`tooth-shade-row-${restoration.id ?? "missing-id"}`}>
-      <View style={styles.rowTop}>
-        <Text
-          style={[
-            Typography.bodySemibold,
-            styles.toothLabel,
-            { color: colors.text },
-          ]}
-          testID={`tooth-shade-label-${restoration.id ?? "missing-id"}`}
-        >
-          {label}
-        </Text>
-        {canEdit ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Shade for ${label}`}
-            testID={`tooth-shade-select-${restoration.id ?? "missing-id"}`}
-            disabled={pending}
-            onPress={() => setExpanded((value) => !value)}
-            style={[
-              styles.select,
-              {
-                backgroundColor: colors.surfaceSecondary,
-                borderColor: error ? colors.error : colors.border,
-                opacity: pending ? 0.65 : 1,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                Typography.body,
-                { color: selectedShade ? colors.text : colors.textTertiary },
-              ]}
-              numberOfLines={1}
-            >
-              {selectedShade || "— No shade —"}
-            </Text>
-            {pending ? (
-              <ActivityIndicator size="small" color={colors.tint} />
-            ) : (
-              <Ionicons
-                name={expanded ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={colors.textSecondary}
-              />
-            )}
-          </Pressable>
-        ) : (
-          <Text
-            style={[Typography.body, { color: colors.textSecondary }]}
-            testID={`tooth-shade-value-${restoration.id ?? "missing-id"}`}
-          >
-            {selectedShade || "—"}
-          </Text>
-        )}
-      </View>
+      <CaseDetailSelect label={label} accessibilityLabel={`Shade for ${label}`}
+        labelTestID={`tooth-shade-label-${restoration.id ?? "missing-id"}`}
+        testID={`tooth-shade-select-${restoration.id ?? "missing-id"}`}
+        valueTestID={`tooth-shade-value-${restoration.id ?? "missing-id"}`}
+        valueLabel={selectedShade || (canEdit ? "— No shade —" : "—")}
+        expanded={expanded} busy={pending} invalid={!!error}
+        onPress={canEdit ? () => setExpanded((value) => !value) : undefined} />
 
       {expanded && canEdit && !pending ? (
-        <View
-          style={[
-            styles.options,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Pressable
-            accessibilityRole="button"
-            testID={`tooth-shade-option-clear-${restoration.id ?? "missing-id"}`}
-            onPress={() => void saveShade("")}
-            style={styles.option}
-          >
-            <Text style={[Typography.body, { color: colors.textSecondary }]}>
-              — No shade —
-            </Text>
-            {!selectedShade ? (
-              <Ionicons name="checkmark" size={16} color={colors.tint} />
-            ) : null}
-          </Pressable>
-          {options.map((option) => (
-            <Pressable
-              accessibilityRole="button"
-              key={option}
-              testID={`tooth-shade-option-${restoration.id ?? "missing-id"}-${option}`}
-              onPress={() => void saveShade(option)}
-              style={styles.option}
-            >
-              <Text style={[Typography.body, { color: colors.text }]}>
-                {option}
-              </Text>
-              {selectedShade === option ? (
-                <Ionicons name="checkmark" size={16} color={colors.tint} />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
+        <CaseDetailOptions label={`Shade for ${label}`}
+          options={[{ key: "", label: "— No shade —" }, ...options.map((option) => ({ key: option, label: option }))]}
+          selected={selectedShade} onSelect={(value) => void saveShade(value)}
+          optionTestID={(value) => value ? `tooth-shade-option-${restoration.id ?? "missing-id"}-${value}` : `tooth-shade-option-clear-${restoration.id ?? "missing-id"}`} />
       ) : null}
       {error ? (
         <Text
@@ -368,8 +288,8 @@ export function MobileToothShadeRows({
     <View style={styles.container} testID="mobile-tooth-shade-rows">
       <Text
         style={[
-          Typography.label,
-          { color: colors.textSecondary, marginBottom: Spacing.xs },
+          caseDetailFieldStyles.heading,
+          { color: colors.text, marginBottom: Spacing.xs },
         ]}
       >
         Tooth / Shade
@@ -391,6 +311,7 @@ export function MobileToothShadeRows({
             accessibilityRole="button"
             accessibilityLabel="Retry loading lab shades"
             testID="tooth-shade-vocabulary-retry"
+            style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: Spacing.sm }}
             onPress={() => void vocabularyQuery.refetch()}
           >
             <Text style={[Typography.caption, { color: colors.tint }]}>Retry</Text>
@@ -440,42 +361,8 @@ export function MobileToothShadeRows({
 
 function makeStyles(colors: ReturnType<typeof useTheme>["colors"]) {
   return StyleSheet.create({
-    container: { gap: Spacing.xs },
-    row: { gap: Spacing.xs, paddingVertical: Spacing.xs },
-    rowTop: {
-      minHeight: 40,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: Spacing.sm,
-    },
-    toothLabel: { flex: 1 },
-    select: {
-      minWidth: 132,
-      maxWidth: "58%",
-      minHeight: 40,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderRadius: Radius.sm,
-      paddingHorizontal: Spacing.sm,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: Spacing.sm,
-    },
-    options: {
-      borderWidth: StyleSheet.hairlineWidth,
-      borderRadius: Radius.sm,
-      overflow: "hidden",
-    },
-    option: {
-      minHeight: 40,
-      paddingHorizontal: Spacing.md,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
-    },
+    container: { width: "100%", minWidth: 0, gap: Spacing.sm },
+    row: { width: "100%", minWidth: 0, gap: Spacing.xs, paddingVertical: Spacing.xs },
     vocabularyStatus: {
       flexDirection: "row",
       alignItems: "center",

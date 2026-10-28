@@ -224,8 +224,9 @@ function quoteLiteral(value: string): string {
 }
 
 /**
- * Idempotent DDL that installs the ownership guard. Safe to run on every boot
- * and on a database where the tables do not exist yet.
+ * Idempotent DDL that installs or verifies the ownership guard. Healthy
+ * triggers are not dropped and recreated on every boot because that requires
+ * an ACCESS EXCLUSIVE lock on each guarded table.
  */
 export function buildOwningOrganizationGuardSql(
   columns: readonly EnforcedOwningOrganizationColumn[] = ENFORCED_OWNING_ORGANIZATION_COLUMNS,
@@ -246,8 +247,32 @@ export function buildOwningOrganizationGuardSql(
           `${quoteLiteral(entry.column)}, ${quoteLiteral(entry.describes)})`,
       );
       return `  IF to_regclass('public.${entry.table}') IS NOT NULL THEN
-    EXECUTE ${dropSql};
-    EXECUTE ${createSql};
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid = to_regclass('public.${entry.table}')
+        AND t.tgname = ${quoteLiteral(entry.triggerName)}
+        AND t.tgfoid = ${quoteLiteral(`${OWNING_ORGANIZATION_GUARD_FUNCTION}()`)}::regprocedure
+        AND t.tgtype = 23
+        AND t.tgenabled IN ('O', 'A')
+        AND t.tgqual IS NULL
+        AND t.tgnargs = 2
+        AND t.tgargs = decode(
+          encode(convert_to(${quoteLiteral(entry.column)}, 'UTF8'), 'hex') || '00' ||
+          encode(convert_to(${quoteLiteral(entry.describes)}, 'UTF8'), 'hex') || '00',
+          'hex'
+        )
+        AND t.tgattr::text = (
+          SELECT a.attnum::text
+          FROM pg_attribute a
+          WHERE a.attrelid = t.tgrelid
+            AND a.attname = ${quoteLiteral(entry.column)}
+            AND NOT a.attisdropped
+        )
+        AND NOT t.tgisinternal
+    ) THEN
+      EXECUTE ${dropSql};
+      EXECUTE ${createSql};
+    END IF;
   END IF;`;
     })
     .join("\n");
@@ -350,14 +375,27 @@ BEGIN
     RETURN;
   END IF;
 ${installs}
-  EXECUTE ${quoteLiteral(
-    `DROP TRIGGER IF EXISTS ${quoteIdentifier(OWNING_ORGANIZATION_PARENT_GUARD_TRIGGER)} ON public.organizations`,
-  )};
-  EXECUTE ${quoteLiteral(
-    `CREATE TRIGGER ${quoteIdentifier(OWNING_ORGANIZATION_PARENT_GUARD_TRIGGER)} ` +
-      `BEFORE DELETE ON public.organizations FOR EACH ROW ` +
-      `EXECUTE FUNCTION ${OWNING_ORGANIZATION_PARENT_GUARD_FUNCTION}()`,
-  )};
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = 'public.organizations'::regclass
+      AND t.tgname = ${quoteLiteral(OWNING_ORGANIZATION_PARENT_GUARD_TRIGGER)}
+      AND t.tgfoid = ${quoteLiteral(`${OWNING_ORGANIZATION_PARENT_GUARD_FUNCTION}()`)}::regprocedure
+      AND t.tgtype = 11
+      AND t.tgenabled IN ('O', 'A')
+      AND t.tgqual IS NULL
+      AND t.tgnargs = 0
+      AND cardinality(t.tgattr) = 0
+      AND NOT t.tgisinternal
+  ) THEN
+    EXECUTE ${quoteLiteral(
+      `DROP TRIGGER IF EXISTS ${quoteIdentifier(OWNING_ORGANIZATION_PARENT_GUARD_TRIGGER)} ON public.organizations`,
+    )};
+    EXECUTE ${quoteLiteral(
+      `CREATE TRIGGER ${quoteIdentifier(OWNING_ORGANIZATION_PARENT_GUARD_TRIGGER)} ` +
+        `BEFORE DELETE ON public.organizations FOR EACH ROW ` +
+        `EXECUTE FUNCTION ${OWNING_ORGANIZATION_PARENT_GUARD_FUNCTION}()`,
+    )};
+  END IF;
 END
 $owning_org_setup$;
 `.trim();

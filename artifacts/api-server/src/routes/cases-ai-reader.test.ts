@@ -30,7 +30,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-ai");
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-ai", "case-media");
 
 // Hoist the spy so it is available inside vi.mock's factory.
 const { mockWriteCaseMediaToObjectStorage, mockExtractMediaFileName } = vi.hoisted(() => ({
@@ -45,7 +45,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-ai"),
+  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-ai", "case-media"),
   extractMediaFileName: mockExtractMediaFileName,
 }));
 // Spy on the object-storage mirror so tests can assert it is called without
@@ -526,49 +526,39 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     try { fs.unlinkSync(rxFile2); } catch { /* ignore */ }
   });
 
-  it("POST /api/cases/import-from-itero-rx: with dueDateHint sets expectedDeliveryDate to null", async () => {
-    // Regression guard: when the iTero Rx carries an explicit due date (via
-    // AI extraction or the dueDateHint fallback), expectedDeliveryDate must be
-    // stored as null so the cases list shows dueDate directly rather than an
-    // auto-calculated estimate.  This is the guard that would have caught the
-    // bug where expectedDeliveryDate overrode dueDate on the iTero single-file path.
+  it.each([
+    { name: "legacy dueDateHint", hints: { dueDateHint: "2026-09-30" }, labDate: "2026-09-30", rxDate: "2026-09-30" },
+    { name: "reviewed fields override legacy hint", hints: { dueDateHint: "2026-09-30", rxDueDateHint: "2026-08-29", labDueDateHint: "2026-09-03" }, labDate: "2026-09-03", rxDate: "2026-08-29" },
+    { name: "explicit reviewed clears", hints: { dueDateHint: "2026-09-30", rxDueDateHint: "", labDueDateHint: "" }, labDate: null, rxDate: null },
+    { name: "invalid legacy date", hints: { dueDateHint: "not-a-date" }, labDate: null, rxDate: null },
+  ])("POST /api/cases/import-from-itero-rx: preserves $name", async ({ hints, labDate, rxDate }) => {
     const adminToken = await makeSession(adminUserId);
-    const orderId = rid("order_edd");
     const rxFile = makeTempRxFile();
-    const explicitDue = "2026-09-30";
-
-    const r = await request(appMod.default)
+    const pending = request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
       .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile, "rx.pdf")
-      .field("iteroOrderId", orderId)
+      .field("iteroOrderId", rid("order_edd"))
       .field("labOrganizationId", labOrgId)
-      .field("providerOrganizationId", providerOrgId)
-      .field("dueDateHint", explicitDue);
-
-    expect(r.status).toBe(201);
-    const caseId = r.body.data.caseId as string;
+      .field("providerOrganizationId", providerOrgId);
+    for (const [key, value] of Object.entries(hints)) pending.field(key, value!);
+    const result = await pending;
+    expect(result.status).toBe(201);
+    const caseId = result.body.data.caseId as string;
     expect(caseId).toBeTruthy();
-
     const { db, cases } = dbMod as any;
-    const [row] = await db
-      .select({
-        dueDate: cases.dueDate,
-        expectedDeliveryDate: cases.expectedDeliveryDate,
-      })
-      .from(cases)
-      .where(eq(cases.id, caseId));
-
-    // An explicitly supplied due date means expectedDeliveryDate must be null.
-    expect(
-      row.expectedDeliveryDate,
-      "expectedDeliveryDate must be null when a dueDate is supplied via dueDateHint",
-    ).toBeNull();
-    // The supplied date must be reflected in dueDate.
-    const dueDateIso =
-      row.dueDate instanceof Date ? row.dueDate.toISOString() : String(row.dueDate);
-    expect(dueDateIso).toMatch(/^2026-09-30/);
-
+    const [row] = await db.select({
+      dueDate: cases.dueDate, prescriptionDueDate: cases.prescriptionDueDate,
+      expectedDeliveryDate: cases.expectedDeliveryDate,
+    }).from(cases).where(eq(cases.id, caseId));
+    expect(row.prescriptionDueDate).toBe(rxDate);
+    if (labDate) {
+      expect(new Date(row.dueDate).toISOString().slice(0, 10)).toBe(labDate);
+      expect(row.expectedDeliveryDate).toBeNull();
+    } else {
+      expect(row.dueDate).toBeNull();
+      expect(row.expectedDeliveryDate).toBeTruthy();
+    }
     await cleanCase(caseId);
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
   });

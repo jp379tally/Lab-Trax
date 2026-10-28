@@ -574,7 +574,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     const pane = await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     fireEvent.click(screen.getByTestId("case-details-edit"));
     const firstName = screen.getByPlaceholderText("Patient first name");
     fireEvent.change(firstName, { target: { value: "Unsaved name" } });
@@ -615,7 +615,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     await screen.findByText("Location Changed");
-    fireEvent.click(screen.getByRole("button", { name: "Notes" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Notes" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled());
@@ -624,7 +624,7 @@ describe("Cases workbench", () => {
     expect(screen.queryByText("Case History")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("case-row-c2"));
     expect(await screen.findByText("No activity logged yet.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
     fireEvent.click(screen.getByRole("button", { name: "Close case drawer" }));
     await waitFor(() => expect(screen.queryByTestId("case-drawer")).not.toBeInTheDocument());
     fireEvent.click(screen.getByTestId("case-row-c2"));
@@ -649,7 +649,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add manually" }));
     fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
     fireEvent.click(screen.getByRole("button", { name: "Add restoration" }));
@@ -673,7 +673,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     const pane = await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add manually" }));
     fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
     fireEvent.click(screen.getByRole("button", { name: "Add restoration" }));
@@ -704,7 +704,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add manually" }));
     fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
     fireEvent.click(screen.getByRole("button", { name: "Add restoration" }));
@@ -748,7 +748,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     const pane = await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     fireEvent.click(screen.getByTestId("case-details-edit"));
     const firstName = screen.getByPlaceholderText("Patient first name");
     fireEvent.change(firstName, { target: { value: "Unsaved name" } });
@@ -777,7 +777,7 @@ describe("Cases workbench", () => {
     renderPage();
     fireEvent.click(await screen.findByText("WB-1001"));
     const pane = await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     fireEvent.click(screen.getByTestId("case-details-edit"));
     const firstName = screen.getByPlaceholderText("Patient first name");
     fireEvent.change(firstName, { target: { value: "Draft stays here" } });
@@ -840,7 +840,7 @@ describe("Cases workbench", () => {
     renderPage(true);
     fireEvent.click(await screen.findByText("WB-1001"));
     const pane = await screen.findByTestId("case-drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Invoice" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Invoice" }));
     const notes = await screen.findByLabelText("Notes");
     await waitFor(() => expect(notes).toHaveValue("Saved note"));
     fireEvent.change(notes, { target: { value: "Unsaved invoice note" } });

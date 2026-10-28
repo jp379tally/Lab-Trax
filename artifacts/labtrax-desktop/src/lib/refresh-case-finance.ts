@@ -51,6 +51,13 @@ export async function refreshInvoiceSalesQueries(qc: QueryClient, invoiceId?: st
     qc.invalidateQueries({ queryKey: ["statement-account-summaries"] }),
     qc.invalidateQueries({ queryKey: ["organizations"] }),
     qc.invalidateQueries({ queryKey: ["doctor-invoices"] }),
+    qc.invalidateQueries({ queryKey: ["customer-center-summary"] }),
+    qc.invalidateQueries({ queryKey: ["provider-lab-card"] }),
+    qc.invalidateQueries({ queryKey: ["shared-provider-account"] }),
+    qc.invalidateQueries({ queryKey: ["customer-statement-charges"] }),
+    qc.invalidateQueries({ queryKey: ["practice-statements"] }),
+    qc.invalidateQueries({ queryKey: ["billing", "eligible-invoice-accounts"] }),
+    qc.invalidateQueries({ queryKey: ["billing", "eligible-statement-accounts"] }),
     qc.invalidateQueries({
       predicate: (query) => {
         const first = query.queryKey[0];

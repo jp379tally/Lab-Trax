@@ -1,3 +1,4 @@
+import { writeProductionUpload } from "../lib/production-media-local-write";
 import { Router } from "express";
 import { salesInvoiceScope, salesIssuedDate } from "../lib/sales-invoice-scope";
 import multer from "multer";
@@ -45,6 +46,7 @@ import { releaseBatchesForChildren, releaseBatchForChild } from "../lib/deposit-
 import { writeAuditLog, writeAuditLogTx } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok, wrapDbError } from "../lib/http";
+import { invoiceSharesNotesWithProvider } from "../lib/invoice-note-visibility";
 import { createTransport, getMailerConfig } from "../lib/mailer";
 import { classifySmtpError } from "../lib/smtp-error";
 import {
@@ -85,7 +87,11 @@ import {
 } from "../lib/provider-capabilities";
 import { assertNoActiveCardReversalForInvoices } from "../lib/payment-reversal-guards";
 import { ensureDoctorProfileIdentity } from "../lib/doctor-profile-identity";
-import { assertRecoveryReleased, finalizedInvoiceSql, RECOVERY_DRAFT_STATUS } from "../lib/recovery-billing-hold";
+import {
+  assertHistoricalInvoiceNotHeld,
+  finalizedInvoiceSql,
+  HISTORICAL_HELD_INVOICE_STATUS,
+} from "../lib/historical-invoice-hold";
 import {
   pageRowsKeyset,
   parsePagination,
@@ -98,7 +104,7 @@ const router = Router();
 const INVOICE_DATE_DRIFT_FIX_AT = new Date("2026-09-11T14:41:49.000Z");
 const INVOICE_STATUS_FILTER_VALUES = new Set([
   "draft",
-  RECOVERY_DRAFT_STATUS,
+  HISTORICAL_HELD_INVOICE_STATUS,
   "open",
   "partially_paid",
   "paid",
@@ -114,7 +120,7 @@ const INVOICE_LEGACY_STATUS_VALUES = new Set([
 ]);
 
 function isInvoiceDraftStatus(status: unknown): boolean {
-  return status === "draft" || status === RECOVERY_DRAFT_STATUS;
+  return status === "draft" || status === HISTORICAL_HELD_INVOICE_STATUS;
 }
 const INVOICE_VIEW_VALUES = new Set(["open", "outstanding"]);
 const INVOICE_AGING_VALUES = new Set([
@@ -184,6 +190,19 @@ async function getInvoiceReadScope(callerId: string): Promise<InvoiceReadScope> 
   }
 
   return { orgIds, memberships };
+}
+
+async function getInvoiceReviewerName(userId: string | null | undefined) {
+  if (!userId) return "Reviewer unavailable";
+  const reviewer = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    columns: { firstName: true, lastName: true, username: true },
+  });
+  if (!reviewer) return "Reviewer unavailable";
+  const fullName = [reviewer.firstName, reviewer.lastName]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(" ");
+  return fullName || reviewer.username || "Reviewer unavailable";
 }
 
 function invoiceIsInReadScope(
@@ -287,16 +306,15 @@ router.use(asyncHandler(async (req, _res, next) => {
       const rows = await db.query.invoices.findMany({ where: inArray(invoices.id, ids) });
       const scope = await getInvoiceReadScope((req as any).auth.userId);
       for (const row of rows) {
-        if (invoiceIsInReadScope(row, scope)) assertRecoveryReleased(row);
+        if (invoiceIsInReadScope(row, scope)) assertHistoricalInvoiceNotHeld(row);
       }
     }
   }
   next();
 }));
 
-// All ordinary invoice mutations/distribution are forbidden for a recovery
-// hold, including legacy unfreeze and status endpoints. The dedicated recovery
-// router performs the explicit admin charge + settlement review instead.
+// Ordinary invoice mutations/distribution remain forbidden for historical
+// held invoices, including legacy unfreeze and status endpoints.
 router.use("/:invoiceId", asyncHandler(async (req, _res, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     const id = z.string().parse(req.params.invoiceId);
@@ -305,7 +323,7 @@ router.use("/:invoiceId", asyncHandler(async (req, _res, next) => {
       if (invoice) {
         const scope = await getInvoiceReadScope((req as any).auth.userId);
         if (!invoiceIsInReadScope(invoice, scope)) throw new HttpError(403, "You do not have access to this invoice.");
-        assertRecoveryReleased(invoice);
+        assertHistoricalInvoiceNotHeld(invoice);
       }
     }
   }
@@ -2392,7 +2410,7 @@ router.post(
       .from(invoices)
       .where(and(
         inArray(invoices.id, resetCandidates.map((inv) => inv.id)),
-        inArray(invoices.status, ["draft", RECOVERY_DRAFT_STATUS]),
+        inArray(invoices.status, ["draft", HISTORICAL_HELD_INVOICE_STATUS]),
       )) : [];
     const protectedDraftIds = new Set(protectedDrafts.map((inv) => inv.id));
     const toReset = resetCandidates.filter((inv) => !protectedDraftIds.has(inv.id));
@@ -3263,6 +3281,7 @@ router.get(
 router.get(
   "/",
   asyncHandler(async (req, res) => {
+    const invoiceReadScope = await getInvoiceReadScope((req as any).auth.userId);
     const pagination = parsePagination(req.query);
     const queryString = (name: string): string | null =>
       typeof req.query[name] === "string" && req.query[name]
@@ -3473,6 +3492,18 @@ router.get(
       typeof req.query.practiceId === "string" && req.query.practiceId
         ? req.query.practiceId
         : null;
+    const customerCenter =
+      typeof req.query.customerCenter === "string" &&
+      req.query.customerCenter === "true";
+    if (
+      req.query.customerCenter !== undefined &&
+      req.query.customerCenter !== "true"
+    ) {
+      throw new HttpError(400, "customerCenter must be true when provided.");
+    }
+    if (customerCenter && !practiceIdFilter) {
+      throw new HttpError(400, "practiceId is required for Customer Center invoice queries.");
+    }
     const practiceIdsFilter =
       typeof req.query.practiceIds === "string" && req.query.practiceIds
         ? req.query.practiceIds.split(",").map((s) => s.trim()).filter(Boolean)
@@ -3626,16 +3657,25 @@ router.get(
         if (pagination.active) {
           if (labIdFilter && mobileInvoice.labOrganizationId !== labIdFilter) continue;
           if (practiceIdFilter || (practiceIdsFilter && practiceIdsFilter.length)) continue;
-          const filterDate = new Date(mobileInvoice.issuedAt ?? mobileInvoice.createdAt);
+          const filterDateSource = customerCenter
+            ? mobileInvoice.createdAt
+            : mobileInvoice.issuedAt ?? mobileInvoice.createdAt;
+          const filterDate = filterDateSource
+            ? new Date(filterDateSource)
+            : null;
           if (
             dateFromFilter &&
             !Number.isNaN(dateFromFilter.getTime()) &&
-            filterDate < dateFromFilter
+            (!filterDate ||
+              Number.isNaN(filterDate.getTime()) ||
+              filterDate < dateFromFilter)
           ) continue;
           if (
             dateToFilter &&
             !Number.isNaN(dateToFilter.getTime()) &&
-            filterDate > dateToFilter
+            (!filterDate ||
+              Number.isNaN(filterDate.getTime()) ||
+              filterDate > dateToFilter)
           ) continue;
           if (aiOnly) continue;
         }
@@ -3916,6 +3956,18 @@ router.get(
         }
       : undefined;
     const callerScoped = enriched;
+    const hidePrivateProviderNotes = (rows: any[]) =>
+      rows.map((row) => {
+        if (
+          hasDirectLabMembership(row.labOrganizationId, invoiceReadScope) ||
+          invoiceSharesNotesWithProvider(
+            row.displayMetadataJson ?? row.displayMetadata,
+          )
+        ) {
+          return row;
+        }
+        return { ...row, notes: null };
+      });
 
     if (searchFilter) {
       enriched = enriched.filter((r: any) => {
@@ -3935,8 +3987,12 @@ router.get(
     }
 
     enriched = enriched.filter((r: any) => {
-      const filterDateSource = r.issuedAt ?? r.createdAt;
+      const filterDateSource = customerCenter
+        ? r.createdAt
+        : r.issuedAt ?? r.createdAt;
       const filterDate = filterDateSource ? new Date(filterDateSource) : null;
+      const issuedDateSource = r.issuedAt ?? r.createdAt;
+      const issuedDate = issuedDateSource ? new Date(issuedDateSource) : null;
       if (
         dateFromFilter &&
         !Number.isNaN(dateFromFilter.getTime()) &&
@@ -3948,9 +4004,12 @@ router.get(
         (!filterDate || Number.isNaN(filterDate.getTime()) || filterDate > dateToFilter)
       ) return false;
       if (issuedFrom || issuedTo) {
-        if (!filterDate || Number.isNaN(filterDate.getTime())) return false;
-        if (issuedFrom && filterDate < issuedFrom) return false;
-        if (issuedTo && filterDate >= issuedTo) return false;
+        if (!issuedDate || Number.isNaN(issuedDate.getTime())) return false;
+        if (issuedFrom && issuedDate < issuedFrom) return false;
+        if (issuedTo && issuedDate >= issuedTo) return false;
+      }
+      if (customerCenter && r.providerOrganizationId !== practiceIdFilter) {
+        return false;
       }
       if (!pagination.active) return true;
 
@@ -4039,7 +4098,7 @@ router.get(
       open: enriched.filter(isOpen).length,
       overdue: enriched.filter(isOutstanding).length,
       paid: enriched.filter((r: any) => r.status === "paid").length,
-      draft: enriched.filter((r: any) => r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS).length,
+      draft: enriched.filter((r: any) => r.status === "draft" || r.status === HISTORICAL_HELD_INVOICE_STATUS).length,
       void: enriched.filter((r: any) => r.status === "void").length,
     };
     // All-time means no search/date/status restrictions, but still the exact
@@ -4057,7 +4116,7 @@ router.get(
         statusList.some((status) => {
           if (status === "zero_balance") return Number(r.balanceDue ?? r.total ?? 0) === 0;
           if (status === "frozen") return Boolean(r.frozen);
-          if (status === "draft") return r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS;
+          if (status === "draft") return r.status === "draft" || r.status === HISTORICAL_HELD_INVOICE_STATUS;
           return status === r.status || (status === "open" && r.status === "partially_paid");
         }),
       );
@@ -4079,7 +4138,7 @@ router.get(
       });
     }
 
-    if (!pagination.active) return ok(res, enriched);
+    if (!pagination.active) return ok(res, hidePrivateProviderNotes(enriched));
 
     const sortableDate = (value: unknown): string =>
       value instanceof Date ? value.toISOString() : String(value ?? "");
@@ -4092,7 +4151,7 @@ router.get(
             return Number(r.balanceDue ?? r.total ?? 0) === 0;
           }
           if (status === "frozen") return Boolean(r.frozen);
-          if (status === "draft") return r.status === "draft" || r.status === RECOVERY_DRAFT_STATUS;
+          if (status === "draft") return r.status === "draft" || r.status === HISTORICAL_HELD_INVOICE_STATUS;
           return r.status === status;
         })
       ) return false;
@@ -4213,8 +4272,10 @@ router.get(
         paidCount++;
       }
     }
+    const page = pageRowsKeyset(enriched, pagination, invoiceKeyset);
     return ok(res, {
-      ...pageRowsKeyset(enriched, pagination, invoiceKeyset),
+      ...page,
+      rows: hidePrivateProviderNotes(page.rows),
       ...(includeFacets ? { facets } : {}),
       summary: {
         openBalance,
@@ -5453,6 +5514,9 @@ router.get(
       invoice.labOrganizationId,
       readScope,
     );
+    const notesAreShared = invoiceSharesNotesWithProvider(
+      invoice.displayMetadataJson,
+    );
 
     const items = await db.query.invoiceLineItems.findMany({
       where: eq(invoiceLineItems.invoiceId, invoice.id),
@@ -5535,6 +5599,10 @@ router.get(
           where: eq(organizations.id, invoice.providerOrganizationId),
         }).catch(() => null)
       : null;
+    const aiReviewedByName =
+      labMember && invoice.aiReviewedAt
+        ? await getInvoiceReviewerName(invoice.aiReviewedByUserId)
+        : null;
 
     // Invoice audit history — lab members only (billing data).
     const [paymentDeleteLogs, dateRepairLogs, doctorIdentityRepairLogs] = labMember
@@ -5652,6 +5720,7 @@ router.get(
 
     return ok(res, {
       ...invoice,
+      notes: labMember || notesAreShared ? invoice.notes : null,
       items: nestedItems,
       payments: safePaymentRows,
       linkedTransactions: labMember ? linkedTxns : [],
@@ -5665,6 +5734,7 @@ router.get(
       linkedCaseNumber,
       inStatement: statementRow != null,
       statementId: statementRow?.id ?? null,
+      aiReviewedByName,
     });
   })
 );
@@ -5906,6 +5976,7 @@ router.patch(
         issuedAt: z.string().datetime().nullable().optional(),
         invoiceNumber: z.string().min(1).optional(),
         notes: z.string().nullable().optional(),
+        shareNotesWithProvider: z.boolean().optional(),
         providerOrganizationId: z.string().min(1).optional(),
         items: z
           .array(
@@ -5937,7 +6008,7 @@ router.patch(
             })
           )
           .optional(),
-        displayMetadata: z.record(z.any()).nullable().optional(),
+        displayMetadata: z.record(z.string(), z.any()).nullable().optional(),
         layoutPresetId: z.string().nullable().optional(),
         depositBankAccountId: z.string().min(1).optional(),
       })
@@ -6215,6 +6286,30 @@ router.patch(
             }
           : {};
 
+      const existingMetadata =
+        lockedInvoice.displayMetadataJson &&
+        typeof lockedInvoice.displayMetadataJson === "object"
+          ? lockedInvoice.displayMetadataJson as Record<string, unknown>
+          : {};
+      const requestedMetadata =
+        input.displayMetadata === undefined
+          ? existingMetadata
+          : input.displayMetadata;
+      const metadataHasSharePreference =
+        requestedMetadata != null &&
+        Object.prototype.hasOwnProperty.call(
+          requestedMetadata,
+          "shareNotesWithProvider",
+        );
+      const shareNotesWithProvider =
+        input.shareNotesWithProvider ??
+        (metadataHasSharePreference
+          ? requestedMetadata.shareNotesWithProvider === true
+          : existingMetadata.shareNotesWithProvider === true);
+      const displayMetadata = {
+        ...(requestedMetadata ?? {}),
+        shareNotesWithProvider,
+      };
       const [row] = await tx
         .update(invoices)
         .set({
@@ -6230,32 +6325,33 @@ router.patch(
               ? null
               : input.dueAt
                 ? new Date(input.dueAt)
-                : invoice.dueAt,
+                : lockedInvoice.dueAt,
           issuedAt:
             input.issuedAt === null
               ? null
               : input.issuedAt
                 ? new Date(input.issuedAt)
-                : invoice.issuedAt,
-          invoiceNumber: input.invoiceNumber ?? invoice.invoiceNumber,
+                : lockedInvoice.issuedAt,
+          invoiceNumber: input.invoiceNumber ?? lockedInvoice.invoiceNumber,
           notes:
-            input.notes === undefined ? invoice.notes : input.notes,
+            input.notes === undefined ? lockedInvoice.notes : input.notes,
           providerOrganizationId:
-            input.providerOrganizationId ?? invoice.providerOrganizationId,
+            input.providerOrganizationId ?? lockedInvoice.providerOrganizationId,
           displayMetadataJson:
             (lockedInvoice.displayMetadataJson as Record<string, unknown> | null)?.legacyChargesNeedsReview === true
               ? {
-                  ...(input.displayMetadata ?? lockedInvoice.displayMetadataJson as Record<string, unknown>),
+                  ...(displayMetadata ?? {}),
                   reviewedCharges: true,
                   reviewedChargesNeedsReview: !Array.isArray(input.items),
                   legacyChargesNeedsReview: !Array.isArray(input.items),
                 }
-              : input.displayMetadata === undefined
-              ? invoice.displayMetadataJson
-              : input.displayMetadata,
+              : input.displayMetadata === undefined &&
+                  input.shareNotesWithProvider === undefined
+              ? lockedInvoice.displayMetadataJson
+              : displayMetadata,
           layoutPresetId:
             input.layoutPresetId === undefined
-              ? invoice.layoutPresetId
+              ? lockedInvoice.layoutPresetId
               : input.layoutPresetId,
           updatedByUserId: (req as any).auth.userId,
         })
@@ -6774,7 +6870,7 @@ router.post(
       /* ignore */
     }
     const diskPath = path.join(invoiceAttachmentsDir, filename);
-    fs.writeFileSync(diskPath, req.file.buffer);
+    await writeProductionUpload(diskPath, req.file.buffer, "invoice-attachment");
     const storageKey = `/uploads/invoice-attachments/${filename}`;
     const [row] = await db
       .insert(invoiceAttachments)
@@ -7443,6 +7539,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const callerId = (req as any).auth.userId as string;
     const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    const aiReviewedByName = await getInvoiceReviewerName(callerId);
     const [updated] = await db
       .update(invoices)
       .set({
@@ -7459,7 +7556,7 @@ router.patch(
       entityType: "invoice",
       entityId: invoice.id,
     });
-    return ok(res, updated);
+    return ok(res, { ...updated, aiReviewedByName });
   }),
 );
 
@@ -8024,7 +8121,7 @@ router.post(
           continue;
         }
         await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
-        assertRecoveryReleased(invoice);
+        assertHistoricalInvoiceNotHeld(invoice);
         const practice = invoice.providerOrganizationId
           ? await db.query.organizations.findFirst({
               where: eq(organizations.id, invoice.providerOrganizationId),

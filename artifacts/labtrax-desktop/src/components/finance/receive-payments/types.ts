@@ -59,6 +59,12 @@ export type EligibleAccount = {
   doctorNames?: string[];
   doctors?: Array<{ doctorIdentity: string | null; doctorDisplayName: string }>;
   doctorProfiles?: Array<{ id: string; doctorName: string; doctorDisplayName: string }>;
+  /** Latest received payment for each doctor identity, excluding unattributed sessions. */
+  doctorLastPayments?: Array<{
+    doctorIdentity: string;
+    lastPaymentAt: string;
+    lastPaymentAmount: string;
+  }>;
   outstandingInvoices?: StatementInvoice[];
   /** Customer Center account number; null when the customer has none. */
   accountNumber?: string | null;

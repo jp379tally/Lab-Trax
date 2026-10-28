@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
 import { findChromium } from "./find-chromium.mjs";
 
@@ -69,12 +70,12 @@ function assert(condition, message) {
 
 async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
   const panel = page.getByTestId(panelTestId);
-  const svg = panel.locator("svg[viewBox='0 0 520 520']").first();
+  const svg = panel.locator("svg[viewBox='0 -14 400 514']").first();
   await svg.waitFor({ state: "visible" });
 
   const geometry = await panel.evaluate((element, isMobile) => {
     const panelRect = element.getBoundingClientRect();
-    const svg = element.querySelector("svg[viewBox='0 0 520 520']");
+    const svg = element.querySelector("svg[viewBox='0 -14 400 514']");
     if (!(svg instanceof SVGSVGElement)) return null;
     const svgRect = svg.getBoundingClientRect();
     const textBoxes = Array.from(svg.querySelectorAll("text")).map((text) => {
@@ -91,7 +92,14 @@ async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
     });
     const toothElements = isMobile
       ? Array.from(svg.querySelectorAll("text")).filter((text) => /^(?:[1-9]|[12][0-9]|3[0-2])$/.test(text.textContent?.trim() ?? ""))
-      : Array.from(element.querySelectorAll("[data-tooth-id]"));
+      : Array.from(element.querySelectorAll("[data-tooth-id]"))
+          .map((tooth) =>
+            // Measure the visible hit target rather than the parent group:
+            // its nested atlas image can report the full source-image bounds.
+            tooth.querySelector(":scope > circle[fill='transparent']") ??
+            tooth.querySelector(":scope > text[data-tooth-number]"),
+          )
+          .filter(Boolean);
     const toothRects = toothElements.map((tooth) => {
       const rect = tooth.getBoundingClientRect();
       return {
@@ -121,7 +129,7 @@ async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
   assert(geometry.panelScrollWidth <= geometry.panelClientWidth + 1,
     `${panelTestId}: panel has horizontal overflow`);
 
-  const requiredSvgLabels = ["UPPER", "LOWER", "PATIENT RIGHT", "PATIENT LEFT"];
+  const requiredSvgLabels = ["PATIENT RIGHT", "PATIENT LEFT"];
   for (const label of requiredSvgLabels) {
     const box = geometry.textBoxes.find((candidate) => candidate.text === label);
     assert(box && box.width > 0 && box.height > 0, `${panelTestId}: ${label} label is not visible`);
@@ -130,6 +138,19 @@ async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
         box.right <= geometry.svg.right + 1 &&
         box.top >= geometry.svg.top - 1 &&
         box.bottom <= geometry.svg.bottom + 1,
+      `${panelTestId}: ${label} label is clipped by the chart`,
+    );
+  }
+  for (const label of ["UPPER", "LOWER"]) {
+    const labelElement = panel.getByText(label, { exact: true });
+    await labelElement.waitFor({ state: "visible" });
+    const box = await labelElement.boundingBox();
+    assert(box && box.width > 0 && box.height > 0, `${panelTestId}: ${label} label is not visible`);
+    assert(
+      box.x >= geometry.svg.left - 1 &&
+        box.x + box.width <= geometry.svg.right + 1 &&
+        box.y >= geometry.svg.top - 1 &&
+        box.y + box.height <= geometry.svg.bottom + 1,
       `${panelTestId}: ${label} label is clipped by the chart`,
     );
   }
@@ -144,20 +165,40 @@ async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
       `${panelTestId}: chart text "${box.text}" is clipped or has no visible bounds`,
     );
   }
-  for (const label of legends) {
-    const ariaLegend = label === "Bridge" ? "Bridge connector" : `${label} tooth`;
-    const legend = mobile
-      ? panel.getByText(label, { exact: true })
-      : panel.locator(`[aria-label="${ariaLegend}"]`);
-    await legend.waitFor({ state: "visible" });
-    const visible = await legend.evaluate((element, expectedPanelId) => {
-      const bounds = element.getBoundingClientRect();
-      const parent = document.querySelector(`[data-testid="${expectedPanelId}"]`)?.getBoundingClientRect();
-      return Boolean(parent && bounds.width > 0 && bounds.height > 0 &&
-        bounds.left >= parent.left - 1 && bounds.right <= parent.right + 1 &&
-        bounds.top >= parent.top - 1 && bounds.bottom <= parent.bottom + 1);
-    }, panelTestId);
-    assert(visible, `${panelTestId}: legend "${label}" is clipped`);
+  if (mobile) {
+    for (const label of legends) {
+      const legend = panel.getByText(label, { exact: true });
+      await legend.waitFor({ state: "visible" });
+      const visible = await legend.evaluate((element, expectedPanelId) => {
+        const bounds = element.getBoundingClientRect();
+        const parent = document.querySelector(`[data-testid="${expectedPanelId}"]`)?.getBoundingClientRect();
+        return Boolean(parent && bounds.width > 0 && bounds.height > 0 &&
+          bounds.left >= parent.left - 1 && bounds.right <= parent.right + 1 &&
+          bounds.top >= parent.top - 1 && bounds.bottom <= parent.bottom + 1);
+      }, panelTestId);
+      assert(visible, `${panelTestId}: legend "${label}" is clipped`);
+    }
+  } else {
+    for (const [toothId, expectedRole, selected, billed] of [
+      ["1", "crown", true, false],
+      ["2", "pontic", true, false],
+      ["3", "missing", true, false],
+      ["4", "unassigned", false, true],
+    ]) {
+      const tooth = panel.locator(`[data-tooth-id="${toothId}"]`);
+      assert(
+        (await tooth.getAttribute("data-tooth-role")) === expectedRole,
+        `${panelTestId}: tooth ${toothId} has the wrong restoration role`,
+      );
+      assert(
+        (await tooth.getAttribute("data-tooth-selected")) === String(selected),
+        `${panelTestId}: tooth ${toothId} has the wrong selection state`,
+      );
+      assert(
+        (await tooth.getAttribute("data-tooth-billed")) === String(billed),
+        `${panelTestId}: tooth ${toothId} has the wrong billing state`,
+      );
+    }
   }
 
   for (const [index, rect] of geometry.toothRects.entries()) {
@@ -165,7 +206,7 @@ async function verifyVisibleChart(page, { panelTestId, legends, mobile }) {
       `${panelTestId}: tooth ${index + 1} has no visible bounds (${JSON.stringify(rect)})`);
     assert(rect.left >= geometry.svg.left - 1 && rect.right <= geometry.svg.right + 1 &&
       rect.top >= geometry.svg.top - 1 && rect.bottom <= geometry.svg.bottom + 1,
-    `${panelTestId}: tooth ${index + 1} is clipped by the chart`);
+    `${panelTestId}: tooth ${index + 1} is clipped by the chart (${JSON.stringify({ tooth: rect, svg: geometry.svg })})`);
   }
 
   return geometry.svg.width;
@@ -198,6 +239,8 @@ try {
     { panelWidth: 720, viewportWidth: 900, label: "wide" },
   ];
   let screenshotCount = 0;
+  const generatedScreenshots = join(desktopRoot, "../../generated-artifacts/tooth-chart");
+  await mkdir(generatedScreenshots, { recursive: true });
 
   for (const target of [
     { name: "desktop", base: desktop.url, panelTestId: "tooth-chart-panel", legends: ["Selected", "Crown", "Pontic", "Missing", "Billed", "Bridge"], mobile: false },
@@ -248,6 +291,12 @@ try {
       }
       await page.evaluate(() => document.fonts.ready);
       await verifyVisibleChart(page, target);
+      if (target.name === "desktop" && size.label === "wide") {
+        await page.screenshot({
+          path: join(generatedScreenshots, "adult-tooth-chart.png"),
+          fullPage: true,
+        });
+      }
 
       if (target.name === "desktop") {
         const details = page.getByText("Large tooth and connector controls", { exact: true });
@@ -275,6 +324,19 @@ try {
     }
     await page.close();
   }
+
+  const bridgePage = await browser.newPage({ viewport: { width: 1280, height: 940 } });
+  bridgePage.on("pageerror", (error) => errors.push(`bridge-example: ${error.message}`));
+  await bridgePage.goto(`${desktop.url}browser-tests/tooth-chart.html?scenario=bridge&panelWidth=1160`);
+  await bridgePage.getByText("Zirconia · A2", { exact: true }).first().waitFor({ state: "visible" });
+  await bridgePage.getByLabel("Explicit connector between teeth 2 and 3").waitFor({ state: "visible" });
+  await bridgePage.getByLabel("Explicit connector between teeth 3 and 4").waitFor({ state: "visible" });
+  await bridgePage.screenshot({
+    path: join(generatedScreenshots, "zirconia-bridge-teeth-2-4.png"),
+    fullPage: true,
+  });
+  screenshotCount += 1;
+  await bridgePage.close();
 
   const controlsPage = await browser.newPage({ viewport: { width: 360, height: 1000 } });
   controlsPage.on("pageerror", (error) => errors.push(`mobile-editable: ${error.message}`));

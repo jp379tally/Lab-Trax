@@ -174,6 +174,10 @@ describe("InvoiceEditor data isolation", () => {
       if (url.includes(`/invoices/${original.id}`)) return new Response(JSON.stringify(saved), {
         status: 200, headers: { "Content-Type": "application/json" },
       });
+      if (url.includes(`/cases/${original.caseId}/attachments`)) return new Response(
+        JSON.stringify({ attachments: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
       return new Response(JSON.stringify(url.includes("/invoice-template/presets") ? { presets: [] } : []), {
         status: 200, headers: { "Content-Type": "application/json" },
       });

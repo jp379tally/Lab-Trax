@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -79,6 +79,23 @@ describe("auth-store", () => {
 
     const got = authStore.getTokens();
     expect(got).toEqual({ accessToken: "access-123", refreshToken: "refresh-456" });
+  });
+
+  it("restores saved tokens after the auth store is reinitialized with the same user-data directory", () => {
+    const savedTokens = {
+      accessToken: "restart-access",
+      refreshToken: "restart-refresh",
+    };
+    authStore.setTokens(savedTokens);
+
+    // A new module instance has no cached file path or in-memory state, like a
+    // fresh app process. The per-user data directory and OS encryption service
+    // remain the same. This does not simulate an installer or OS updater.
+    const authStoreModulePath = require.resolve("../auth-store.cjs");
+    delete require.cache[authStoreModulePath];
+    authStore = require("../auth-store.cjs") as AuthStore;
+
+    expect(authStore.getTokens()).toEqual(savedTokens);
   });
 
   it("clearTokens removes the persisted blob and is idempotent", () => {
@@ -185,6 +202,29 @@ describe("auth-store", () => {
         status: "decrypt-failed",
       });
       expect(fs.existsSync(blobPath)).toBe(false);
+    });
+
+    it('returns "decrypt-failed" for unreadable saved state without exposing tokens', () => {
+      const blobPath = path.join(tmpDir, "auth-tokens.bin");
+      // A directory at the expected file path makes readFileSync fail with
+      // EISDIR without relying on filesystem permissions (the suite may run
+      // as root, which can read chmod-restricted files).
+      fs.mkdirSync(blobPath);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const result = authStore.getTokensWithStatus();
+        expect(result).toEqual({ status: "decrypt-failed" });
+        expect(log).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(blobPath, { recursive: true, force: true });
+        log.mockRestore();
+        warn.mockRestore();
+        error.mockRestore();
+      }
     });
   });
 });

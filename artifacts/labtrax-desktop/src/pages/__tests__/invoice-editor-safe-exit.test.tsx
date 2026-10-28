@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { InvoiceEditor } from "@/pages/invoices";
 import type { Invoice } from "@/lib/types";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
@@ -96,7 +96,7 @@ async function waitForLoaded() {
 }
 
 describe("InvoiceEditor safe-exit", () => {
-  it("adds a blank line after the existing items and before totals", async () => {
+  it("adds a blank line after the existing items while totals remain in the summary", async () => {
     renderEditor();
     await waitForLoaded();
 
@@ -110,10 +110,13 @@ describe("InvoiceEditor safe-exit", () => {
     const table = button.closest("table");
     const rows = Array.from(table!.querySelectorAll("tr"));
     const addLineRow = button.closest("tr")!;
-    const subtotalRow = screen.getByText("Subtotal").closest("tr")!;
     expect(addLineRow.querySelector("td")).toHaveAttribute("colspan", "7");
-    expect(rows.indexOf(addLineRow)).toBeLessThan(rows.indexOf(subtotalRow));
+    expect(rows.at(-1)).toBe(addLineRow);
     expect(Array.from(table!.querySelectorAll("tbody tr")).at(-1)).toBe(addLineRow);
+    expect(table!.querySelectorAll("tfoot tr")).toHaveLength(0);
+    const summary = screen.getByRole("heading", { name: "Invoice summary" }).closest("section");
+    expect(summary).not.toBeNull();
+    expect(within(summary as HTMLElement).getByText("Subtotal")).toBeInTheDocument();
   });
 
   it("shows the bottom add-line control when the invoice has no items", async () => {

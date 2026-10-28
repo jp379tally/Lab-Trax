@@ -58,7 +58,7 @@ export interface AiReaderUserOverrides {
   arch?: "upper" | "lower" | "both" | null;
   toothIndices?: string;
   /** Per-tooth assignments explicitly confirmed by the operator. */
-  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  assignmentRoles?: Record<string, "Crown" | "Pontic" | "Veneer">;
   assignmentOverridesManual?: boolean;
   assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
   bridgeConnectors?: string;

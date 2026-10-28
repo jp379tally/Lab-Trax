@@ -7,7 +7,7 @@ import { inspectSchemaDiff } from "./publish-schema-safety";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 const SCRIPTS_DIR = resolve(REPO_ROOT, "scripts");
-const TSX = resolve(REPO_ROOT, "node_modules", ".bin", "tsx");
+const TSX = resolve(SCRIPTS_DIR, "node_modules", ".bin", "tsx");
 const CHECKER = resolve(SCRIPTS_DIR, "src", "publish-schema-safety.ts");
 const tempDirs: string[] = [];
 
@@ -40,6 +40,8 @@ describe("publish schema safety gate", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("MIGRATION SAFETY UNVERIFIED");
     expect(result.stderr).toContain("recent, verified off-site production backup");
+    expect(result.stderr).toContain("owner-authorized backup-repair rollout exception");
+    expect(result.stderr).toContain("not schema review, production identity checks, or completeness safeguards");
     expect(result.stderr).not.toContain("publish is safe");
   });
 
@@ -55,6 +57,7 @@ describe("publish schema safety gate", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Static scan found no known destructive SQL patterns");
     expect(result.stdout).toContain("Migration safety is still not certified");
+    expect(result.stdout).toContain("only the documented owner-authorized backup-repair rollout");
   });
 
   it.each([

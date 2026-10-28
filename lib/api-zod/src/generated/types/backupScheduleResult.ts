@@ -6,9 +6,15 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { BackupScheduleResultDestination } from './backupScheduleResultDestination';
+import type { BackupScheduleResultOffsite } from './backupScheduleResultOffsite';
+import type { BackupScheduleResultSourceEnvironment } from './backupScheduleResultSourceEnvironment';
 import type { BackupScheduleResultUnit } from './backupScheduleResultUnit';
+import type { DatabaseProtectionRetentionSchedule } from './databaseProtectionRetentionSchedule';
 
 export interface BackupScheduleResult {
+  offsite?: BackupScheduleResultOffsite;
+  /** The connected server's immutable backup source. Use the development app or published app to select a source; this field does not rebind a database. */
+  sourceEnvironment?: BackupScheduleResultSourceEnvironment;
   ok?: boolean;
   /** Number of interval units (null if no schedule is set) */
   interval?: number | null;
@@ -16,5 +22,6 @@ export interface BackupScheduleResult {
   unit?: BackupScheduleResultUnit;
   destination?: BackupScheduleResultDestination;
   path?: string | null;
+  databaseRetention?: DatabaseProtectionRetentionSchedule;
   enabled?: boolean;
 }

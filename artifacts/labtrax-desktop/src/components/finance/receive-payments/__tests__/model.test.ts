@@ -5,6 +5,7 @@ import {
   agingBucket,
   agingGroups,
   buildPayableCustomers,
+  buildSelectablePayableCustomers,
   customerMatches,
   daysPastDue,
   deselectCustomers,
@@ -288,6 +289,157 @@ describe("payable customer rows", () => {
     );
     expect(customer!.statement?.balance).toBeNull();
     expect(customer!.totalBalance).toBe(40);
+  });
+});
+
+describe("doctor payment accounts", () => {
+  it("creates separate doctor accounts alongside the whole-practice account", () => {
+    const adaInvoice = { ...invoice("multi-a", "M-1", { total: "40.00", balance: "30.00", doctor: "Dr. Ada" }), doctorIdentity: "profile-ada" };
+    const benInvoice = { ...invoice("multi-b", "M-2", { total: "25.00", balance: "25.00", doctor: "Dr. Ben" }), doctorIdentity: "profile-ben" };
+    const [practice] = buildPayableCustomers([], [{
+      providerOrganizationId: "multi",
+      providerName: "Multi Dental",
+      invoiceCount: 2,
+      currentBalanceDue: "55.00",
+      lastPaymentAt: "2026-10-01T12:00:00.000Z",
+      lastPaymentAmount: "35.00",
+      doctorLastPayments: [
+        {
+          doctorIdentity: "profile-ada",
+          lastPaymentAt: "2026-09-20T12:00:00.000Z",
+          lastPaymentAmount: "20.00",
+        },
+      ],
+      outstandingInvoices: [adaInvoice, benInvoice],
+    }], asOf);
+    const accounts = buildSelectablePayableCustomers([practice!]);
+    const whole = accounts.find((account) => !account.isDoctorAccount)!;
+    const ada = accounts.find((account) => account.doctorIdentity === "profile-ada")!;
+    const ben = accounts.find((account) => account.doctorIdentity === "profile-ben")!;
+
+    expect(accounts).toHaveLength(3);
+    expect(whole.accountLabel).toBe("Entire practice");
+    expect(whole.lastPaymentAmount).toBe(35);
+    expect(ada).toMatchObject({
+      practiceOrganizationId: "multi",
+      practiceName: "Multi Dental",
+      doctorDisplayName: "Dr. Ada",
+      totalBalance: 30,
+      unpaidCount: 1,
+      lastPaymentAt: "2026-09-20T12:00:00.000Z",
+      lastPaymentAmount: 20,
+      statement: null,
+    });
+    expect(ada.invoices.map((row) => row.id)).toEqual(["multi-a"]);
+    expect(ada.account.providerOrganizationId).toBe("multi");
+    expect(ada.account).toMatchObject({
+      lastPaymentAt: "2026-09-20T12:00:00.000Z",
+      lastPaymentAmount: "20.00",
+    });
+    expect(ben).toMatchObject({ lastPaymentAt: null, lastPaymentAmount: null });
+    expect(ben.account).toMatchObject({
+      lastPaymentAt: null,
+      lastPaymentAmount: null,
+    });
+
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    let selection = selectCustomers(EMPTY_SELECTION, [ada, ben]);
+    expect(selection.ids).toEqual([ada.id, ben.id]);
+    expect(selectionTotals(selectedFigures(selection, byId))).toMatchObject({
+      customers: 2,
+      invoices: 2,
+      amount: 55,
+    });
+    const saved = {
+      name: "Two doctors",
+      savedAt: "2026-10-25T12:00:00.000Z",
+      customers: savedSelectionCustomers(selection, byId),
+    };
+    expect(restoreSavedSelection(saved, byId).selection.ids).toEqual([ada.id, ben.id]);
+    selection = selectCustomers(selection, [whole]);
+    expect(selection.ids).toEqual([whole.id]);
+    selection = selectCustomers(selection, [ada]);
+    expect(selection.ids).toEqual([ada.id]);
+  });
+
+  it("distinguishes matching display names with original profile names", () => {
+    const firstInvoice = {
+      ...invoice("shared-a", "INV-101", { total: "40.00", balance: "30.00", doctor: "Dr. Shared" }),
+      doctorIdentity: "profile-a",
+    };
+    const secondInvoice = {
+      ...invoice("shared-b", "INV-202", { total: "25.00", balance: "25.00", doctor: "Dr. Shared" }),
+      doctorIdentity: "profile-b",
+    };
+    const [practice] = buildPayableCustomers([], [{
+      providerOrganizationId: "shared-practice",
+      providerName: "Shared Dental",
+      invoiceCount: 2,
+      currentBalanceDue: "55.00",
+      doctorProfiles: [
+        { id: "profile-a", doctorName: "Dr. Alpha", doctorDisplayName: "Dr. Shared" },
+        { id: "profile-b", doctorName: "Dr. Beta", doctorDisplayName: "Dr. Shared" },
+      ],
+      outstandingInvoices: [firstInvoice, secondInvoice],
+    }], asOf);
+    const accounts = buildSelectablePayableCustomers([practice!]);
+
+    expect(accounts.map((account) => account.name)).toEqual([
+      "Dr. Shared (Profile name: Dr. Alpha) · Shared Dental",
+      "Dr. Shared (Profile name: Dr. Beta) · Shared Dental",
+      "Shared Dental",
+    ]);
+  });
+
+  it("uses invoice references when duplicate profile names have no distinct original names", () => {
+    const firstInvoice = {
+      ...invoice("shared-a", "INV-101", { total: "40.00", balance: "30.00", doctor: "Dr. Shared" }),
+      doctorIdentity: "profile-a",
+    };
+    const secondInvoice = {
+      ...invoice("shared-b", "INV-202", { total: "25.00", balance: "25.00", doctor: "Dr. Shared" }),
+      doctorIdentity: "profile-b",
+    };
+    const [practice] = buildPayableCustomers([], [{
+      providerOrganizationId: "shared-practice",
+      providerName: "Shared Dental",
+      invoiceCount: 2,
+      currentBalanceDue: "55.00",
+      doctorProfiles: [
+        { id: "profile-a", doctorName: "Dr. Shared", doctorDisplayName: "Dr. Shared" },
+        { id: "profile-b", doctorName: " dr.   shared ", doctorDisplayName: "Dr. Shared" },
+      ],
+      outstandingInvoices: [firstInvoice, secondInvoice],
+    }], asOf);
+    const accounts = buildSelectablePayableCustomers([practice!]);
+
+    expect(accounts.map((account) => account.name)).toEqual([
+      "Dr. Shared (Invoice: INV-101) · Shared Dental",
+      "Dr. Shared (Invoice: INV-202) · Shared Dental",
+      "Shared Dental",
+    ]);
+  });
+
+  it("groups legacy invoices by normalized doctor name without inventing a profile identity", () => {
+    const legacyOne = invoice("legacy-a", "L-1", { total: "10.00", balance: "10.00", doctor: "Dr. Legacy" });
+    const legacyTwo = invoice("legacy-b", "L-2", { total: "20.00", balance: "20.00", doctor: "  dr.   legacy " });
+    const other = invoice("legacy-c", "L-3", { total: "15.00", balance: "15.00", doctor: "Dr. Other" });
+    const [practice] = buildPayableCustomers([], [{
+      providerOrganizationId: "legacy-practice",
+      providerName: "Legacy Practice",
+      invoiceCount: 3,
+      currentBalanceDue: "45.00",
+      outstandingInvoices: [legacyOne, legacyTwo, other],
+    }], asOf);
+    const accounts = buildSelectablePayableCustomers([practice!]);
+    const doctors = accounts.filter((account) => account.isDoctorAccount);
+
+    expect(doctors).toHaveLength(2);
+    expect(doctors.find((account) => account.doctorIdentity === "dr. legacy")).toMatchObject({
+      doctorIdentity: "dr. legacy",
+      doctorDisplayName: "Dr. Legacy",
+      unpaidCount: 2,
+    });
   });
 });
 

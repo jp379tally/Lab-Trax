@@ -4,7 +4,7 @@ import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { prepareRecoveryZipFile, writeRecoveryEntry, type RecoveryZip } from "./recovery-zip";
-import { Transform, type Writable } from "node:stream";
+import { Readable, Transform, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
@@ -42,6 +42,7 @@ import {
   getGoogleDriveBackupFolderId,
   getGoogleDriveFileById,
   getGoogleDriveStatus,
+  isGoogleDriveConnectorAvailable,
   googleDriveItemPath,
   listGoogleDriveBackupFiles,
   uploadGoogleDriveBackupFile,
@@ -62,22 +63,41 @@ import {
 import { planBackupMedia, type BackupMediaAppender } from "./backup-media-producer";
 import {
   abortableBackupOperation,
+  type BackupDeliveryStatus,
+  BackupCancelledError,
   getBackupRunId,
   markBackupLiveAwaitingVerification,
   measureBackupPhase,
   safeBackupError,
+  setBackupLiveDelivery,
   setBackupLiveArchiveEvidence,
   setBackupLiveProgress,
   withBackupRun,
 } from "./backup-phase";
 import { ensureBackupHistorySchema } from "./backup-history-schema";
-import { createBackupCloudStage } from "./backup-cloud-staging";
 import {
-  captureCompleteBackup, validateCompleteRecovery, restoreCompleteFiles, assertIsolatedCompleteRecovery,
+  runDatabaseProtectionJob, getDatabaseProtectionStatus, noteDatabaseProtectionBusy,
+  hasPendingDatabaseProtectionCatchup,
+  databaseProtectionVerificationError,
+  type DatabaseProtectionStatus,
+} from "./database-protection-job";
+import { MAX_DATABASE_DUMP_BYTES, DatabaseProtectionError } from "./database-protection";
+import { captureProductionMedia } from "./production-content-capture";
+import { RECORD_DELTA_FORMAT } from "./postgres-record-delta";
+import { readBackupLiveStatus } from "./backup-live-status-store";
+import {
+  createBackupCloudStage,
+  openBackupCloudStage,
+  MAX_BACKUP_RANGE_BYTES,
+} from "./backup-cloud-staging";
+import {
+  captureCompleteBackup, validateCompleteRecovery, restoreCompleteFiles, restoreLocalRecoveryEntry, assertIsolatedCompleteRecovery,
   requireCompleteDestinationCapacity,
   COMPLETE_BACKUP_VERSION, COMPLETE_PRODUCTION_KIND, COMPLETE_DEVELOPMENT_KIND,
-  type CompleteArchiveDestination,
+  type CompleteArchiveDestination, type CompleteBackupCaptured,
 } from "./complete-backup";
+import { ensureProductionMediaJournalSchema } from "./production-media-journal";
+import { validateRecoveryMediaReceipts } from "./production-media-mutation";
 
 export interface BackupCounts {
   users: number;
@@ -148,6 +168,7 @@ export type BackupDestination = "local" | "network" | "onedrive" | "google-drive
 export const SETTING_BACKUP_HOUR_UTC = "backup_hour_utc";
 export const SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES = "backup_schedule_interval_minutes";
 export const SETTING_BACKUP_SCHEDULE_DESTINATION = "backup_schedule_destination";
+export const SETTING_BACKUP_SCHEDULE_ROUTING_VERSION = "backup_schedule_routing_version";
 export const SETTING_BACKUP_SCHEDULE_PATH = "backup_schedule_path";
 export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
 export const SETTING_BACKUP_LAST_SUCCESSFUL_AT = "backup_last_successful_at";
@@ -202,8 +223,8 @@ export const SETTING_BACKUP_ALERT_DELIVERY_LOG = "backup_alert_delivery_log";
 /** Required off-site cadence. */
 export const DEFAULT_OFFSITE_INTERVAL_MINUTES = 15;
 /** Floor/ceiling for the configured cadence (a full archive takes minutes). */
-export const MIN_OFFSITE_INTERVAL_MINUTES = 15;
-export const MAX_OFFSITE_INTERVAL_MINUTES = 60;
+export const MIN_OFFSITE_INTERVAL_MINUTES = 5;
+export const MAX_OFFSITE_INTERVAL_MINUTES = 1440;
 
 /**
  * Smallest archive size that can plausibly be a real backup.
@@ -233,6 +254,7 @@ export function minPlausibleBackupBytes(): number {
  */
 export const BACKUP_SCHEMA_VERSION = "2";
 export const ALL_SCHEDULE_SETTINGS = [
+  SETTING_BACKUP_SCHEDULE_ROUTING_VERSION,
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
   SETTING_BACKUP_SCHEDULE_DESTINATION,
   SETTING_BACKUP_SCHEDULE_PATH,
@@ -257,7 +279,7 @@ export class BackupTimeoutError extends Error {
  * When a run deadline is supplied the child is killed as soon as it fires, so
  * a dump that hangs on a stuck connection cannot outlive the run's budget.
  */
-async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string): Promise<Buffer> {
+async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string, maxBytes = Number.POSITIVE_INFINITY): Promise<Buffer> {
   let dumpBytes = 0;
   return measureBackupPhase("database dump", async () => {
   const dbUrl = process.env.DATABASE_URL;
@@ -271,10 +293,16 @@ async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string): 
     ]);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    let exceededSize = false;
 
     proc.stdout.on("data", (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
       dumpBytes += chunk.length;
+      if (dumpBytes > maxBytes) {
+        exceededSize = true;
+        proc.kill("SIGTERM");
+        return;
+      }
+      stdoutChunks.push(chunk);
       setBackupLiveProgress({ dumpBytes });
     });
     proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
@@ -297,12 +325,14 @@ async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string): 
 
     proc.on("close", (code: number | null) => {
       settle();
+      if (exceededSize) {
+        reject(new DatabaseProtectionError("Database export exceeds the bounded incremental-storage limit; use a streaming implementation for this database size."));
+        return;
+      }
       if (abortedByDeadline) {
-        reject(
-          new BackupTimeoutError(
-            "Backup timed out during the database dump — pg_dump was stopped.",
-          ),
-        );
+        reject(deadline?.cancelled()
+          ? new BackupCancelledError()
+          : new BackupTimeoutError("Backup timed out during the database dump — pg_dump was stopped."));
         return;
       }
       if (code !== 0) {
@@ -324,6 +354,84 @@ async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string): 
     });
   });
   }, () => ({ dumpBytes }), (dump) => ({ dumpBytes: dump.length }));
+}
+
+/**
+ * Stream a custom-format pg_dump with bounded stdout/stderr buffering. The
+ * caller must consume the iterator while its exported snapshot is still open.
+ */
+async function* buildPgDumpStream(
+  deadline?: BackupDeadline,
+  snapshot?: string,
+  maxBytes = MAX_DATABASE_DUMP_BYTES,
+  schema?: "custom" | "plain",
+): AsyncGenerator<Buffer> {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) throw new Error("DATABASE_URL is not set — cannot run pg_dump.");
+  deadline?.throwIfExpired("the database dump");
+  const proc = spawn(resolvePostgresTool("pg_dump"), [
+    schema === "plain" ? "--format=plain" : "--format=custom",
+    ...(schema ? ["--schema-only", "--no-owner", "--no-privileges", "--quote-all-identifiers"] : []),
+    ...(snapshot ? [`--snapshot=${snapshot}`] : []),
+    `--dbname=${dbUrl}`,
+  ]);
+  const stderrChunks: Buffer[] = [];
+  let stderrBytes = 0;
+  let dumpBytes = 0;
+  let abortedByDeadline = false;
+  let timedOut = false;
+  let childError: Error | null = null;
+  proc.stderr.on("data", (chunk: Buffer) => {
+    if (stderrBytes >= 64 * 1024) return;
+    const remaining = 64 * 1024 - stderrBytes;
+    const bounded = Buffer.from(chunk.subarray(0, remaining));
+    stderrChunks.push(bounded);
+    stderrBytes += bounded.length;
+  });
+  proc.once("error", error => { childError = error; });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+    proc.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    proc.kill("SIGTERM");
+  }, 10 * 60 * 1000);
+  const onDeadline = () => {
+    abortedByDeadline = true;
+    proc.kill("SIGTERM");
+  };
+  deadline?.signal.addEventListener("abort", onDeadline, { once: true });
+  try {
+    for await (const value of proc.stdout) {
+      deadline?.throwIfExpired("the database dump");
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      dumpBytes += chunk.length;
+      if (dumpBytes > maxBytes) {
+        proc.kill("SIGTERM");
+        throw new DatabaseProtectionError("Database export exceeds the recovery manifest capacity.");
+      }
+      setBackupLiveProgress({ dumpBytes });
+      yield chunk;
+    }
+    const result = await exited;
+    if (childError) throw childError;
+    if (abortedByDeadline) {
+      throw deadline?.cancelled()
+        ? new BackupCancelledError()
+        : new BackupTimeoutError("Backup timed out during the database dump — pg_dump was stopped.");
+    }
+    if (timedOut) throw new BackupTimeoutError("pg_dump timed out after 10 minutes.");
+    if (result.code !== 0) {
+      const stderr = Buffer.concat(stderrChunks).toString("utf8") || "unknown error";
+      throw new Error(`pg_dump failed (exit ${result.code}): ${stderr}`);
+    }
+    if (dumpBytes === 0) throw new Error("pg_dump produced empty output.");
+  } finally {
+    clearTimeout(timeout);
+    deadline?.signal.removeEventListener("abort", onDeadline);
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGTERM");
+    await exited;
+  }
 }
 
 /**
@@ -1322,71 +1430,62 @@ async function executeRestoreArchive(
     setRestorePhase("restoring_media", "Restoring case media files…");
     const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
     const profilePhotosDir = path.resolve(process.cwd(), "uploads", "profile-photos");
-
-    // Move existing case-media to trash (consistent with orphan-cleanup trash pattern).
-    if (fs.existsSync(mediaDir)) {
-      const trashBase = path.join(mediaDir, ".trash");
-      const trashStamp = path.join(trashBase, `restore-${Date.now()}`);
-      fs.mkdirSync(trashStamp, { recursive: true });
-      for (const entry of fs.readdirSync(mediaDir)) {
-        if (entry === ".trash" || entry === ".sessions") continue;
-        try {
-          fs.renameSync(path.join(mediaDir, entry), path.join(trashStamp, entry));
-        } catch {
-          // best-effort
-        }
-      }
+    // Coverage was authenticated before pg_restore. A partial archive may only
+    // add absent files: do not trash or overwrite originals on the target.
+    const preserveExistingMedia = completeEvidence?.recoveryCoverage === "partial";
+    // Older dumps may lack the new durable writer protocol. Restore its schema
+    // before any file mutation; never bulk-trash unrelated existing originals.
+    await ensureProductionMediaJournalSchema(true);
+    const receiptBaseline = Number((await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM labtrax_production_media_write_intents",
+    )).rows[0]?.count);
+    const archivedReceipts = completeEvidence?.tables.find(t =>
+      t.schema === "public" && t.name === "labtrax_production_media_write_intents");
+    if (!Number.isSafeInteger(receiptBaseline) || (archivedReceipts && receiptBaseline !== archivedReceipts.rows)) {
+      throw new Error("Restored media audit baseline does not match the recovery archive.");
     }
     fs.mkdirSync(mediaDir, { recursive: true });
-
-    // Move existing profile-photos to trash before overwriting.
-    const profilePhotosTrashDir = path.resolve(process.cwd(), "uploads", "profile-photos", ".trash");
-    if (fs.existsSync(profilePhotosDir)) {
-      const profileTrashStamp = path.join(profilePhotosTrashDir, `restore-profile-${Date.now()}`);
-      fs.mkdirSync(profileTrashStamp, { recursive: true });
-      for (const entry of fs.readdirSync(profilePhotosDir)) {
-        try {
-          fs.renameSync(path.join(profilePhotosDir, entry), path.join(profileTrashStamp, entry));
-        } catch {
-          // best-effort
-        }
-      }
-    }
     fs.mkdirSync(profilePhotosDir, { recursive: true });
 
     // Extract media/ entries from ZIP into mediaDir.
-    for (const entry of zip.getEntries()) {
+    for (const entry of preserveExistingMedia || completeEvidence ? [] : zip.getEntries()) {
       const entryName = entry.entryName;
       if (!entryName.startsWith("media/")) continue;
       const relative = entryName.slice("media/".length);
       if (!relative) continue; // skip the directory entry itself
       const destPath = path.join(mediaDir, relative);
-      const destDir = path.dirname(destPath);
-      fs.mkdirSync(destDir, { recursive: true });
       if (!entry.isDirectory) {
-        await writeRecoveryEntry(entry, destPath);
+        await restoreLocalRecoveryEntry(entry, destPath, `case-media/${relative}`);
       }
     }
 
     // Extract profile-photos/ entries from ZIP into profilePhotosDir.
     // Older backups that pre-date this feature simply have no profile-photos/ entries,
     // so this loop is a silent no-op for them.
-    for (const entry of zip.getEntries()) {
+    for (const entry of preserveExistingMedia || completeEvidence ? [] : zip.getEntries()) {
       const entryName = entry.entryName;
       if (!entryName.startsWith("profile-photos/")) continue;
       const relative = entryName.slice("profile-photos/".length);
       if (!relative) continue; // skip the directory entry itself
       const destPath = path.join(profilePhotosDir, relative);
-      const destDir = path.dirname(destPath);
-      fs.mkdirSync(destDir, { recursive: true });
       if (!entry.isDirectory) {
-        await writeRecoveryEntry(entry, destPath);
+        await restoreLocalRecoveryEntry(entry, destPath, `local-uploads/profile-photos/${relative}`);
       }
     }
 
-    const completeRecovery = validateCompleteRecovery(zip);
+    const completeRecovery = completeEvidence;
     if (completeRecovery) {
-      await restoreCompleteFiles(zip, completeRecovery, getUploadsRoot());
+      const fileResult = await restoreCompleteFiles(zip, completeRecovery, getUploadsRoot(), {
+        caseMediaRoot: mediaDir,
+      });
+      manifest.preservedExistingFileCount = fileResult.preservedExistingFiles;
+      await validateRecoveryMediaReceipts(fileResult.mediaWriteReceiptIds);
+      const finalReceipts = Number((await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM labtrax_production_media_write_intents",
+      )).rows[0]?.count);
+      if (finalReceipts !== receiptBaseline + fileResult.mediaWriteReceiptIds.length) {
+        throw new Error("Recovery media audit receipt count does not reconcile.");
+      }
       // Every application table was dumped. Verify the restored coverage, not
       // just the historical four UI counts. Sessions are intentionally retained.
       for (const table of completeRecovery.tables) {
@@ -1395,7 +1494,9 @@ async function executeRestoreArchive(
         const result = await pool.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM ${quote(table.schema)}.${quote(table.name)}`,
         );
-        if (Number(result.rows[0]?.count) !== table.rows) {
+        const derivedReceipts = table.schema === "public" && table.name === "labtrax_production_media_write_intents"
+          ? fileResult.mediaWriteReceiptIds.length : 0;
+        if (Number(result.rows[0]?.count) !== table.rows + derivedReceipts) {
           throw new Error(`Complete recovery row-count mismatch in ${table.schema}.${table.name}.`);
         }
       }
@@ -1457,7 +1558,9 @@ async function executeRestoreArchive(
 
     _restoreState = {
       phase: "done",
-      message: "Restore complete.",
+      message: manifest.recoveryCoverage === "partial"
+        ? `Restore completed with warnings: ${manifest.missingFileCount} original files are missing. Database references were preserved; existing media was not removed.`
+        : "Restore complete.",
       startedAt: _restoreState.startedAt,
       completedAt: new Date().toISOString(),
     };
@@ -1534,6 +1637,7 @@ function buildBackupManifest(
   archiveKind: BackupArchiveKind = "full",
 ): Record<string, unknown> {
   const includesMedia = archiveKind === "full" ||
+    archiveKind === "partial-production" || archiveKind === "partial-non-production" ||
     archiveKind === COMPLETE_PRODUCTION_KIND ||
     archiveKind === COMPLETE_DEVELOPMENT_KIND;
   return {
@@ -1588,6 +1692,7 @@ function createBackupArchive(
   const profilePhotosDir = path.join(getUploadsRoot(), "profile-photos");
 
   const includeMedia = archiveKind === "full" ||
+    archiveKind === "partial-production" || archiveKind === "partial-non-production" ||
     archiveKind === COMPLETE_PRODUCTION_KIND ||
     archiveKind === COMPLETE_DEVELOPMENT_KIND;
   const mediaExists        = !includeMedia ? false : uploadDirs ? uploadDirs.caseMedia.exists    : fs.existsSync(mediaDir);
@@ -1831,6 +1936,8 @@ async function writeEncryptedBackupArchive(
           ? new BackupTimeoutError(
             "Backup timed out while assembling the archive — the partial archive was discarded.",
           )
+          : deadline.cancelled()
+            ? new BackupCancelledError()
           : new Error(
             "Backup destination disconnected while the archive was being written — the partial archive was discarded.",
           ));
@@ -1984,7 +2091,7 @@ async function assembleAndEncryptBackupToFile(
   }
 }
 
-type CompleteArchiveKind = typeof COMPLETE_PRODUCTION_KIND | typeof COMPLETE_DEVELOPMENT_KIND;
+type CompleteArchiveKind = typeof COMPLETE_PRODUCTION_KIND | typeof COMPLETE_DEVELOPMENT_KIND | "partial-production" | "partial-non-production";
 
 interface CompleteBackupArchive {
   prepared: PreparedBackupArchive;
@@ -1997,6 +2104,9 @@ interface CompleteBackupArchive {
   /** Uncompressed bytes of every required file, the archive's size bound. */
   durableBytes: number;
   dumpBytes: number;
+  missingFileCount: number;
+  partialFailure: boolean;
+  warnings: string | null;
 }
 
 /**
@@ -2012,13 +2122,19 @@ async function prepareCompleteBackupArchive(
   archiveDestination: CompleteArchiveDestination,
 ): Promise<CompleteBackupArchive> {
   deadline?.throwIfExpired("complete recovery capture");
-  const captured = await captureCompleteBackup(
+  const captured = await measureBackupPhase("recovery capture", () => captureCompleteBackup(
     getUploadsRoot(),
     (snapshot) => buildPgDumpBuffer(deadline, snapshot),
     deadline?.signal,
-    { archiveDestination },
-  );
-  const archiveKind: CompleteArchiveKind = captured.manifest.sourceEnvironment === "production"
+    { archiveDestination, allowMissingReferences: true, productionDataOnly: true },
+  ));
+  const missingFileCount = captured.manifest.missingReferences?.length ?? 0;
+  const partialFailure = missingFileCount > 0;
+  const warnings = partialFailure
+    ? `${missingFileCount} original lab files are unavailable. Database records and references are preserved; readable files are included. See missing-files.json. This is not a complete recovery point.`
+    : null;
+  const archiveKind: CompleteArchiveKind = partialFailure
+    ? `partial-${captured.manifest.sourceEnvironment}` : captured.manifest.sourceEnvironment === "production"
     ? COMPLETE_PRODUCTION_KIND
     : COMPLETE_DEVELOPMENT_KIND;
   const prepared = prepareBackupArchive(
@@ -2036,6 +2152,8 @@ async function prepareCompleteBackupArchive(
       completionFooter: true,
     },
   );
+  prepared.manifest.recoveryCoverage = partialFailure ? "partial" : "complete";
+  prepared.manifest.missingFileCount = missingFileCount;
   const mediaFileCount = captured.uploadDirs.caseMedia.fileCount;
   const attachmentRowCount = captured.counts.attachmentRowCount;
   setBackupLiveArchiveEvidence({
@@ -2043,6 +2161,7 @@ async function prepareCompleteBackupArchive(
     coverageVersion: COMPLETE_BACKUP_VERSION,
     mediaFileCount,
     attachmentRowCount,
+    missingFileCount,
   });
   return {
     prepared,
@@ -2054,6 +2173,7 @@ async function prepareCompleteBackupArchive(
     mediaFileCount,
     durableBytes: captured.durableBytes,
     dumpBytes: captured.pgDump.length,
+    missingFileCount, partialFailure, warnings,
   };
 }
 
@@ -2196,7 +2316,8 @@ export async function runLocalBackup(
     path: destFile,
     mediaFileCount: backup.mediaFileCount,
     attachmentRowCount: backup.attachmentRowCount,
-    partialFailure: false,
+    partialFailure: backup.partialFailure,
+    warnings: backup.warnings,
   };
 }
 
@@ -2254,6 +2375,8 @@ async function runSftpBackup(
     archiveKind: backup.archiveKind,
     mediaFileCount: backup.mediaFileCount,
     attachmentRowCount: backup.attachmentRowCount,
+    partialFailure: backup.partialFailure,
+    warnings: backup.warnings,
     parsed,
     deadline,
     write: (destination, onProgress) =>
@@ -2272,6 +2395,8 @@ export async function sendBackupOverSftp(args: {
   archiveKind: CompleteArchiveKind;
   mediaFileCount: number;
   attachmentRowCount: number;
+  partialFailure?: boolean;
+  warnings?: string | null;
   parsed: URL;
   deadline?: BackupDeadline;
   /** Writes the complete archive to `destination`; resolves with its byte count. */
@@ -2379,7 +2504,8 @@ export async function sendBackupOverSftp(args: {
     path: remoteFile,
     mediaFileCount,
     attachmentRowCount,
-    partialFailure: false,
+    partialFailure: args.partialFailure ?? false,
+    warnings: args.warnings ?? null,
   };
 }
 
@@ -2585,7 +2711,7 @@ export async function runOneDriveBackup(
       // Retention may run only after the complete recovery point is confirmed.
       try {
         const policy = await getOneDriveRetentionPolicy();
-        await pruneOneDriveBackups({ ...policy, completeItemIds: [...(policy.completeItemIds ?? []), uploaded.itemId] });
+        if (!archive.partialFailure) await pruneOneDriveBackups({ ...policy, completeItemIds: [...(policy.completeItemIds ?? []), uploaded.itemId] });
       } catch (error) {
         logger.warn({ err: safeBackupError(error) }, "[backup] Retention failed; complete archive preserved");
       }
@@ -2596,7 +2722,7 @@ export async function runOneDriveBackup(
         destination: "onedrive", path: oneDriveItemPath(uploaded.itemId),
         mediaFileCount: archive.mediaFileCount,
         attachmentRowCount: archive.attachmentRowCount,
-        partialFailure: false, warnings: null,
+        partialFailure: archive.partialFailure, warnings: archive.warnings,
       };
     } finally {
       await stage.cleanup();
@@ -2768,10 +2894,11 @@ export async function recordDesktopReportedBackupRun(input: {
   error?: string | null;
   downloadRunId?: string;
   archiveEvidence?: {
-    archiveKind: typeof COMPLETE_PRODUCTION_KIND | typeof COMPLETE_DEVELOPMENT_KIND;
+    archiveKind: CompleteArchiveKind | "database-only";
     coverageVersion: number;
     mediaFileCount: number;
     attachmentRowCount: number;
+    missingFileCount?: number;
   };
 }): Promise<{ completedAt: string; rejected: boolean; rejectionReason: string | null; errorReason?: string | null }> {
   const completedAt = new Date();
@@ -2787,9 +2914,14 @@ export async function recordDesktopReportedBackupRun(input: {
     reportedSize !== null &&
     reportedSize < minPlausibleBackupBytes();
 
-  const missingCompleteEvidence = input.status === "success" && (
+  const databaseOnlyEvidence = input.downloadRunId && input.archiveEvidence?.archiveKind === "database-only" &&
+    input.archiveEvidence.coverageVersion === 0 && input.archiveEvidence.mediaFileCount === 0 &&
+    Number.isSafeInteger(input.archiveEvidence.attachmentRowCount) && input.archiveEvidence.attachmentRowCount >= 0;
+  const partialEvidence = input.downloadRunId && input.archiveEvidence?.archiveKind.startsWith("partial-") &&
+    Number.isSafeInteger(input.archiveEvidence.missingFileCount) && (input.archiveEvidence.missingFileCount ?? 0) > 0;
+  const missingCompleteEvidence = input.status === "success" && !databaseOnlyEvidence && (
     input.archiveEvidence?.coverageVersion !== COMPLETE_BACKUP_VERSION ||
-    ![COMPLETE_PRODUCTION_KIND, COMPLETE_DEVELOPMENT_KIND].includes(input.archiveEvidence.archiveKind) ||
+    (!partialEvidence && ![COMPLETE_PRODUCTION_KIND, COMPLETE_DEVELOPMENT_KIND].includes(input.archiveEvidence.archiveKind)) ||
     !Number.isSafeInteger(input.archiveEvidence.mediaFileCount) || input.archiveEvidence.mediaFileCount < 0 ||
     !Number.isSafeInteger(input.archiveEvidence.attachmentRowCount) || input.archiveEvidence.attachmentRowCount < 0
   );
@@ -2822,8 +2954,9 @@ export async function recordDesktopReportedBackupRun(input: {
     archiveKind: status === "success" ? input.archiveEvidence?.archiveKind : undefined,
     mediaFileCount: status === "success" ? input.archiveEvidence?.mediaFileCount : undefined,
     attachmentRowCount: status === "success" ? input.archiveEvidence?.attachmentRowCount : undefined,
-    partialFailure: false,
-    warnings: null,
+    partialFailure: status === "success" && !!partialEvidence,
+    warnings: status === "success" && partialEvidence
+      ? `${input.archiveEvidence!.missingFileCount} original files unavailable; see missing-files.json. Not a complete recovery point.` : null,
     status,
     error:
       status === "error"
@@ -2846,8 +2979,8 @@ export async function recordDesktopReportedBackupRun(input: {
     await db.insert(backupRuns).values(values);
   }
   await pruneBackupHistory();
-  if (newlyRecorded && (stored?.status ?? status) === "success") {
-    await recordSuccessfulBackup();
+  if (newlyRecorded && (stored?.status ?? status) === "success" && !databaseOnlyEvidence) {
+    if (!partialEvidence) await recordSuccessfulBackup();
   }
   return {
     completedAt: (stored?.completedAt ?? completedAt).toISOString(),
@@ -3031,7 +3164,8 @@ async function recordBackupRun(
     });
   } catch (err) {
     logger.warn({ err }, "Failed to record backup run in DB");
-    if (result.archiveKind === COMPLETE_PRODUCTION_KIND || result.archiveKind === COMPLETE_DEVELOPMENT_KIND) throw err;
+    if (result.archiveKind === COMPLETE_PRODUCTION_KIND || result.archiveKind === COMPLETE_DEVELOPMENT_KIND ||
+        result.archiveKind?.startsWith("partial-")) throw err;
     return;
   }
   await pruneBackupHistory();
@@ -3120,11 +3254,11 @@ export async function generateBackupForDownload(triggeredBy: string): Promise<{
 export async function streamBackupDownload(
   triggeredBy: string,
   res: import("express").Response,
-  opts: { recordHistory?: boolean; runId?: string } = {},
+  opts: { recordHistory?: boolean; runId?: string; archiveKind?: "full" | "database-only" } = {},
 ): Promise<void> {
   return withBackupRun(async () => {
     res.setHeader?.("X-Backup-Run-Id", getBackupRunId()!);
-    const ownedDeadline = createBackupDeadline(await getBackupRunTimeoutMs());
+    const ownedDeadline = createBackupDeadline(await getBackupRunTimeoutMs(opts.archiveKind ?? "full"));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const disconnected = () => { if (!res.writableFinished) abort(); };
@@ -3148,10 +3282,140 @@ export async function streamBackupDownload(
   }, opts.runId);
 }
 
+/**
+ * Prepare a browser-delivered manual archive in private bounded object storage.
+ * This decouples generation from the renderer and lets a later page request
+ * stream the same sealed archive again without a local whole-archive spool.
+ */
+export async function generateManualBrowserBackupArchive(
+  triggeredBy: string,
+  runId: string,
+  archiveKind: "full" | "database-only",
+  cancellationSignal: AbortSignal,
+  registerCleanup?: (cleanup: () => Promise<void>) => void,
+): Promise<void> {
+  const deadline = createBackupDeadline(
+    await getBackupRunTimeoutMs(archiveKind),
+    cancellationSignal,
+  );
+  let stage: Awaited<ReturnType<typeof createBackupCloudStage>> | undefined;
+  try {
+    const sourceEnvironment = isProductionDeployment() ? "production" : "non-production";
+    let prepared: PreparedBackupArchive;
+    let deliveryKind: BackupDeliveryStatus["archiveKind"];
+    if (archiveKind === "database-only") {
+      const [pgDump, counts] = await Promise.all([
+        buildPgDumpBuffer(deadline),
+        measureBackupPhase("database manifest counts",
+          () => abortableBackupOperation(buildManifestCounts(), deadline.signal)),
+      ]);
+      const empty = { exists: false, fileCount: 0, totalBytes: 0 };
+      prepared = prepareBackupArchive(triggeredBy, pgDump, counts, {
+        caseMedia: empty,
+        profilePhotos: empty,
+      }, { includeProfilePhotos: false, archiveKind: "database-only", completionFooter: true });
+      prepared.manifest.sourceEnvironment = sourceEnvironment;
+      setBackupLiveArchiveEvidence({
+        archiveKind: "database-only",
+        coverageVersion: 0,
+        mediaFileCount: 0,
+        attachmentRowCount: counts.attachmentRowCount,
+      });
+      deliveryKind = "database-only";
+    } else {
+      const archive = await prepareCompleteBackupArchive(triggeredBy, deadline, "cloud");
+      prepared = archive.prepared;
+      deliveryKind = archive.archiveKind;
+    }
+    deadline.throwIfExpired("browser backup staging");
+    stage = await measureBackupPhase("private cloud staging setup", () =>
+      createBackupCloudStage(sourceEnvironment, deadline.timeoutMs, deadline.signal, runId));
+    registerCleanup?.(() => stage!.cleanup());
+    const result = await writeBackupArchiveToTarget(stage, prepared, deadline);
+    deadline.throwIfExpired("browser backup staging");
+    setBackupLiveDelivery({
+      fileName: result.fileName,
+      size: result.size,
+      archiveKind: deliveryKind,
+      sourceEnvironment,
+      expiresAt: new Date(stage.expiresAt).toISOString(),
+    });
+    await markBackupLiveAwaitingVerification(getBackupRunId());
+    deadline.throwIfExpired("browser backup staging");
+  } catch (error) {
+    await stage?.cleanup();
+    if (deadline.cancelled()) throw new BackupCancelledError();
+    try {
+      await recordBackupError(triggeredBy, "local", undefined, safeBackupError(error), runId);
+    } catch (recordError) {
+      logger.warn({ runId, error: safeBackupError(recordError) },
+        "[backup] Browser backup generation failure could not be added to history");
+    }
+    throw error;
+  } finally {
+    deadline.dispose();
+  }
+}
+
+/** Stream a previously sealed browser archive in bounded App Storage ranges. */
+export async function streamManualBrowserBackupArchive(
+  runId: string,
+  res: import("express").Response,
+  cancellationSignal: AbortSignal,
+  delivery: NonNullable<NonNullable<Awaited<ReturnType<typeof readBackupLiveStatus>>>["delivery"]>,
+): Promise<void> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  cancellationSignal.addEventListener("abort", cancel, { once: true });
+  const disconnected = () => {
+    if (!res.writableFinished) controller.abort();
+  };
+  res.on("close", disconnected);
+  const stage = await openBackupCloudStage(delivery.sourceEnvironment, runId, controller.signal);
+  if (stage.size !== delivery.size) {
+    await stage.cleanup();
+    throw new Error("The staged browser backup size no longer matches its verified run status.");
+  }
+  const status = await readBackupLiveStatus(runId);
+  const evidence = status?.archiveEvidence;
+  res.status(200);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${delivery.fileName}"`);
+  res.setHeader("Content-Length", String(delivery.size));
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Backup-Run-Id", runId);
+  res.setHeader("X-Backup-Archive-Kind", delivery.archiveKind);
+  res.setHeader("X-Backup-Coverage-Version", delivery.archiveKind === "database-only" ? "0" : String(COMPLETE_BACKUP_VERSION));
+  res.setHeader("X-Backup-Source", delivery.sourceEnvironment === "production" ? "production" : "development");
+  res.setHeader("X-Backup-Media-File-Count", String(evidence?.mediaFileCount ?? 0));
+  res.setHeader("X-Backup-Attachment-Row-Count", String(evidence?.attachmentRowCount ?? 0));
+  res.setHeader("X-Backup-Missing-File-Count", String(evidence?.missingFileCount ?? 0));
+  const chunks = Readable.from((async function* () {
+    for (let offset = 0; offset < stage.size; offset += MAX_BACKUP_RANGE_BYTES) {
+      const length = Math.min(MAX_BACKUP_RANGE_BYTES, stage.size - offset);
+      yield await stage.readChunk(offset, length);
+    }
+  })());
+  try {
+    await pipeline(chunks, res);
+  } finally {
+    res.removeListener("close", disconnected);
+    cancellationSignal.removeEventListener("abort", cancel);
+  }
+}
+
+export async function cleanupManualBrowserBackupArchive(
+  runId: string,
+  sourceEnvironment: "production" | "non-production",
+): Promise<void> {
+  const stage = await openBackupCloudStage(sourceEnvironment, runId, new AbortController().signal);
+  await stage.cleanup();
+}
+
 async function streamBackupDownloadWithinDeadline(
   triggeredBy: string,
   res: import("express").Response,
-  opts: { recordHistory?: boolean },
+  opts: { recordHistory?: boolean; archiveKind?: "full" | "database-only" },
   deadline: BackupDeadline,
 ): Promise<void> {
   // recordHistory=false is the desktop-scheduler path: a successful download
@@ -3164,7 +3428,26 @@ async function streamBackupDownloadWithinDeadline(
   // user watches the result directly and a browser download has no
   // post-download write step to wait for.
   const recordHistory = opts.recordHistory !== false;
-  const backup = await prepareCompleteBackupArchive(triggeredBy, deadline, "direct");
+  // An explicit database-only request preserves every database row/reference,
+  // but neither reads media nor claims complete recovery coverage. Never fall
+  // back to this mode after a failed complete capture.
+  const databaseOnly = opts.archiveKind === "database-only";
+  const backup = databaseOnly ? await (async () => {
+    const pgDump = await buildPgDumpBuffer(deadline);
+    const counts = await buildManifestCounts();
+    const empty = { exists: false, fileCount: 0, totalBytes: 0 };
+    const prepared = prepareBackupArchive(triggeredBy, pgDump, counts,
+      { caseMedia: empty, profilePhotos: empty },
+      { includeProfilePhotos: false, archiveKind: "database-only", completionFooter: true });
+    prepared.manifest.sourceEnvironment = isProductionDeployment() ? "production" : "non-production";
+    setBackupLiveArchiveEvidence({
+      archiveKind: "database-only", coverageVersion: 0, mediaFileCount: 0,
+      attachmentRowCount: counts.attachmentRowCount,
+    });
+    return { prepared, fileName: prepared.fileName, archiveKind: "database-only" as const,
+      mediaFileCount: 0, attachmentRowCount: counts.attachmentRowCount,
+      missingFileCount: 0, partialFailure: false, warnings: null };
+  })() : await prepareCompleteBackupArchive(triggeredBy, deadline, "direct");
   const runId = getBackupRunId();
   res.status(200);
   res.setHeader("Content-Type", "application/octet-stream");
@@ -3173,9 +3456,11 @@ async function streamBackupDownloadWithinDeadline(
   // footer records the exact byte count so the client detects truncation.
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Backup-Archive-Kind", backup.archiveKind);
-  res.setHeader("X-Backup-Coverage-Version", String(COMPLETE_BACKUP_VERSION));
+  res.setHeader("X-Backup-Coverage-Version", databaseOnly ? "0" : String(COMPLETE_BACKUP_VERSION));
+  res.setHeader("X-Backup-Source", isProductionDeployment() ? "production" : "development");
   res.setHeader("X-Backup-Media-File-Count", String(backup.mediaFileCount));
   res.setHeader("X-Backup-Attachment-Row-Count", String(backup.attachmentRowCount));
+  res.setHeader("X-Backup-Missing-File-Count", String(backup.missingFileCount));
 
   let transferredBytes = 0;
   const size = await measureBackupPhase(
@@ -3190,7 +3475,7 @@ async function streamBackupDownloadWithinDeadline(
 
   if (recordHistory) {
     const completedAt = new Date().toISOString();
-    await recordSuccessfulBackup();
+    if (!databaseOnly && !backup.partialFailure) await recordSuccessfulBackup();
     await recordBackupRun({
       size,
       completedAt,
@@ -3201,7 +3486,8 @@ async function streamBackupDownloadWithinDeadline(
       triggeredBy,
       mediaFileCount: backup.mediaFileCount,
       attachmentRowCount: backup.attachmentRowCount,
-      partialFailure: false,
+      partialFailure: backup.partialFailure,
+      warnings: backup.warnings,
       downloadRunId: runId,
     });
   } else {
@@ -3213,10 +3499,13 @@ export async function runBackup(
   triggeredBy: string,
   destination: BackupDestination,
   destPath?: string,
-  options: { archiveKind?: BackupArchiveKind; deadline?: BackupDeadline } = {},
+  options: { archiveKind?: BackupArchiveKind; deadline?: BackupDeadline; cancellationSignal?: AbortSignal } = {},
 ): Promise<BackupRunResult> {
   return withBackupRun(async () => {
-  const ownedDeadline = options.deadline ? undefined : createBackupDeadline(await getBackupRunTimeoutMs(options.archiveKind ?? "full"));
+  const ownedDeadline = options.deadline ? undefined : createBackupDeadline(
+    await getBackupRunTimeoutMs(options.archiveKind ?? "full"),
+    options.cancellationSignal,
+  );
   options = { ...options, deadline: options.deadline ?? ownedDeadline };
   try {
   let result: BackupRunResult;
@@ -3237,6 +3526,7 @@ export async function runBackup(
       throw new Error(`Unknown backup destination: ${destination}`);
     }
   } catch (err: unknown) {
+    if (options.deadline?.cancelled()) throw new BackupCancelledError();
     if (options.deadline?.expired() && !(err instanceof BackupTimeoutError)) {
       const phases = [...safeBackupError(err).matchAll(/Backup failed during ([^:]+?) after /g)];
       const phase = phases.at(-1)?.[1] ?? "backup generation";
@@ -3662,12 +3952,30 @@ function releaseBackupSlot(slot: BackupSlot): void {
   _scheduledBackupStartedAtMs = null;
   _scheduledBackupDeadlineMs = 0;
   _scheduledBackupArchiveKind = null;
+  schedulePendingProtectionCatchup();
+}
+
+function schedulePendingProtectionCatchup(): void {
+  if (process.env.VITEST || process.env.NODE_ENV === "test" || !isProductionDeployment()) return;
+  setTimeout(() => {
+    void hasPendingDatabaseProtectionCatchup()
+      .then(pending => pending ? fireOffsiteBackup("catchup") : undefined)
+      .catch(error => logger.warn(
+        { err: safeBackupError(error) },
+        "[backup] Could not check persisted production catch-up state",
+      ));
+  }, 0);
 }
 
 let _scheduledBackupRunnerForTests: typeof runBackup | null = null;
 export async function fireScheduledBackup() {
   const config = await getBackupScheduleConfig();
   if (!config.enabled || !config.destination) return;
+  if (isProductionDeployment() && (config.destination === "onedrive" || config.destination === "google-drive")) {
+    // Both cloud destinations use the same serialized incremental capture.
+    await fireOffsiteBackup("interval");
+    return;
+  }
   const label = `scheduler:interval`;
 
   // Local-folder schedules are executed by the LabTrax Desktop app while it is
@@ -3830,6 +4138,9 @@ export async function fireScheduledBackup() {
  * in backup_runs with triggeredBy "admin:manual-schedule-test".
  */
 export async function runScheduledBackupNow(): Promise<BackupRunResult> {
+  if (isProductionDeployment()) {
+    throw new Error("Production schedules use asynchronous production records-and-media protection, not the legacy archive schedule runner.");
+  }
   const config = await getBackupScheduleConfig();
   if (!config.enabled) {
     throw new Error("No schedule is currently enabled. Enable and save a schedule before running it.");
@@ -3907,7 +4218,7 @@ export async function restartScheduledBackupJob(): Promise<void> {
   // entry point the server calls at startup. It is NOT conditional on the
   // editable schedule below: whatever the admin has configured there, a
   // verified off-site copy every fifteen minutes is the floor.
-  startOffsiteBackupProtection();
+  startOffsiteBackupProtection(true);
 
   if (_scheduledIntervalTimer !== null) {
     clearTimeout(_scheduledIntervalTimer);
@@ -3944,6 +4255,7 @@ export async function restartScheduledBackupJob(): Promise<void> {
         "[backup] Scheduled backup tick threw; the schedule continues",
       );
     }
+    if (generation !== _schedulerGeneration) return;
     const nextDueMs = nextScheduleSlotMs(Date.now(), intervalMinutes);
     await writeSystemSetting(
       SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT,
@@ -3996,9 +4308,13 @@ export async function restartScheduledBackupJob(): Promise<void> {
 
 let _offsiteIntervalTimer: ReturnType<typeof setTimeout> | null = null;
 let _offsiteMonitorTimer: ReturnType<typeof setInterval> | null = null;
+let _offsiteCatchupTimer: ReturnType<typeof setInterval> | null = null;
+let _offsiteTimerGeneration = 0;
 
 /** How often the watchdog asks "is there a recent verified off-site copy?". */
 const OFFSITE_MONITOR_INTERVAL_MS = 5 * 60 * 1000;
+/** Poll persisted coalesced work so another server instance can drain it after a lock release. */
+const OFFSITE_CATCHUP_POLL_INTERVAL_MS = 30 * 1000;
 /** Let the server finish booting before the catch-up run and first check. */
 const OFFSITE_STARTUP_DELAY_MS = 2 * 60 * 1000;
 /** Repeat alert emails at most this often while an outage continues. */
@@ -4007,6 +4323,7 @@ const OFFSITE_ALERT_EMAIL_RATE_LIMIT_MS = 6 * 60 * 60 * 1000;
 export interface OffsiteBackupConfig {
   enabled: boolean;
   intervalMinutes: number;
+  destination: BackupDestination;
 }
 
 /**
@@ -4018,6 +4335,7 @@ export interface OffsiteBackupConfig {
 export async function getOffsiteBackupConfig(): Promise<OffsiteBackupConfig> {
   let enabled = true;
   let intervalMinutes = DEFAULT_OFFSITE_INTERVAL_MINUTES;
+  let destination: BackupDestination = "onedrive";
 
   const envInterval = parseInt(process.env.OFFSITE_BACKUP_INTERVAL_MINUTES || "", 10);
   if (Number.isFinite(envInterval) && envInterval > 0) intervalMinutes = envInterval;
@@ -4028,9 +4346,26 @@ export async function getOffsiteBackupConfig(): Promise<OffsiteBackupConfig> {
       .select()
       .from(systemSettings)
       .where(
-        sql`${systemSettings.key} in (${SETTING_BACKUP_OFFSITE_ENABLED}, ${SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES}, ${SETTING_BACKUP_SCHEDULE_ENABLED}, ${SETTING_BACKUP_SCHEDULE_DESTINATION}, ${SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES})`,
+        sql`${systemSettings.key} in (${SETTING_BACKUP_OFFSITE_ENABLED}, ${SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES}, ${SETTING_BACKUP_SCHEDULE_ROUTING_VERSION}, ${SETTING_BACKUP_SCHEDULE_ENABLED}, ${SETTING_BACKUP_SCHEDULE_DESTINATION}, ${SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES})`,
       );
     const byKey = new Map(rows.map((r) => [r.key, r.value]));
+
+    if (isProductionDeployment()) {
+      // Earlier deployments ignored these editable rows. Preserve their live
+      // OneDrive protection until a new schedule is explicitly saved.
+      if (byKey.get(SETTING_BACKUP_SCHEDULE_ROUTING_VERSION) !== "2") {
+        return { enabled: true, intervalMinutes: DEFAULT_OFFSITE_INTERVAL_MINUTES, destination: "onedrive" };
+      }
+      enabled = byKey.get(SETTING_BACKUP_SCHEDULE_ENABLED) === "true";
+      const savedDestination = byKey.get(SETTING_BACKUP_SCHEDULE_DESTINATION);
+      if (["onedrive", "google-drive", "local", "network"].includes(String(savedDestination))) {
+        destination = savedDestination as BackupDestination;
+        enabled = byKey.get(SETTING_BACKUP_SCHEDULE_ENABLED) === "true";
+        const savedInterval = Number(byKey.get(SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES));
+        if ([5, 15, 20, 30, 60, 360, 1440].includes(savedInterval)) intervalMinutes = savedInterval;
+      }
+      return { enabled: enabled && (destination === "onedrive" || destination === "google-drive"), intervalMinutes, destination };
+    }
 
     const enabledRaw = byKey.get(SETTING_BACKUP_OFFSITE_ENABLED);
     if (enabledRaw !== undefined && enabledRaw !== null) {
@@ -4057,6 +4392,9 @@ export async function getOffsiteBackupConfig(): Promise<OffsiteBackupConfig> {
       }
     }
   } catch (err: unknown) {
+    // Never silently fall back to another provider after an administrator has
+    // changed the destination. A failed config read must fail closed.
+    if (isProductionDeployment()) throw err;
     // Defaults already give the required protection; a settings read failure
     // must not be the reason backups stop.
     logger.warn(
@@ -4069,11 +4407,7 @@ export async function getOffsiteBackupConfig(): Promise<OffsiteBackupConfig> {
     MAX_OFFSITE_INTERVAL_MINUTES,
     Math.max(MIN_OFFSITE_INTERVAL_MINUTES, intervalMinutes),
   );
-  if (isProductionDeployment()) {
-    enabled = true;
-    intervalMinutes = DEFAULT_OFFSITE_INTERVAL_MINUTES;
-  }
-  return { enabled, intervalMinutes };
+  return { enabled, intervalMinutes, destination };
 }
 
 /**
@@ -4083,6 +4417,7 @@ export async function getOffsiteBackupConfig(): Promise<OffsiteBackupConfig> {
  */
 export async function getLastVerifiedOffsiteBackupAt(): Promise<string | null> {
   try {
+    if (isProductionDeployment()) return (await getDatabaseProtectionStatus()).lastVerifiedAt;
     const rows = await db
       .select({ completedAt: backupRuns.completedAt })
       .from(backupRuns)
@@ -4205,7 +4540,7 @@ export interface OffsiteFreshnessVerdict {
   ageMinutes: number | null;
   windowMinutes: number;
   /** Which evidence the verdict rests on. */
-  source: "onedrive" | "database" | "none";
+  source: "onedrive" | "google-drive" | "database" | "none";
   /** True when the destination itself could not be read. */
   destinationUnreadable: boolean;
   /** Sentence an admin can act on; null when protection is healthy. */
@@ -4284,6 +4619,29 @@ export interface OffsiteFreshness extends OffsiteFreshnessVerdict {
 /** Freshness of off-site protection, judged from the destination itself. */
 export async function getOffsiteFreshness(now: Date = new Date()): Promise<OffsiteFreshness> {
   const config = await getOffsiteBackupConfig();
+  if (isProductionDeployment()) {
+    const cloudDestination = config.destination === "google-drive" ? "google-drive" : "onedrive";
+    const status = await getDatabaseProtectionStatus(undefined, cloudDestination);
+    const verificationError = databaseProtectionVerificationError(status, now.getTime(), config.intervalMinutes);
+    const verdict = evaluateOffsiteFreshness({
+      nowMs: now.getTime(), intervalMinutes: config.intervalMinutes, newestArchiveAt: status.recoveryPointAt,
+      listingError: verificationError,
+      lastVerifiedAt: null,
+    });
+    return {
+      ...verdict, source: verdict.source === "onedrive" ? cloudDestination : verdict.source,
+      reason: cloudDestination === "google-drive" ? verdict.reason?.replaceAll("OneDrive", "Google Drive") ?? null : verdict.reason,
+      enabled: config.enabled, intervalMinutes: config.intervalMinutes,
+      newestArchive: status.recoveryPointAt ? {
+        name: status.coverage === "partial" ? "Verified partial production recovery point" : "Verified production records and media point",
+        createdAt: status.recoveryPointAt,
+        sizeBytes: status.dumpBytes + status.mediaBytes,
+        ageMinutes: Math.max(0, (now.getTime() - Date.parse(status.recoveryPointAt)) / 60_000),
+      } : null,
+      archiveCount: null, listingError: verificationError,
+      lastVerifiedAt: status.lastVerifiedAt,
+    };
+  }
   const [{ archive, error, archiveCount }, lastVerifiedAt] = await Promise.all([
     getNewestOffsiteArchive(now),
     getLastVerifiedOffsiteBackupAt(),
@@ -4752,11 +5110,40 @@ async function clearOffsiteBackupAlarmState(): Promise<void> {
 }
 
 /**
+ * A healthy verdict is based on a recent complete archive matched to the
+ * configured destination listing. Only then retire active in-app offsite
+ * failure notifications and reset the alarm rate limits.
+ */
+export async function reconcileOffsiteBackupAlerts(
+  freshness: OffsiteFreshness,
+): Promise<void> {
+  if (!freshness.enabled || freshness.stale) return;
+
+  await clearOffsiteBackupAlarmState();
+  try {
+    await db
+      .update(notifications)
+      .set({ readAt: new Date() })
+      .where(
+        and(
+          eq(notifications.type, "backup_offsite_failure"),
+          isNull(notifications.readAt),
+        ),
+      );
+  } catch (err: unknown) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "[backup] Could not resolve active off-site backup notifications",
+    );
+  }
+}
+
+/**
  * Run one off-site backup. Never throws: a failure is recorded by runBackup
  * and alerted here, because the caller is a timer with nowhere to report to.
  */
 async function runOffsiteBackupAttempt(
-  trigger: "interval" | "startup" | "manual",
+  trigger: "interval" | "startup" | "manual" | "catchup",
   intervalMinutes: number,
   archiveKind: BackupArchiveKind,
   timeoutMs: number,
@@ -4785,12 +5172,25 @@ async function runOffsiteBackupAttempt(
         archiveKind: result.archiveKind ?? archiveKind,
         partialFailure: result.partialFailure ?? false,
       },
-      "[backup] Off-site backup verified in OneDrive",
+      result.partialFailure ? "[backup] OneDrive archive saved with missing-file warnings; full recovery remains unverified"
+        : "[backup] Off-site backup verified in OneDrive",
     );
     // No success email: at this cadence it would be 96 messages a day, and
     // mail people learn to ignore is worse than no mail. Silence means
     // healthy; the watchdog below is what breaks the silence.
-    await clearOffsiteBackupAlarmState();
+    if (result.partialFailure) {
+      await raiseOffsiteBackupAlarm(result.warnings ?? "The archive is partial; complete off-site recovery is still unverified.",
+        await getLastVerifiedOffsiteBackupAt());
+    } else {
+      try {
+        await reconcileOffsiteBackupAlerts(await getOffsiteFreshness());
+      } catch (err: unknown) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "[backup] Could not reconcile off-site backup alerts after a successful run",
+        );
+      }
+    }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await raiseOffsiteBackupAlarm(
@@ -4804,27 +5204,40 @@ async function runOffsiteBackupAttempt(
 }
 
 export async function fireOffsiteBackup(
-  trigger: "interval" | "startup" | "manual" = "interval",
+  trigger: "interval" | "startup" | "manual" | "catchup" = "interval",
 ): Promise<void> {
-  const config = await getOffsiteBackupConfig();
+  let config: OffsiteBackupConfig;
+  try { config = await getOffsiteBackupConfig(); }
+  catch (error) {
+    logger.error({ err: safeBackupError(error) }, "[backup] Could not read the selected backup destination; no provider work started.");
+    return;
+  }
   if (!config.enabled) {
     logger.info("[backup] Off-site backup protection is switched off; skipping");
     return;
   }
 
-  if (!isOneDriveConnectorAvailable()) {
+  const connectorAvailable = config.destination === "google-drive" ? isGoogleDriveConnectorAvailable() : isOneDriveConnectorAvailable();
+  if (!connectorAvailable) {
     await raiseOffsiteBackupAlarm(
-      "This server cannot reach OneDrive (the integration is not available to it).",
+      `This server cannot reach ${config.destination === "google-drive" ? "Google Drive" : "OneDrive"} (the integration is not available to it).`,
       await getLastVerifiedOffsiteBackupAt(),
     );
     return;
   }
 
   const label = "scheduler:offsite";
-  const archiveKind = await decideScheduledArchiveKind("onedrive", config.intervalMinutes);
+  const archiveKind = await decideScheduledArchiveKind(config.destination, config.intervalMinutes);
   const timeoutMs = await getBackupRunTimeoutMs(archiveKind);
   const slot = claimBackupSlot(label, archiveKind);
   if (slot === null) {
+    if (isProductionDeployment()) {
+      logger.info("[backup] Production records/media interval skipped/busy; an existing backup remains undisturbed.");
+      if (trigger !== "catchup") {
+        await noteDatabaseProtectionBusy().catch(() => logger.warn("[backup] Could not persist the skipped database interval."));
+      }
+      return;
+    }
     const reason = "Missed required complete recovery point: another backup is still running. " +
       "No database-only fallback was taken. Check backup duration, disk capacity and destination connectivity.";
     await recordBackupError(label, "onedrive", undefined, reason);
@@ -4844,6 +5257,60 @@ export async function fireOffsiteBackup(
   // interval schedule. Without the deadline the slot would expire against the
   // 90-minute fallback, and without the kind decision every fifteen-minute
   // tick would upload a full media archive.
+  if (isProductionDeployment()) {
+    const deadline = createBackupDeadline(timeoutMs);
+    let captured: CompleteBackupCaptured<true> | undefined;
+    try {
+      const status = await runDatabaseProtectionJob({
+        trigger,
+        destination: config.destination === "google-drive" ? "google-drive" : "onedrive",
+        intervalMinutes: config.intervalMinutes,
+        codec: { encrypt: encryptBuffer, decrypt: decryptBuffer },
+        capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords) => {
+          captured = await captureCompleteBackup(getUploadsRoot(),
+            snapshotToken => buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "custom"),
+            deadline.signal, {
+              archiveDestination: "direct", allowMissingReferences: true, productionDataOnly: true,
+              productionJournalAfterPosition: previousJournalPosition,
+              snapshot,
+              onMediaPinned,
+              streamDatabaseDump: true,
+              records: { previous: previousRecords ?? null, schemaSql: async snapshotToken => {
+                const parts: Buffer[] = [];
+                for await (const bytes of buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "plain")) parts.push(bytes);
+                return Buffer.concat(parts).toString("utf8");
+              } },
+            });
+          if (!captured.recordCapture) throw new Error("Production record capture evidence is missing.");
+          return {kind: RECORD_DELTA_FORMAT, records: captured.recordCapture,
+            schemaDump: captured.recordCapture.delta ? null : captured.pgDump};
+        },
+        captureMedia: async (write, selectPaths) => {
+          if (!captured) throw new Error("Production snapshot inventory was not captured.");
+          return captureProductionMedia(captured, write, selectPaths);
+        },
+        signal: deadline.signal,
+      });
+      if (status.state === "failed") {
+        await raiseOffsiteBackupAlarm(`Production records/media protection failed: ${status.error}`, status.lastVerifiedAt);
+      } else if (status.state === "verified") {
+        await reconcileOffsiteBackupAlerts(await getOffsiteFreshness());
+      } else if (status.state === "partial") {
+        await raiseOffsiteBackupAlarm(
+          `Production recovery point is partial: ${status.missingFiles} original files remain unavailable. ` +
+            "The partial point is retained, but complete-recovery freshness was not advanced.",
+          status.lastVerifiedAt,
+        );
+      }
+    } catch (error) {
+      await raiseOffsiteBackupAlarm(`Production records/media protection could not run: ${safeBackupError(error)}`,
+        (await getDatabaseProtectionStatus()).lastVerifiedAt);
+    } finally {
+      try { await captured?.dispose?.(); }
+      finally { deadline.dispose(); releaseBackupSlot(slot); }
+    }
+    return;
+  }
   await runOffsiteBackupAttempt(trigger, config.intervalMinutes, archiveKind, timeoutMs, slot);
 }
 
@@ -4851,6 +5318,7 @@ export interface OffsiteProtectionStatus extends OffsiteBackupConfig {
   /** True when this process has the off-site timers armed right now. */
   running: boolean;
   lastVerifiedAt: string | null;
+  databaseProtection?: DatabaseProtectionStatus;
 }
 
 /**
@@ -4865,6 +5333,13 @@ export async function getOffsiteProtectionStatus(): Promise<OffsiteProtectionSta
     getOffsiteBackupConfig(),
     getLastVerifiedOffsiteBackupAt(),
   ]);
+  if (isProductionDeployment()) {
+    const databaseProtection = await getDatabaseProtectionStatus();
+    return { ...config, running: _offsiteIntervalTimer !== null,
+      // Preserve the legacy full-media watermark. Database-only proof lives in
+      // its explicitly scoped child and must not clear full-recovery warnings.
+      lastVerifiedAt: await getLastVerifiedOffsiteBackupAt(), databaseProtection };
+  }
   return { ...config, running: _offsiteIntervalTimer !== null, lastVerifiedAt };
 }
 
@@ -4876,9 +5351,16 @@ export async function getOffsiteProtectionStatus(): Promise<OffsiteProtectionSta
  */
 export async function checkOffsiteBackupProtection(): Promise<void> {
   try {
+    // Each protection job authenticates every remote dependency before committing.
+    // Do not launch a second full-media verifier every five minutes: on a large
+    // baseline it would hold the protection lease for hours and starve capture.
+    // Freshness below uses the recorded read-back time, never a refreshed timestamp.
     const freshness = await getOffsiteFreshness();
     if (!freshness.enabled) return;
-    if (!freshness.stale) return;
+    if (!freshness.stale) {
+      await reconcileOffsiteBackupAlerts(freshness);
+      return;
+    }
 
     await raiseOffsiteBackupAlarm(
       freshness.reason ?? "Off-site backup protection has stopped working.",
@@ -4927,9 +5409,7 @@ export async function runBackupFreshnessCheck(
     return { ...base, ok: false, enabled: false };
   }
   if (!freshness.stale) {
-    // Healthy: drop the rate-limit rows so the next lapse alerts at once
-    // instead of waiting out a claim made during the previous one.
-    await clearOffsiteBackupAlarmState();
+    await reconcileOffsiteBackupAlerts(freshness);
     return { ...base, ok: true, enabled: true };
   }
 
@@ -4972,7 +5452,7 @@ export async function runBackupFreshnessCheck(
  * Start off-site protection: the recurring upload, the watchdog, and a
  * catch-up run when the process has been down long enough to miss a tick.
  */
-export function startOffsiteBackupProtection(): void {
+export function startOffsiteBackupProtection(reschedule = false): void {
   if (process.env.VITEST || process.env.NODE_ENV === "test") {
     return;
   }
@@ -4986,21 +5466,32 @@ export function startOffsiteBackupProtection(): void {
     );
     return;
   }
+  if (reschedule) {
+    // Replace future ticks only. A running capture/upload retains its selected
+    // provider and deadline and is never cancelled by a settings edit.
+    if (_offsiteIntervalTimer !== null) clearTimeout(_offsiteIntervalTimer);
+    if (_offsiteMonitorTimer !== null) clearInterval(_offsiteMonitorTimer);
+    if (_offsiteCatchupTimer !== null) clearInterval(_offsiteCatchupTimer);
+    _offsiteIntervalTimer = _offsiteMonitorTimer = _offsiteCatchupTimer = null;
+  }
   // Already protecting: leave the running timers alone. Restarting them on
   // every schedule edit would push the next off-site copy out by a full
   // interval each time.
-  if (_offsiteIntervalTimer !== null || _offsiteMonitorTimer !== null) return;
+  if (_offsiteIntervalTimer !== null || _offsiteMonitorTimer !== null || _offsiteCatchupTimer !== null) return;
+  const generation = ++_offsiteTimerGeneration;
 
   void (async () => {
     const config = await getOffsiteBackupConfig();
+    if (generation !== _offsiteTimerGeneration) return;
     if (!config.enabled) {
       logger.warn("[backup] Off-site backup protection is DISABLED by configuration");
       return;
     }
 
-    const lastVerifiedAt = await getLastVerifiedOffsiteBackupAt();
+    const lastVerifiedAt = isProductionDeployment()
+      ? (await getDatabaseProtectionStatus()).recoveryPointAt : await getLastVerifiedOffsiteBackupAt();
     // Recheck after asynchronous initialization in case another caller won.
-    if (_offsiteIntervalTimer !== null || _offsiteMonitorTimer !== null) return;
+    if (generation !== _offsiteTimerGeneration || _offsiteIntervalTimer !== null || _offsiteMonitorTimer !== null || _offsiteCatchupTimer !== null) return;
     const firstDelayMs = offsiteFirstTickDelayMs(
       Date.now(), lastVerifiedAt, config.intervalMinutes,
     );
@@ -5015,8 +5506,21 @@ export function startOffsiteBackupProtection(): void {
       () => { void checkOffsiteBackupProtection(); },
       OFFSITE_MONITOR_INTERVAL_MS,
     );
+    const drainCatchup = () => {
+      if (generation !== _offsiteTimerGeneration) return;
+      void hasPendingDatabaseProtectionCatchup()
+        .then(pending => pending && generation === _offsiteTimerGeneration ? fireOffsiteBackup("catchup") : undefined)
+        .catch(error => logger.warn(
+          { err: safeBackupError(error) },
+          "[backup] Could not poll persisted production catch-up state",
+        ));
+    };
+    _offsiteCatchupTimer = setInterval(drainCatchup, OFFSITE_CATCHUP_POLL_INTERVAL_MS);
+    // Pending work survives process restart; don't wait for another full
+    // fifteen-minute cadence before making the single coalesced catch-up.
+    setTimeout(drainCatchup, 1_000);
     logger.info(
-      { intervalMinutes: config.intervalMinutes, firstDelayMs, folder: getOneDriveBackupFolder() },
+      { intervalMinutes: config.intervalMinutes, firstDelayMs, destination: config.destination },
       "[backup] Off-site backup protection started",
     );
 
@@ -5024,12 +5528,16 @@ export function startOffsiteBackupProtection(): void {
     // deploy the clock starts over, so without this a redeploy every few
     // minutes could postpone the backup indefinitely.
     setTimeout(() => {
+      if (generation !== _offsiteTimerGeneration) return;
       void (async () => {
-        const lastVerifiedAt = await getLastVerifiedOffsiteBackupAt();
+        const lastVerifiedAt = isProductionDeployment()
+          ? (await getDatabaseProtectionStatus()).recoveryPointAt : await getLastVerifiedOffsiteBackupAt();
         const ageMinutes =
           lastVerifiedAt === null
             ? Number.POSITIVE_INFINITY
             : (Date.now() - new Date(lastVerifiedAt).getTime()) / 60_000;
+        if (generation !== _offsiteTimerGeneration) return;
+        if (generation !== _offsiteTimerGeneration) return;
         if (ageMinutes >= config.intervalMinutes) {
           logger.info(
             { lastVerifiedAt },
@@ -5038,9 +5546,16 @@ export function startOffsiteBackupProtection(): void {
           await fireOffsiteBackup("startup");
         }
         await checkOffsiteBackupProtection();
-      })();
+      })().catch(error => logger.error({ err: safeBackupError(error) }, "[backup] Startup protection check failed; recurring ticks remain armed."));
     }, OFFSITE_STARTUP_DELAY_MS);
-  })();
+  })().catch(error => {
+    logger.error({ err: safeBackupError(error) }, "[backup] Protection timer setup could not read its configuration; retrying configuration later.");
+    if (generation !== _offsiteTimerGeneration) return;
+    _offsiteIntervalTimer = setTimeout(() => {
+      _offsiteIntervalTimer = null;
+      startOffsiteBackupProtection();
+    }, 60_000);
+  });
 }
 
 
@@ -5053,7 +5568,7 @@ export function startOffsiteBackupProtection(): void {
  *   minutes; restoring one would silently replace the media tree with nothing,
  *   so the restore pipeline refuses it.
  */
-export type BackupArchiveKind = "full" | "database-only" | "complete-production" | "complete-non-production";
+export type BackupArchiveKind = "full" | "database-only" | "complete-production" | "complete-non-production" | "partial-production" | "partial-non-production";
 
 /** Overall budget for one scheduled run, in milliseconds. */
 export async function getBackupRunTimeoutMs(archiveKind: BackupArchiveKind = "full"): Promise<number> {
@@ -5124,9 +5639,20 @@ export async function getBackupScheduleState(): Promise<BackupScheduleState> {
   return { nextDueAt, lastAttemptAt };
 }
 
-export function createBackupDeadline(timeoutMs: number): BackupDeadline {
+export function createBackupDeadline(timeoutMs: number, cancellationSignal?: AbortSignal): BackupDeadline {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  let cancelled = false;
+  const onCancel = () => {
+    cancelled = true;
+    controller.abort();
+  };
+  if (cancellationSignal?.aborted) onCancel();
+  else cancellationSignal?.addEventListener("abort", onCancel, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   // The HTTP server keeps the loop alive in production; an un-unref'd timer
   // would keep short-lived processes (tests, scripts) running for the budget.
   timer.unref?.();
@@ -5134,9 +5660,11 @@ export function createBackupDeadline(timeoutMs: number): BackupDeadline {
   return {
     signal: controller.signal,
     timeoutMs,
-    expired: () => controller.signal.aborted,
+    expired: () => timedOut,
+    cancelled: () => cancelled,
     throwIfExpired(stage: string) {
-      if (!controller.signal.aborted) return;
+      if (cancelled) throw new BackupCancelledError();
+      if (!timedOut) return;
       throw new BackupTimeoutError(
         `Backup timed out after ${minutes} minute(s) during ${stage}. ` +
           "The run was aborted so later scheduled runs are not blocked.",
@@ -5144,6 +5672,7 @@ export function createBackupDeadline(timeoutMs: number): BackupDeadline {
     },
     dispose() {
       clearTimeout(timer);
+      cancellationSignal?.removeEventListener("abort", onCancel);
     },
   };
 }
@@ -5247,6 +5776,8 @@ export interface BackupDeadline {
   readonly timeoutMs: number;
   /** True once the budget has been exhausted. */
   expired(): boolean;
+  /** True when an authenticated user cancelled this run. */
+  cancelled(): boolean;
   /** Throw a BackupTimeoutError naming `stage` if the budget is exhausted. */
   throwIfExpired(stage: string): void;
   /** Release the underlying timer. Safe to call more than once. */
@@ -5275,10 +5806,11 @@ export const SETTING_ONEDRIVE_RETENTION_DAILY_FULL_DAYS =
   "onedrive_backup_retention_daily_full_days";
 
 export const DEFAULT_BACKUP_RUN_TIMEOUT_MINUTES = 20;
-// The measured durable media set is 33 GB. Even the improved compression
-// sample projects beyond 20 minutes before the OneDrive transfer starts.
+// The production media set is about 36 GB. The measured archive transfer
+// rate projects beyond an hour before the OneDrive upload even starts.
+// Reserve a bounded six-hour window for archive creation and cloud transfer.
 // Explicit operator budgets still win; stalled reads fail after 60 seconds.
-export const DEFAULT_FULL_BACKUP_RUN_TIMEOUT_MINUTES = 60;
+export const DEFAULT_FULL_BACKUP_RUN_TIMEOUT_MINUTES = 360;
 
 /**
  * When the last archive that included media was taken. Drives the slower full
@@ -5350,7 +5882,7 @@ export async function runGoogleDriveBackup(
       () => ({ archiveBytes: archive.size }),
     );
     try {
-      if (options.folderOverride) return uploaded;
+      if (options.folderOverride || (archiveKind !== "database-only" && !isCompleteArchive)) return uploaded;
       const pruned = await pruneGoogleDriveBackups(
         uploaded,
         isCompleteArchive,
@@ -5394,7 +5926,7 @@ export async function runGoogleDriveBackup(
       try {
         const staged = await writeBackupArchiveToTarget(stage, archive.prepared, deadline);
         let confirmedBytes = 0;
-        const uploaded = await uploadAndVerify(staged, true, () =>
+        const uploaded = await uploadAndVerify(staged, !archive.partialFailure, () =>
           uploadGoogleDriveBackupSource({
             size: staged.size,
             readChunk: (offset, length) => {
@@ -5416,8 +5948,8 @@ export async function runGoogleDriveBackup(
           path: googleDriveItemPath(uploaded.id),
           mediaFileCount: archive.mediaFileCount,
           attachmentRowCount: archive.attachmentRowCount,
-          partialFailure: false,
-          warnings: null,
+          partialFailure: archive.partialFailure,
+          warnings: archive.warnings,
         };
       } finally {
         await stage.cleanup();

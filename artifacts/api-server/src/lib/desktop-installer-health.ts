@@ -14,6 +14,8 @@
  *   5. githubRelease  — fetches the latest release manifest from GitHub Releases so
  *                       admins know if the auto-updater feed is in sync with the
  *                       live download page.
+ *   6. updateFeeds    — checks the API's Windows and macOS manifests and verifies
+ *                       their referenced payloads are still available.
  *
  * See docs/desktop-publish-pipeline.md for the wider pipeline context.
  */
@@ -24,9 +26,12 @@ import { getDownloadInterruptionStats, type DownloadInterruptionStats } from "./
 import {
   getDesktopInstallerHandle,
   getDesktopInstallerMetadata,
+  getDesktopUpdatePayloadHandle,
   installerKindFromUrl,
+  readUpdateManifest,
   type DesktopInstallerKind,
 } from "./desktop-installer-storage.js";
+import { validateDesktopUpdateFeed } from "./desktop-update-feed.js";
 
 const ALL_INSTALLER_KINDS: DesktopInstallerKind[] = ["zip", "exe", "dmg"];
 
@@ -91,11 +96,26 @@ export interface HealthReport {
     hasManifest: boolean;
     issue: string | null;
   };
+  /** API-hosted electron-updater manifests and their stored payloads. */
+  updateFeeds: {
+    ok: boolean;
+    windows: UpdateFeedStatus;
+    mac: UpdateFeedStatus;
+  };
   /**
    * Interrupted-download telemetry from the past 24 h.
    * Populated from system_settings; never throws — failures yield zero counts.
    */
   downloadInterruptions: DownloadInterruptionStats;
+  issues: string[];
+}
+
+export interface UpdateFeedStatus {
+  path: "/downloads/latest.yml" | "/downloads/latest-mac.yml";
+  checked: boolean;
+  ok: boolean;
+  version: string | null;
+  payloadFiles: string[];
   issues: string[];
 }
 
@@ -108,6 +128,129 @@ const SPEED_PROBE_BYTES = 1_048_576;
 const DOWNLOAD_SPEED_WARN_SECONDS = 300; // 5 minutes
 /** Timeout for the speed probe fetch in milliseconds. */
 const SPEED_PROBE_TIMEOUT_MS = 30_000;
+
+function parseUpdateFeedFiles(content: string): Array<{ fileName: string; size: number | null }> {
+  const starts = [...content.matchAll(/^\s*-\s+url:\s*["']?([^"'\s]+)["']?\s*$/gm)];
+  return starts.map((match, index) => {
+    const start = match.index ?? 0;
+    const nextStart = starts[index + 1]?.index ?? content.length;
+    const block = content.slice(start, nextStart);
+    const rawSize = block.match(/^\s+size:\s*(\d+)\s*$/m)?.[1];
+    return {
+      fileName: match[1] ?? "",
+      size: rawSize === undefined ? null : Number(rawSize),
+    };
+  });
+}
+
+export async function checkUpdateFeed(
+  platform: "windows" | "mac",
+  expectedVersion: string,
+): Promise<UpdateFeedStatus> {
+  const path = platform === "windows" ? "/downloads/latest.yml" : "/downloads/latest-mac.yml";
+  const status: UpdateFeedStatus = {
+    path,
+    checked: true,
+    ok: false,
+    version: null,
+    payloadFiles: [],
+    issues: [],
+  };
+
+  let manifest: Buffer | null;
+  try {
+    manifest = await readUpdateManifest(platform);
+  } catch (err) {
+    status.issues.push(
+      `Could not read ${path} from API storage: ${(err as Error)?.message ?? String(err)}.`,
+    );
+    return status;
+  }
+  if (!manifest) {
+    status.issues.push(
+      `${path} is missing from API storage. Rerun Publish Draft Release for v${expectedVersion} after the update payloads are available.`,
+    );
+    return status;
+  }
+
+  const content = manifest.toString("utf8");
+  status.version = content.match(/^version:\s*["']?([^\s"']+)["']?\s*$/m)?.[1] ?? null;
+  if (!status.version) {
+    status.issues.push(`${path} does not contain a release version. Republish the update feed.`);
+  } else if (status.version !== expectedVersion) {
+    status.issues.push(
+      `${path} reports version ${status.version}, but the configured release is ${expectedVersion}. Rerun Publish Draft Release for v${expectedVersion}.`,
+    );
+  }
+
+  let validation: ReturnType<typeof validateDesktopUpdateFeed>;
+  try {
+    validation = validateDesktopUpdateFeed(
+      content,
+      platform,
+      status.version ?? expectedVersion,
+    );
+  } catch (err) {
+    validation = { ok: false, error: (err as Error)?.message ?? String(err) };
+  }
+  const files = parseUpdateFeedFiles(content);
+  status.payloadFiles = files.map((file) => file.fileName).filter(Boolean);
+  if (!validation.ok) {
+    status.issues.push(`${path} is invalid: ${validation.error} Republish the update feed.`);
+  }
+
+  if (validation.ok) {
+    if (platform === "windows") {
+      let installer: Awaited<ReturnType<typeof getDesktopInstallerMetadata>> = null;
+      let storageCheckFailed = false;
+      try {
+        installer = await getDesktopInstallerMetadata("exe");
+      } catch (err) {
+        storageCheckFailed = true;
+        status.issues.push(
+          `Could not check the Windows update payload in API storage: ${(err as Error)?.message ?? String(err)}.`,
+        );
+      }
+      if (!installer) {
+        if (!storageCheckFailed) {
+          status.issues.push(
+            `Windows update payload LabTrax-Setup.exe referenced by ${path} is missing from API storage. Upload the signed installer, then rerun Publish Draft Release.`,
+          );
+        }
+      } else {
+        const expectedSize = files.find((file) => file.fileName === "LabTrax-Setup.exe")?.size;
+        if (expectedSize !== null && expectedSize !== undefined && expectedSize !== installer.size) {
+          status.issues.push(
+            `${path} expects LabTrax-Setup.exe to be ${expectedSize} bytes, but API storage has ${installer.size} bytes. Republish the installer and update feed together.`,
+          );
+        }
+      }
+    } else {
+      for (const file of files) {
+        if (!file.fileName) continue;
+        try {
+          const payload = await getDesktopUpdatePayloadHandle(file.fileName);
+          if (!payload) {
+            status.issues.push(
+              `macOS update payload ${file.fileName} referenced by ${path} is missing from API storage. Upload the signed ZIP, then rerun Publish Draft Release.`,
+            );
+          } else if (file.size !== null && file.size !== payload.size) {
+            status.issues.push(
+              `${path} expects ${file.fileName} to be ${file.size} bytes, but API storage has ${payload.size} bytes. Republish the payload and update feed together.`,
+            );
+          }
+        } catch (err) {
+          status.issues.push(
+            `Could not check macOS update payload ${file.fileName} in API storage: ${(err as Error)?.message ?? String(err)}.`,
+          );
+        }
+      }
+    }
+  }
+
+  status.ok = status.issues.length === 0;
+  return status;
+}
 
 interface FetchLike {
   (input: string, init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal }): Promise<{
@@ -470,6 +613,24 @@ export async function runDesktopInstallerHealthCheck(
     }
   }
 
+  // ── API update feeds ───────────────────────────────────────────────────────
+  // Read the stored API manifests and referenced payload metadata only. This
+  // check never writes or republishes update-feed objects.
+  const [windowsFeed, macFeed] = await Promise.all([
+    checkUpdateFeed("windows", configuredVersion),
+    checkUpdateFeed("mac", configuredVersion),
+  ]);
+  const updateFeeds = {
+    ok: windowsFeed.ok && macFeed.ok,
+    windows: windowsFeed,
+    mac: macFeed,
+  };
+  for (const feed of [windowsFeed, macFeed]) {
+    for (const issue of feed.issues) {
+      issues.push(`updateFeeds: ${issue}`);
+    }
+  }
+
   // ── Per-slot storage availability ─────────────────────────────────────────
   // Check all three installer kinds in parallel so the health report can flag
   // every missing slot, not just the currently-active one.
@@ -518,7 +679,8 @@ export async function runDesktopInstallerHealthCheck(
     storageOk &&
     downloadOk &&
     etagMatchesStorage !== false &&
-    (!releaseConfigured || releaseOk);
+    (!releaseConfigured || releaseOk) &&
+    updateFeeds.ok;
 
   return {
     ok,
@@ -563,6 +725,7 @@ export async function runDesktopInstallerHealthCheck(
       hasManifest,
       issue: releaseIssue,
     },
+    updateFeeds,
     downloadInterruptions,
     issues,
   };

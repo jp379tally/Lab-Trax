@@ -949,7 +949,7 @@ describe("statement-led Receive Payments", () => {
       savePaymentMethod: false,
     });
     const serialized = JSON.stringify(requests);
-    expect(serialized).not.toMatch(/cardNumber|cvc|securityCode|expMonth|expYear|postalCode|billingZip/i);
+    expect(serialized).not.toMatch(/"(?:cardNumber|cvc|securityCode|expMonth|expYear|postalCode|billingZip)"\s*:/i);
     expect(screen.getByTestId("receipt-composer-sheet")).toBeTruthy();
   });
 

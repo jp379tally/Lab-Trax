@@ -7,7 +7,8 @@ interface PrescriptionRestorationInput {
   material?: string | null;
   shade?: string | null;
   arch?: "upper" | "lower" | "both" | null;
-  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  removableSubtype?: string | null;
+  assignmentRoles?: Record<string, "Crown" | "Pontic" | "Veneer">;
   assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
   assignmentOverridesManual?: boolean;
   restorationSubtype?: string | null;
@@ -24,8 +25,9 @@ type PrescriptionRestoration = PreviewDraftInvoiceInput["restorations"][number] 
 
 /**
  * Shared source order for preview restorationIndices and saved price overrides:
- * preserve tooth order, then expand both arches as all upper rows followed by
- * all lower rows. Prices belong to the save path, not this serialization.
+ * preserve Universal tooth order without duplicating fixed teeth/charges.
+ * Only toothless both-arch appliances expand as upper then lower sources.
+ * Prices belong to the save path, not this serialization.
  */
 export function buildPrescriptionRestorations(
   rx: PrescriptionRestorationInput,
@@ -39,7 +41,7 @@ export function buildPrescriptionRestorations(
   const restorationType = (rx.caseType || "Other").trim() || "Other";
   const rows: PrescriptionRestoration[] = (teeth.length > 0 ? teeth : [""]).map(
     (toothNumber) => {
-      const assignedRole = useAssignments && /^(Crown|Pontic)$/.test(rx.assignmentRoles?.[toothNumber] ?? "")
+      const assignedRole = useAssignments && /^(Crown|Pontic|Veneer)$/.test(rx.assignmentRoles?.[toothNumber] ?? "")
         ? rx.assignmentRoles?.[toothNumber]
         : undefined;
       const assignedMaterial = assignedRole
@@ -56,9 +58,11 @@ export function buildPrescriptionRestorations(
         // Keep the extracted restoration type for teeth the chart has not
         // explicitly and completely assigned.
         restorationType: hasValidAssignment ? assignedRole! : restorationType,
-        restorationSubtype: (hasValidAssignment ? rx.assignmentValues?.[toothNumber]?.restorationSubtype : undefined) ??
-          rx.restorationSubtype ??
-          encodeRestorationSubtype(deriveCaseHierarchy(restorationType, null, material ?? null)) ?? undefined,
+        restorationSubtype:
+          ((hasValidAssignment ? rx.assignmentValues?.[toothNumber]?.restorationSubtype : undefined)?.trim() ||
+            rx.removableSubtype?.trim() ||
+            rx.restorationSubtype?.trim() ||
+            encodeRestorationSubtype(deriveCaseHierarchy(restorationType, null, material ?? null))) || undefined,
         ...(material?.trim() ? { material: material.trim() } : {}),
         ...(shade?.trim() ? { shade: shade.trim() } : {}),
         quantity: 1,
@@ -68,14 +72,14 @@ export function buildPrescriptionRestorations(
   ).filter((row) => !!row.restorationType);
   const aiAssignments = readExplicitAiToothAssignments(rx.toothAssignments);
   for (const row of rows) {
-    if (!/^(Crown|Pontic)$/.test(row.restorationType)) continue;
+    if (!/^(Crown|Pontic|Veneer)$/.test(row.restorationType)) continue;
     const ai = aiAssignments.find((unit) => unit.toothNumber === row.toothNumber &&
       unit.restorationType === row.restorationType && unit.material === row.material && unit.shade === row.shade);
     row.assignmentProvenance = ai?.assignmentProvenance
       ? { ...ai.assignmentProvenance, manualFields: rx.assignmentOverridesManual ? ["role", "product", "shade"] : ai.assignmentProvenance.manualFields }
       : { origin: "manual", manualFields: ["role", "product", "shade"] };
   }
-  return rx.arch === "both" && !useAssignments
+  return rx.arch === "both" && !useAssignments && teeth.length === 0
     ? [
         ...rows.map((row) => ({ ...row, arch: "upper" as const })),
         ...rows.map((row) => ({ ...row, arch: "lower" as const })),

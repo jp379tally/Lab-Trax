@@ -53,6 +53,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   let filePath = "";
   let fileBytes: Buffer;
+  const generatedMediaPaths: string[] = [];
 
   async function makeSession(userId: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
@@ -164,9 +165,140 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
       .where(inArray(users.id, [memberUserId, outsiderUserId]));
     try {
       await fsp.rm(filePath, { force: true });
+      await Promise.all(
+        generatedMediaPaths.map((generatedPath) =>
+          fsp.rm(generatedPath, { force: true }),
+        ),
+      );
     } catch {
       // ignore
     }
+  });
+
+  it("pairs direct-upload PLYs with unique same-case images in either upload order", async () => {
+    const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
+    const plyName = `${rid("synthetic-scan")}.ply`;
+    const textureName = `${rid("synthetic-texture")}.jpg`;
+    const plyBytes = Buffer.from([
+      "ply",
+      "format ascii 1.0",
+      `comment TextureFile ${textureName}`,
+      "element vertex 3",
+      "property float x",
+      "property float y",
+      "property float z",
+      "element face 1",
+      "property list uchar int vertex_indices",
+      "property list uchar float texcoord",
+      "end_header",
+      "0 0 0",
+      "1 0 0",
+      "0 1 0",
+      "3 0 1 2 6 0 0 1 0 0 1",
+      "",
+    ].join("\n"));
+    const textureBytes = Buffer.from("synthetic image payload");
+    const plyDiskPath = path.join(caseMediaMod.caseMediaDir, plyName);
+    const textureDiskPath = path.join(caseMediaMod.caseMediaDir, textureName);
+    generatedMediaPaths.push(plyDiskPath, textureDiskPath);
+    await fsp.writeFile(plyDiskPath, plyBytes);
+    await fsp.writeFile(textureDiskPath, textureBytes);
+
+    const register = (fileName: string, fileType: string, storageName: string) =>
+      request(app)
+        .post(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
+        .set("Authorization", `Bearer ${memberToken}`)
+        .send({
+          storageKey: `/uploads/case-media/${storageName}`,
+          fileName,
+          fileType,
+        });
+
+    const scanResponse = await register(plyName, "model/ply", plyName);
+    expect(scanResponse.status).toBe(201);
+    const textureResponse = await register(
+      textureName,
+      "image/jpeg",
+      textureName,
+    );
+    expect(textureResponse.status).toBe(201);
+
+    const listResponse = await request(app)
+      .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    expect(listResponse.status).toBe(200);
+    const scan = (listResponse.body.data as any[]).find(
+      (attachment) => attachment.fileName === plyName,
+    );
+    const texture = (listResponse.body.data as any[]).find(
+      (attachment) => attachment.fileName === textureName,
+    );
+    expect(scan?.textureAttachmentId).toBe(texture?.id);
+
+    const secondPlyName = `${rid("synthetic-scan")}.ply`;
+    const secondTextureName = `${rid("synthetic-texture")}.jpg`;
+    const secondPlyBytes = plyBytes.toString().replace(textureName, secondTextureName);
+    const secondPlyPath = path.join(caseMediaMod.caseMediaDir, secondPlyName);
+    const secondTexturePath = path.join(caseMediaMod.caseMediaDir, secondTextureName);
+    generatedMediaPaths.push(secondPlyPath, secondTexturePath);
+    await fsp.writeFile(secondPlyPath, secondPlyBytes);
+    await fsp.writeFile(secondTexturePath, textureBytes);
+    expect((await register(secondTextureName, "image/jpeg", secondTextureName)).status).toBe(201);
+    expect((await register(secondPlyName, "model/ply", secondPlyName)).status).toBe(201);
+
+    const reverseOrderList = await request(app)
+      .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    const reverseOrderScan = (reverseOrderList.body.data as any[]).find(
+      (attachment) => attachment.fileName === secondPlyName,
+    );
+    const reverseOrderTexture = (reverseOrderList.body.data as any[]).find(
+      (attachment) => attachment.fileName === secondTextureName,
+    );
+    expect(reverseOrderScan?.textureAttachmentId).toBe(reverseOrderTexture?.id);
+  });
+
+  it("does not link a direct-upload PLY when its image filename is ambiguous", async () => {
+    const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
+    const plyName = `${rid("synthetic-scan")}.ply`;
+    const declaredTextureName = `${rid("synthetic-texture")}.jpg`;
+    const diskNames = [
+      `${rid("texture-copy")}.jpg`,
+      `${rid("texture-copy")}.jpg`,
+    ];
+    const plyPath = path.join(caseMediaMod.caseMediaDir, plyName);
+    const diskPaths = diskNames.map((name) => path.join(caseMediaMod.caseMediaDir, name));
+    generatedMediaPaths.push(plyPath, ...diskPaths);
+    await fsp.writeFile(
+      plyPath,
+      Buffer.from(`ply\nformat ascii 1.0\ncomment TextureFile ${declaredTextureName}\nelement vertex 0\nend_header\n`),
+    );
+    await Promise.all(
+      diskPaths.map((diskPath) => fsp.writeFile(diskPath, Buffer.from("synthetic image"))),
+    );
+
+    const register = (name: string, type: string, storageName: string) =>
+      request(app)
+        .post(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
+        .set("Authorization", `Bearer ${memberToken}`)
+        .send({
+          storageKey: `/uploads/case-media/${storageName}`,
+          fileName: name,
+          fileType: type,
+        });
+    expect((await register(plyName, "model/ply", plyName)).status).toBe(201);
+    expect((await register(declaredTextureName, "image/jpeg", diskNames[0]!)).status).toBe(201);
+    expect((await register(declaredTextureName, "image/jpeg", diskNames[1]!)).status).toBe(201);
+
+    const listResponse = await request(app)
+      .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    const scan = (listResponse.body.data as any[]).find(
+      (attachment) => attachment.fileName === plyName,
+    );
+    expect(scan?.textureAttachmentId).toBeNull();
   });
 
   it("POST /:caseId/attachments — stores attachment with labCaseId and returns 201", async () => {

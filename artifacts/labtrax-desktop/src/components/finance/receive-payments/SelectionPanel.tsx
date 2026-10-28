@@ -110,6 +110,10 @@ export function SelectionPanel({
   const tabRefs = useRef<Partial<Record<SelectionTab, HTMLButtonElement | null>>>({});
   const { filters, sort, tab } = view;
   const { locations, hasMissing } = useMemo(() => locationOptions(customers), [customers]);
+  const practiceCustomers = useMemo(
+    () => customers.filter((customer) => !customer.isDoctorAccount),
+    [customers],
+  );
   const matching = useMemo(
     () => customers.filter((customer) => customerMatches(customer, filters)),
     [customers, filters],
@@ -187,7 +191,7 @@ export function SelectionPanel({
         </div>
       );
     }
-    if (tab === "statements" && !customers.some((customer) => customer.statement)) {
+    if (tab === "statements" && !practiceCustomers.some((customer) => customer.statement)) {
       return <EmptyState>{NO_STATEMENTS_TEXT}</EmptyState>;
     }
     if (!customers.length) return <EmptyState>No customers have anything payable.</EmptyState>;
@@ -207,7 +211,7 @@ export function SelectionPanel({
         );
       }
       case "invoices": {
-        const source = focusCustomer ? [focusCustomer] : customers;
+        const source = focusCustomer ? [focusCustomer] : practiceCustomers;
         const rows = sortInvoices(
           source.flatMap((customer) => customer.invoices.filter((invoice) => invoiceMatches(invoice, customer, filters))),
           sort,
@@ -252,7 +256,7 @@ export function SelectionPanel({
       case "aging": {
         // The aging filter picks the bucket to show rather than filtering
         // customers by their oldest invoice.
-        const base = customers.filter((customer) => customerMatches(customer, { ...filters, aging: "" }));
+        const base = practiceCustomers.filter((customer) => customerMatches(customer, { ...filters, aging: "" }));
         if (!base.length) return <EmptyState actions={clearButton}>No customers match these filters.</EmptyState>;
         const groups = agingGroups(sortCustomers(base, sort)).filter(
           (group) => !filters.aging || group.key === filters.aging,
@@ -260,7 +264,7 @@ export function SelectionPanel({
         return <AgingTab groups={groups} selection={selection} onSelectionChange={onSelectionChange} />;
       }
       case "statements": {
-        const rows = matching.filter((customer) => customer.statement);
+        const rows = practiceCustomers.filter((customer) => customerMatches(customer, filters) && customer.statement);
         if (!rows.length) return <EmptyState actions={clearButton}>No customers match these filters.</EmptyState>;
         return (
           <StatementsTab

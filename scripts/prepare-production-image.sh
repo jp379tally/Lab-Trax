@@ -17,6 +17,20 @@ cp -a "$ROOT_DIR/artifacts/api-server/dist" "$API_STAGE/dist"
 test -f "$API_STAGE/dist/index.mjs"
 test -d "$API_STAGE/node_modules"
 
+# Every complete recovery set records the source revision that created it.
+# Embed this in the packaged API because the published runtime does not include
+# the workspace's .git directory.
+SOURCE_REVISION="${GIT_COMMIT_SHA:-${GITHUB_SHA:-$(git rev-parse HEAD)}}"
+if [[ ! "$SOURCE_REVISION" =~ ^[a-fA-F0-9]{40}$ ]] ||
+   [[ "${SOURCE_REVISION,,}" != "$(git rev-parse HEAD)" ]]; then
+  echo "prepare-production-image: the exact full checked-out source revision is required for recovery provenance." >&2
+  exit 1
+fi
+SOURCE_REVISION="${SOURCE_REVISION,,}"
+node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ sourceRevision: process.argv[2] }) + "\n")' \
+  "$API_STAGE/dist/build-identity.json" "$SOURCE_REVISION"
+echo "prepare-production-image: source revision ${SOURCE_REVISION}"
+
 # Artifact processes start with a minimal PATH that does not include the Nix
 # toolchain, and absolute symlinks into /nix/store are not retained in the
 # published image. Package the real Node executable with its ELF loader and

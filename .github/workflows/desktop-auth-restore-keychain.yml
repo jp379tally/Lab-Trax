@@ -1,0 +1,91 @@
+name: Desktop packaged sign-in recovery
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-auth-restore-keychain.yml"
+      - "artifacts/labtrax-desktop/electron/auth-store.cjs"
+      - "artifacts/labtrax-desktop/electron/main.cjs"
+      - "artifacts/labtrax-desktop/electron/preload.cjs"
+      - "artifacts/labtrax-desktop/electron-builder.yml"
+      - "artifacts/labtrax-desktop/scripts/auth-restore-packaged-smoke.mjs"
+      - "artifacts/labtrax-desktop/src/lib/auth-restore-status.ts"
+      - "artifacts/labtrax-desktop/src/pages/login.tsx"
+      - "artifacts/labtrax-desktop/package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-auth-restore:
+    name: Packaged sign-in recovery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux Electron runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libnss3 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libcups2t64 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libcairo2 \
+            libasound2t64 \
+            libnspr4 \
+            libdrm2 \
+            libxshmfence1 \
+            libglib2.0-0t64
+
+      - name: Require the Linux libsecret backend
+        if: runner.os == 'Linux'
+        run: echo "LABTRAX_AUTH_SMOKE_FORCE_LIBSECRET=1" >> "$GITHUB_ENV"
+
+      - name: Run packaged sign-in recovery check
+        env:
+          LABTRAX_AUTH_SMOKE_RESULT: ${{ runner.temp }}/auth-restore-result.json
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a pnpm --filter @workspace/labtrax-desktop run electron:auth-restore-smoke
+          else
+            pnpm --filter @workspace/labtrax-desktop run electron:auth-restore-smoke
+          fi
+
+      - name: Save status-only verification result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-restore-${{ matrix.os }}
+          path: ${{ runner.temp }}/auth-restore-result.json
+          if-no-files-found: warn

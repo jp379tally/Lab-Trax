@@ -13,7 +13,7 @@ import { getSessionSecret, clearSessionSecret } from "./platform-admin-session";
 // production, or by the presence of window.electronAPI from preload.cjs.
 const _PROD_API_FALLBACK = "https://lab-trax.replit.app";
 
-function _isElectronRenderer(): boolean {
+export function isElectronRenderer(): boolean {
   if (typeof window === "undefined") return false;
   if ((window as unknown as { electronAPI?: unknown }).electronAPI) return true;
   if (typeof window.location !== "undefined" && window.location.protocol === "app:") {
@@ -26,7 +26,7 @@ const _CONFIGURED_ORIGIN = (import.meta.env.VITE_API_BASE_URL as string | undefi
   ?.replace(/\/$/, "");
 
 const _API_ORIGIN =
-  _CONFIGURED_ORIGIN || (_isElectronRenderer() ? _PROD_API_FALLBACK : "");
+  _CONFIGURED_ORIGIN || (isElectronRenderer() ? _PROD_API_FALLBACK : "");
 
 /**
  * Build the full URL for an API call.
@@ -82,7 +82,7 @@ export function serverAssetUrl(path: string): string {
 function unreachableDetail(path: string): string {
   const origin = getApiOrigin();
   if (origin) return ` (tried ${origin}/api${path})`;
-  if (_isElectronRenderer()) {
+  if (isElectronRenderer()) {
     return " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
   }
   const webOrigin =
@@ -316,9 +316,13 @@ export function clearPlatformAdminSecretCache(): void {
 
 const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
 const REMEMBER_ME_STORAGE_KEY = "labtrax_desktop_remember_me_v1";
+const TAB_TOKEN_STORAGE_KEY = "labtrax_desktop_tab_tokens_v1";
 
-/** Returns the user's last "Remember Me" choice (defaults true for new installs). */
+/** Returns Electron's saved "Remember Me" choice (defaults true for new installs). */
 export function getRememberMe(): boolean {
+  // Remember Me applies only to Electron's encrypted credential store.
+  // Browser credentials are always restricted to the current tab.
+  if (!isElectronRenderer()) return false;
   try {
     if (typeof localStorage === "undefined") return true;
     const raw = localStorage.getItem(REMEMBER_ME_STORAGE_KEY);
@@ -330,6 +334,7 @@ export function getRememberMe(): boolean {
 
 /** Persists the user's "Remember Me" choice so the checkbox reflects it next time. */
 export function saveRememberMe(val: boolean): void {
+  if (!isElectronRenderer()) return;
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(REMEMBER_ME_STORAGE_KEY, val ? "true" : "false");
@@ -366,6 +371,65 @@ export function getAuthRestoreStatus(): AuthRestoreStatus {
   return _restoreStatus;
 }
 
+let restoreRetryInFlight: Promise<AuthRestoreStatus> | null = null;
+
+/**
+ * Re-checks an unavailable desktop keychain through the main-process bridge.
+ * Token values stay inside the existing credential bridge and are never
+ * logged or sent in an availability notification.
+ */
+export function retrySavedAuthRestore(): Promise<AuthRestoreStatus> {
+  if (_restoreStatus !== "keychain-unavailable") {
+    return Promise.resolve(_restoreStatus);
+  }
+  if (restoreRetryInFlight) return restoreRetryInFlight;
+
+  restoreRetryInFlight = (async () => {
+    try {
+      const bridge = getAuthBridge();
+      if (!bridge?.getTokensStatus) return _restoreStatus;
+      const startingTokenRevision = tokenRevision;
+      const result = await bridge.getTokensStatus();
+      // A manual sign-in or another session change may have completed while
+      // the IPC request was in flight; do not overwrite that newer state.
+      if (
+        _restoreStatus !== "keychain-unavailable" ||
+        tokenRevision !== startingTokenRevision
+      ) {
+        return _restoreStatus;
+      }
+
+      const nextStatus = result?.status ?? "empty";
+      if (nextStatus === "ok") {
+        if (!result.tokens?.accessToken || !result.tokens.refreshToken) {
+          _restoreStatus = "decrypt-failed";
+          return _restoreStatus;
+        }
+        _tokens = result.tokens;
+        clearLocalStorageTokens();
+        _restoreStatus = "ok";
+        return _restoreStatus;
+      }
+
+      _tokens = null;
+      _restoreStatus = nextStatus;
+      return _restoreStatus;
+    } catch {
+      // Keep the unavailable status visible and retry on the next interval.
+      return _restoreStatus;
+    } finally {
+      restoreRetryInFlight = null;
+    }
+  })();
+  return restoreRetryInFlight;
+}
+
+function markRestoredSessionExpired() {
+  if (_restoreStatus === "ok") {
+    _restoreStatus = "session-expired";
+  }
+}
+
 function getAuthBridge(): AuthBridge | null {
   if (typeof window === "undefined") return null;
   const electronAPI = (window as { electronAPI?: { auth?: AuthBridge } }).electronAPI;
@@ -373,11 +437,31 @@ function getAuthBridge(): AuthBridge | null {
 }
 
 let _tokens: TokenPair | null = null;
+let tokenRevision = 0;
 
 function readTokensFromLocalStorage(): TokenPair | null {
   try {
     if (typeof localStorage === "undefined") return null;
     const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.accessToken === "string" &&
+      typeof parsed.refreshToken === "string"
+    ) {
+      return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function readTokensFromSessionStorage(): TokenPair | null {
+  try {
+    if (typeof sessionStorage === "undefined") return null;
+    const raw = sessionStorage.getItem(TAB_TOKEN_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (
@@ -403,21 +487,31 @@ function clearLocalStorageTokens() {
   }
 }
 
-function writeLocalStorageTokens(next: TokenPair | null) {
+function writeSessionStorageTokens(next: TokenPair | null) {
   try {
-    if (typeof localStorage === "undefined") return;
+    if (typeof sessionStorage === "undefined") return;
     if (next) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(next));
+      sessionStorage.setItem(TAB_TOKEN_STORAGE_KEY, JSON.stringify(next));
     } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      sessionStorage.removeItem(TAB_TOKEN_STORAGE_KEY);
     }
   } catch {
     /* ignore */
   }
 }
 
+let browserTabClosing = false;
+
 function persistTokens(next: TokenPair | null, rememberMe?: boolean) {
+  if (!isElectronRenderer() && browserTabClosing && next) {
+    // Do not let a refresh already in flight restore credentials after pagehide.
+    next = null;
+  }
+  tokenRevision++;
   _tokens = next;
+  if (next && _restoreStatus !== "keychain-unavailable") {
+    _restoreStatus = "ok";
+  }
   // Resolve the "remember me" flag: if an explicit value was passed (e.g. from
   // the login call) use it; otherwise read the persisted preference so that
   // background operations like token refresh respect the user's last choice.
@@ -442,38 +536,37 @@ function persistTokens(next: TokenPair | null, rememberMe?: boolean) {
     // app is closed, then they're gone.
     return;
   }
-  // Browser/dev fallback (no Electron bridge): use localStorage.
-  if (shouldPersist) {
-    writeLocalStorageTokens(next);
-  } else if (!next) {
+  if (isElectronRenderer()) {
+    // Never fall back to browser storage if an Electron credential bridge is
+    // temporarily unavailable.
     clearLocalStorageTokens();
+    return;
   }
-  // next && !shouldPersist: memory-only, no localStorage write.
+  // Browser fallback: credentials live only for this tab. Discard legacy
+  // persistent tokens on every write so old builds cannot restore the login.
+  clearLocalStorageTokens();
+  writeSessionStorageTokens(next);
 }
 
 // Hydrate on module load. In the Electron renderer this asynchronously pulls
 // the encrypted tokens out of the OS keychain via IPC, and migrates any
 // legacy plain-text localStorage blob into the keychain on first run. In a
-// plain browser context (dev server preview) we fall back to localStorage so
-// the app still works for local development.
+// plain browser context (dev server preview) we use tab-scoped sessionStorage.
 const hydrationPromise: Promise<void> = (async () => {
+  const bridge = getAuthBridge();
   // If the user signed in with "Remember Me" unchecked, skip loading persisted
   // tokens entirely so the app returns them to the login screen on the next
   // launch.  We also clear any leftover encrypted blob from a prior session
   // where "Remember Me" was checked, so old credentials don't accumulate.
-  if (!getRememberMe()) {
-    const bridge = getAuthBridge();
+  if (bridge && !getRememberMe()) {
     if (bridge) {
       void bridge.clearTokens().catch(() => { /* ignore */ });
-      clearLocalStorageTokens();
-    } else {
       clearLocalStorageTokens();
     }
     _restoreStatus = "empty";
     return;
   }
 
-  const bridge = getAuthBridge();
   if (bridge) {
     try {
       // Prefer the rich status call so we can tell the user *why* their
@@ -520,13 +613,60 @@ const hydrationPromise: Promise<void> = (async () => {
     }
     return;
   }
-  // No Electron bridge: dev browser. Read from localStorage as before.
-  _tokens = readTokensFromLocalStorage();
+  if (isElectronRenderer()) {
+    clearLocalStorageTokens();
+    _restoreStatus = "empty";
+    return;
+  }
+  // Browser fallback: legacy localStorage tokens are never restored.
+  clearLocalStorageTokens();
+  _tokens = readTokensFromSessionStorage();
   _restoreStatus = _tokens ? "ok" : "empty";
 })();
 
 export function waitForTokenHydration(): Promise<void> {
   return hydrationPromise;
+}
+
+/**
+ * Register best-effort browser tab-close revocation. sessionStorage is
+ * isolated to this tab; clearing it synchronously guarantees a fresh tab must
+ * sign in even if the keepalive request is dropped during shutdown.
+ */
+export function installBrowserTabCloseSignOut(): () => void {
+  if (typeof window === "undefined" || isElectronRenderer()) return () => {};
+
+  const onPageHide = (event: PageTransitionEvent) => {
+    // A page entering the back/forward cache is not a terminated tab.
+    if (event.persisted) return;
+
+    const closingTokens = _tokens;
+    browserTabClosing = true;
+    tokenRevision++;
+    _tokens = null;
+    _restoreStatus = "empty";
+    writeSessionStorageTokens(null);
+
+    if (!closingTokens?.accessToken) return;
+    try {
+      void fetch(apiUrl("/auth/logout"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${closingTokens.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+        keepalive: true,
+      }).catch(() => {
+        /* Best effort only; tab credentials are already cleared. */
+      });
+    } catch {
+      /* Ignore synchronous shutdown-time fetch failures. */
+    }
+  };
+
+  window.addEventListener("pagehide", onPageHide);
+  return () => window.removeEventListener("pagehide", onPageHide);
 }
 
 export function getAccessToken(): string | null {
@@ -572,6 +712,7 @@ async function refreshAccessToken(): Promise<boolean> {
         signal: controller.signal,
       });
       if (!r.ok) {
+        if (r.status === 401) markRestoredSessionExpired();
         persistTokens(null);
         emit(null);
         return false;
@@ -768,6 +909,12 @@ export async function authedMediaFetch(
 // actually broke instead of the opaque "Failed to fetch".
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+export class ApiRequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApiRequestTimeoutError";
+  }
+}
 function networkErrorMessage(url: string, err: unknown): string {
   const detail = err instanceof Error ? err.message : String(err);
   return `Could not reach the server (${detail}). URL: ${url}. Check your internet connection and try again.`;
@@ -783,7 +930,10 @@ async function fetchWithRetry(
     return await fetch(url, init);
   } catch (firstErr) {
     // Preserve aborts (caller cancelled) — never wrap or retry these.
-    if (firstErr instanceof DOMException && firstErr.name === "AbortError") {
+    if (
+      init.signal?.aborted ||
+      (firstErr instanceof DOMException && firstErr.name === "AbortError")
+    ) {
       throw firstErr;
     }
     if (!(firstErr instanceof TypeError)) throw firstErr;
@@ -795,8 +945,8 @@ async function fetchWithRetry(
       return await fetch(url, init);
     } catch (secondErr) {
       if (
-        secondErr instanceof DOMException &&
-        secondErr.name === "AbortError"
+        init.signal?.aborted ||
+        (secondErr instanceof DOMException && secondErr.name === "AbortError")
       ) {
         throw secondErr;
       }
@@ -840,6 +990,7 @@ export async function apiFetch<T = unknown>(
   if (res.status === 401 && !retried && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) return apiFetch<T>(path, options, true);
+    if (!_tokens) markRestoredSessionExpired();
     throw new ApiError("Your session has expired. Please sign in again.", 401);
   }
 
@@ -859,6 +1010,7 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
+    if (res.status === 401) markRestoredSessionExpired();
     const fromObj =
       parsed && typeof parsed === "object"
         ? (parsed as Record<string, unknown>)
@@ -888,6 +1040,30 @@ export async function apiFetch<T = unknown>(
     return (parsed as { data: T }).data;
   }
   return parsed as T;
+}
+
+export interface DesktopBackupHistoryRun {
+  downloadRunId: string;
+  status: "success" | "error";
+  completedAt: string;
+}
+
+export interface DesktopBackupHistoryLookup {
+  ok: true;
+  run: DesktopBackupHistoryRun | null;
+}
+
+export function getDesktopBackupHistoryByDownloadRunId(
+  downloadRunId: string,
+  fetcher: <T = unknown>(
+    path: string,
+    options?: { method?: string; signal?: AbortSignal },
+  ) => Promise<T> = apiFetch,
+): Promise<DesktopBackupHistoryLookup> {
+  return fetcher<DesktopBackupHistoryLookup>(
+    `/admin/backup/history/by-download-run/${encodeURIComponent(downloadRunId)}`,
+    { method: "GET" },
+  );
 }
 
 /**
@@ -991,31 +1167,94 @@ export async function readBoundedBackupBuffer(response: Response): Promise<Array
 export async function apiDownloadBackupToFolder(
   folderPath: string,
   source: "manual" | "scheduler" = "scheduler",
+  sourceHeaders: Record<string, string> = {},
+  runId?: string,
+  archiveKind: "full" | "database-only" = "full",
   retried = false,
 ): Promise<import("./local-backup-execution").LocalBackupSaved> {
   const bridge = (window as unknown as { electronAPI?: {
     downloadBackupToFolder?: (request: { url: string; folderPath: string; headers: Record<string, string> }) =>
-      Promise<{ ok: boolean; status?: number; error?: string; fileName?: string; path?: string; sizeBytes?: number; downloadRunId?: string }>;
+      Promise<{ ok: boolean; status?: number; error?: string; fileName?: string; path?: string; sizeBytes?: number; downloadRunId?: string; archiveKind?: string; missingFileCount?: number; partialFailure?: boolean; warnings?: string | null }>;
   } }).electronAPI?.downloadBackupToFolder;
   if (!bridge) throw new Error("Install the latest LabTrax Desktop to stream large backups directly to disk.");
-  const headers: Record<string, string> = { ...authHeader() };
+  const headers: Record<string, string> = { ...authHeader(), ...sourceHeaders };
   const credential = await getPlatformAdminSecretForRequest();
   if (credential) headers[credential.header] = credential.value;
+  let downloadUrl: string;
+  if (source === "manual") {
+    if (!runId) throw new Error("A manual backup run ID is required for a reconnectable desktop download.");
+    await apiFetch("/admin/backup/run", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        destination: "browser",
+        runId,
+        archiveKind,
+        respondAsync: true,
+      }),
+    });
+    const deadline = Date.now() + 2 * 60 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const status = await apiFetch<{
+        state: string;
+        error?: string;
+        delivery?: { fileName: string; size: number };
+      }>(`/admin/backup/status/${encodeURIComponent(runId)}`, { headers });
+      if (status.delivery) break;
+      if (status.state === "cancelled" || status.state === "failed" || status.state === "stale") {
+        throw new Error(status.error ?? `Backup ${status.state}.`);
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 1500));
+    }
+    if (Date.now() >= deadline) throw new Error("Backup generation is still running; reconnect to the same run before starting another backup.");
+    downloadUrl = apiUrl(`/admin/backup/download/${encodeURIComponent(runId)}`);
+  } else {
+    downloadUrl = apiUrl(`/admin/backup/generate?deferRecord=1${runId ? `&runId=${encodeURIComponent(runId)}` : ""}${archiveKind === "database-only" ? "&archiveKind=database-only" : ""}`);
+  }
   const result = await bridge({
-    url: apiUrl(`/admin/backup/generate?deferRecord=1${source === "manual" ? "&source=manual" : ""}`),
+    url: downloadUrl,
     folderPath, headers,
   });
   if (result.status === 401 && !retried && _tokens?.refreshToken && await refreshAccessToken()) {
-    return apiDownloadBackupToFolder(folderPath, source, true);
+    return apiDownloadBackupToFolder(folderPath, source, sourceHeaders, runId, archiveKind, true);
   }
   if (!result.ok || !result.fileName || !result.path || !Number.isSafeInteger(result.sizeBytes)) {
     const error = new ApiError(result.error ?? "The desktop could not verify the completed backup file.", result.status ?? 0);
     error.downloadRunId = result.downloadRunId;
     throw error;
   }
-  return { fileName: result.fileName, path: result.path, sizeBytes: result.sizeBytes!, downloadRunId: result.downloadRunId };
+  return { fileName: result.fileName, path: result.path, sizeBytes: result.sizeBytes!, downloadRunId: result.downloadRunId,
+    missingFileCount: result.missingFileCount, partialFailure: result.partialFailure, warnings: result.warnings,
+    archiveKind: result.archiveKind };
 }
 
+/**
+ * Bind a scheduled local-backup run to the bearer token active when its
+ * scheduler starts. The Desktop bridge may finish a disk write after sign-out;
+ * its report must still belong to the account that started it, not a later
+ * account that signed in while the write was in flight.
+ */
+export function createLocalBackupApiSession() {
+  const sessionHeaders = authHeader();
+  const withSessionHeaders = (options: RequestInit = {}): RequestInit => ({
+    ...options,
+    headers: {
+      ...Object.fromEntries(new Headers(options.headers).entries()),
+      ...sessionHeaders,
+    },
+  });
+
+  return {
+    apiFetch: <T = unknown>(endpoint: string, options?: RequestInit) =>
+      // Do not let a late old-session request refresh whichever account is
+      // currently in the global token slot. If this token expired, fail closed.
+      apiFetch<T>(endpoint, withSessionHeaders(options), true),
+    apiFetchArrayBuffer: (endpoint: string, options?: RequestInit) =>
+      apiFetchArrayBuffer(endpoint, withSessionHeaders(options), true),
+    downloadBackupToFolder: (folderPath: string, source: "manual" | "scheduler" = "scheduler") =>
+      apiDownloadBackupToFolder(folderPath, source, sessionHeaders),
+  };
+}
 export interface UploadWithProgressOptions {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
@@ -1591,4 +1830,34 @@ try {
   }
 } catch {
   /* ignore */
+}
+
+/**
+ * Bound a metadata request without putting a deadline on the archive transfer.
+ * The request receives an abort signal, and the caller is released even if a
+ * fetch implementation does not promptly settle after abort.
+ */
+export async function withApiRequestTimeout<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new ApiRequestTimeoutError(message));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([request(controller.signal), deadline]);
+  } catch (error) {
+    if (timedOut) throw new ApiRequestTimeoutError(message);
+    throw error;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

@@ -12,6 +12,19 @@ export function invoiceTimestampToDateInput(value?: string | null): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * A date input is date-only, while stored issue dates may retain an exact
+ * instant. Only serialize it when the user changed the displayed UTC calendar
+ * date; otherwise a money/notes edit would silently canonicalize the instant
+ * and move it between timezone-based sales buckets.
+ */
+export function invoiceDateInputHasChanged(
+  inputValue?: string | null,
+  persistedValue?: string | null,
+): boolean {
+  return (inputValue ?? "") !== invoiceTimestampToDateInput(persistedValue);
+}
+
 /** Serialize an invoice calendar date as canonical UTC midnight. */
 export function invoiceDateInputToTimestamp(value?: string | null): string | null {
   if (!value) return null;

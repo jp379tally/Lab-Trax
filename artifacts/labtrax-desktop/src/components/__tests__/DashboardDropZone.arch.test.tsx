@@ -34,7 +34,7 @@ describe("drop-zone shared prescription restoration serialization", () => {
     },
   );
 
-  it("preserves source order across tooth parsing and both-arch expansion", () => {
+  it("preserves Universal tooth order without duplicating fixed work across both arches", () => {
     const rows = buildPrescriptionRestorations({
       toothIndices: " 14, 3 \n 8, ",
       caseType: " Crown ",
@@ -42,8 +42,7 @@ describe("drop-zone shared prescription restoration serialization", () => {
       arch: "both",
     });
     expect(rows.map(({ toothNumber, arch }) => [toothNumber, arch])).toEqual([
-      ["14", "upper"], ["3", "upper"], ["8", "upper"],
-      ["14", "lower"], ["3", "lower"], ["8", "lower"],
+      ["14", undefined], ["3", undefined], ["8", undefined],
     ]);
     expect(rows.every((row) => row.restorationType === "Crown" && row.quantity === 1)).toBe(true);
   });

@@ -3,7 +3,9 @@
  *
  * The server cannot reach the admin's local disk, so when the saved backup
  * schedule targets a local folder / USB path the server silently skips it and
- * this scheduler runs it instead — while the desktop app is open:
+ * this scheduler runs it instead — while the signed-in desktop companion is
+ * active (closing the window hides it to the system tray, but the app's
+ * 10-minute idle logout still stops the scheduler):
  *
  *   1. Poll the saved schedule (every SCHEDULE_REFRESH_MS).
  *   2. When a local-folder schedule is enabled and a run is due, download a
@@ -12,13 +14,16 @@
  *   4. Report the outcome to POST /admin/backup/desktop-run-report so the run
  *      lands in backup history and feeds the staleness watermark.
  *
- * If the app is closed when a run is due, the backup fires on the next tick
- * after the app reopens (last-run time is persisted in localStorage).
+ * Sleep, automatic or manual sign-out, and Quit pause local runs. A due run
+ * starts on the next tick after the user signs in again and the companion is
+ * awake. A disconnected destination is recorded as a failure instead of being
+ * reported as a successful recovery.
  * All dependencies are injectable for tests.
  */
 
 import {
   executeLocalBackup,
+  BackupHistoryUnconfirmedError,
   type LocalBackupLiveStatus,
   type LocalBackupSaved,
 } from "./local-backup-execution";
@@ -30,8 +35,12 @@ export const TICK_MS = 60_000;
 export const SCHEDULE_REFRESH_MS = 5 * 60_000;
 /** After a 403 (not platform admin), back off before re-checking. */
 export const FORBIDDEN_BACKOFF_MS = 30 * 60_000;
+/** Retry a due run after a transient offline or destination-write failure. */
+export const FAILED_RUN_RETRY_MS = 5 * 60_000;
+export const LOCAL_BACKUP_RETRY_AFTER_KEY = "labtrax_local_backup_retry_after_v1";
 
 interface ScheduleData {
+  sourceEnvironment?: "development" | "production";
   interval: number | null;
   unit: "minutes" | "hours" | null;
   destination: string | null;
@@ -49,10 +58,15 @@ export interface LocalBackupSchedulerDeps {
   saveBackupToFolder:
     | ((buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>)
     | undefined;
+  /** Read-only probe; false pauses the run before requesting an archive. */
+  isFolderAvailable?: (folder: string) => Promise<boolean>;
   downloadBackupToFolder?: (folder: string, source?: "manual" | "scheduler") => Promise<LocalBackupSaved>;
   onDownloadRunId?: (listener: (runId: string) => void) => () => void;
   getLiveStatus?: (runId: string) => Promise<LocalBackupLiveStatus>;
   onProgress?: (progress: ScheduledLocalBackupProgress | null) => void;
+  onError?: (message: string) => void;
+  /** Enables the per-user Desktop companion only for an enabled local schedule. */
+  onScheduleActive?: (active: boolean) => void;
   storage: Pick<Storage, "getItem" | "setItem">;
   now?: () => number;
   setInterval?: typeof globalThis.setInterval;
@@ -87,12 +101,26 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
   let forbiddenUntil = 0;
   let running = false;
   let stopped = false;
+  let scheduleActive: boolean | null = null;
+
+  function setScheduleActive(active: boolean): void {
+    if (scheduleActive === active) return;
+    scheduleActive = active;
+    deps.onScheduleActive?.(active);
+  }
 
   async function refreshScheduleIfStale(): Promise<void> {
     if (now() - scheduleFetchedAt < SCHEDULE_REFRESH_MS && schedule !== null) return;
     const data = await deps.apiFetch<ScheduleData>("/admin/backup/schedule");
+    if (stopped) return;
     schedule = data;
     scheduleFetchedAt = now();
+    setScheduleActive(
+      data.sourceEnvironment !== "production" &&
+      data.enabled === true &&
+      data.destination === "local" &&
+      Boolean((data.path ?? "").trim()),
+    );
   }
 
   function lastRunAt(): number {
@@ -105,15 +133,26 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
     const folder = (sched.path ?? "").trim();
     const saveToFolder = deps.saveBackupToFolder;
     if (!folder || (!saveToFolder && !deps.downloadBackupToFolder)) return;
+    if (deps.isFolderAvailable && !(await deps.isFolderAvailable(folder))) {
+      log("[local-backup] destination is unavailable; waiting for it to reconnect");
+      return;
+    }
+    // stop() prevents work that has not reached the bridge yet, but once
+    // executeLocalBackup starts, let its download/write/report transaction
+    // finish under the initiating session.
+    if (stopped) return;
+    if (!deps.isFolderAvailable) {
+      log("[local-backup] destination availability cannot be confirmed; scheduled run paused");
+      return;
+    }
 
     // IMPORTANT: do NOT write the last-run key here.  Writing it before the
     // download/write/report means a hard crash (app killed mid-download)
     // silently advances the watermark without producing any history entry.
-    // Instead the key is written in two places below:
+    // Instead the last-success key is written only below:
     //   • after a confirmed desktop-run-report success
-    //   • in the catch block so a *caught* failure still prevents a
-    //     per-tick retry storm (only a hard crash leaves the key unset,
-    //     which is intentional — the next tick will correctly re-fire).
+    // A caught failure gets a separate short retry delay; it must not look
+    // like a successful complete recovery point.
 
     try {
       // deferRecord=1: the server must NOT record this download as a
@@ -127,8 +166,9 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
         deps.onProgress?.({ startedAt, phase, liveStatus });
       };
       publishProgress();
+      let result: Awaited<ReturnType<typeof executeLocalBackup>> | undefined;
       try {
-        await executeLocalBackup({
+        result = await executeLocalBackup({
           ...deps,
           now,
           log,
@@ -146,15 +186,23 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
       }
       // Advance the watermark only after the history entry is confirmed.
       deps.storage.setItem(LOCAL_BACKUP_LAST_RUN_KEY, String(now()));
-      log("[local-backup] scheduled backup saved");
+      deps.storage.setItem(LOCAL_BACKUP_RETRY_AFTER_KEY, "0");
+      if (result?.partialFailure) {
+        log("[local-backup] scheduled backup saved with warnings", { missingFileCount: result.missingFileCount, warnings: result.warnings });
+      } else {
+        log("[local-backup] scheduled backup saved");
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       log("[local-backup] scheduled backup failed", { message });
-      // Advance the watermark on a caught failure so the next tick does not
-      // immediately retry (retry storm prevention).  A hard crash before
-      // this line means the key is never written, allowing the next tick to
-      // correctly re-fire once the app restarts.
-      deps.storage.setItem(LOCAL_BACKUP_LAST_RUN_KEY, String(now()));
+      if (err instanceof BackupHistoryUnconfirmedError) {
+        deps.onError?.(message);
+      }
+      // Do not advance the successful-run watermark on a failed/incomplete
+      // archive. Use a separate bounded retry time to avoid a per-minute
+      // retry storm while still resuming promptly after a disconnected drive
+      // or laptop network becomes available again.
+      deps.storage.setItem(LOCAL_BACKUP_RETRY_AFTER_KEY, String(now() + FAILED_RUN_RETRY_MS));
     }
   }
 
@@ -165,10 +213,13 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
     running = true;
     try {
       await refreshScheduleIfStale();
+      if (stopped) return;
       const sched = schedule;
-      if (!sched || !sched.enabled || sched.destination !== "local") return;
+      if (!sched || sched.sourceEnvironment === "production" || !sched.enabled || sched.destination !== "local") return;
       const intervalMs = intervalToMs(sched.interval, sched.unit);
       if (!intervalMs || !(sched.path ?? "").trim()) return;
+      const retryAfter = Number(deps.storage.getItem(LOCAL_BACKUP_RETRY_AFTER_KEY) ?? "0");
+      if (Number.isFinite(retryAfter) && now() < retryAfter) return;
       if (now() - lastRunAt() < intervalMs) return;
       await runDueBackup(sched);
     } catch (err: unknown) {
@@ -177,6 +228,7 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
         forbiddenUntil = now() + FORBIDDEN_BACKOFF_MS;
         schedule = null;
         scheduleFetchedAt = 0;
+        setScheduleActive(false);
         log("[local-backup] not authorized; backing off", { forbiddenUntil });
       } else {
         log("[local-backup] tick failed", {
@@ -197,5 +249,6 @@ export function startLocalBackupScheduler(deps: LocalBackupSchedulerDeps): () =>
   return () => {
     stopped = true;
     clearIv(timer);
+    setScheduleActive(false);
   };
 }

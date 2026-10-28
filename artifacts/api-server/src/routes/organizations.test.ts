@@ -786,6 +786,109 @@ maybe("Organizations CRUD (db integration)", () => {
     expect(patch.status).toBe(400);
   });
 
+  it("updates reviewed practice contact fields only through the intake-specific lab-admin route", async () => {
+    const { access } = await makeSession(ownerId);
+    const { db, organizations } = dbMod as any;
+    const lab = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(rid("IntakeContactLab")));
+    expect(lab.status).toBe(201);
+    const labId = lab.body.data.id;
+    createdOrgIds.push(labId);
+
+    const practiceId = rid("IntakePractice");
+    await db.insert(organizations).values({
+      id: practiceId,
+      type: "provider",
+      name: "Intake Contact Practice",
+      parentLabOrganizationId: labId,
+    });
+    createdOrgIds.push(practiceId);
+
+    const patch = await request(appMod.default)
+      .patch(`/api/organizations/${practiceId}/intake-contact`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        addressLine1: "50 Intake Avenue",
+        addressLine2: "Suite 4",
+        billingAddressLine1: "PO Box 20",
+        billingAddressLine2: "Unit B",
+        billingCity: "Springfield",
+        billingState: "IL",
+        billingZip: "62702",
+        phone: "555-0188",
+        primaryEmail: "office@example.test",
+        billingEmail: "billing@example.test",
+      });
+    expect(patch.status, JSON.stringify(patch.body)).toBe(200);
+    expect(patch.body.data).toMatchObject({
+      addressLine1: "50 Intake Avenue",
+      addressLine2: "Suite 4",
+      billingAddressLine1: "PO Box 20",
+      billingAddressLine2: "Unit B",
+      billingCity: "Springfield",
+      billingState: "IL",
+      billingZip: "62702",
+      phone: "555-0188",
+      billingEmail: "billing@example.test",
+    });
+    expect(patch.body.data.additionalEmails).toContainEqual(
+      expect.objectContaining({ email: "office@example.test", type: "correspondence" }),
+    );
+
+    const unauthorized = await makeSession(providerUserId);
+    const denied = await request(appMod.default)
+      .patch(`/api/organizations/${practiceId}/intake-contact`)
+      .set("Authorization", `Bearer ${unauthorized.access}`)
+      .send({ phone: "555-0199" });
+    expect(denied.status).toBe(403);
+  });
+
+  it.skipIf(!process.env.LABTRAX_ISOLATED_RESTORE_ROOT)(
+    "rolls back intake contact fields when email persistence fails, then retries without duplication",
+    async () => {
+      const { requireIsolatedRestoreTest } = await import("../lib/restore-test-isolation");
+      requireIsolatedRestoreTest();
+      const { access, labId } = await makeOwnerLab();
+      const { db, pool, organizations, organizationAdditionalEmails } = dbMod;
+      const practiceId = rid("IntakeAtomic");
+      const trigger = rid("intake_atomicity_probe");
+      await db.insert(organizations).values({
+        id: practiceId, name: "Synthetic atomic intake", type: "provider",
+        parentLabOrganizationId: labId, phone: "555-0101",
+      });
+      createdOrgIds.push(practiceId);
+      await pool.query(`
+        CREATE FUNCTION "${trigger}"() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'synthetic email persistence rejected'; END $$;
+        CREATE TRIGGER "${trigger}" BEFORE INSERT ON organization_additional_emails
+          FOR EACH ROW WHEN (NEW.email = 'reject-intake-write@example.test')
+          EXECUTE FUNCTION "${trigger}"();
+      `);
+      try {
+        const failed = await request(appMod.default)
+          .patch(`/api/organizations/${practiceId}/intake-contact`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({ phone: "555-0102", primaryEmail: "reject-intake-write@example.test" });
+        expect(failed.status).toBe(500);
+        const persisted = await db.query.organizations.findFirst({ where: eq(organizations.id, practiceId) });
+        expect(persisted?.phone).toBe("555-0101");
+        expect(await db.select().from(organizationAdditionalEmails)
+          .where(eq(organizationAdditionalEmails.organizationId, practiceId))).toEqual([]);
+        const retry = await request(appMod.default)
+          .patch(`/api/organizations/${practiceId}/intake-contact`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({ phone: "555-0102", primaryEmail: "accepted-intake@example.test" });
+        expect(retry.status).toBe(200);
+        expect(retry.body.data.phone).toBe("555-0102");
+        expect(retry.body.data.additionalEmails).toHaveLength(1);
+      } finally {
+        await pool.query(`DROP TRIGGER IF EXISTS "${trigger}" ON organization_additional_emails; DROP FUNCTION IF EXISTS "${trigger}"()`);
+      }
+    },
+  );
+
   // ── GET /api/organizations/:id/members ────────────────────────────────────
 
   it("GET /api/organizations/:id/members returns member list including owner", async () => {

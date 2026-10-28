@@ -79,6 +79,28 @@ describe("SettingsPage navigation guards", () => {
     expect(screen.getByText(/Lab team status/i)).toBeInTheDocument();
   });
 
+  it("gates an administrator-only panel opened from a direct query string", () => {
+    window.history.pushState({}, "", "/settings?tab=backup");
+    const Wrapper = makeAuthWrapper(
+      "/settings?tab=backup",
+      {
+        user: ADMIN_USER as any,
+        status: "authed",
+        restoreStatus: "ok",
+        restoreNoticeDismissed: true,
+      },
+      { adminSettingsPin: null },
+    );
+    render(
+      <Wrapper>
+        <SettingsPage />
+      </Wrapper>,
+    );
+
+    expect(screen.getByTestId("admin-settings-pin-gate")).toBeInTheDocument();
+    expect(screen.queryByTestId("backup-summary")).not.toBeInTheDocument();
+  });
+
   it("renders the lab/environment name heading above Lab team status", () => {
     const Wrapper = makeAuthWrapper("/settings", {
       user: ADMIN_USER as any,

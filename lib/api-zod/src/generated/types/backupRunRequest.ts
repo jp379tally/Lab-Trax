@@ -5,9 +5,14 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { BackupRunRequestArchiveKind } from './backupRunRequestArchiveKind';
 import type { BackupRunRequestDestination } from './backupRunRequestDestination';
 
 export interface BackupRunRequest {
+  runId?: string;
+  /** Opt into HTTP 202 for cloud backups. Requires runId. Older installed clients retain synchronous HTTP 200. */
+  respondAsync?: boolean;
+  archiveKind?: BackupRunRequestArchiveKind;
   destination: BackupRunRequestDestination;
   /** Target folder path (required for local and network destinations) */
   path?: string | null;

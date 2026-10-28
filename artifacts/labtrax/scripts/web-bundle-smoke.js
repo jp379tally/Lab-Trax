@@ -5,6 +5,7 @@ const { extname, join, normalize } = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { chromium } = require("@playwright/test");
 const { caseHeaderResponse, verifyCaseHeader } = require("./case-header-web-checks");
+const { caseRestorationResponse, verifyCaseRestoration } = require("./case-restoration-web-checks");
 
 const outputDir = mkdtempSync(join(tmpdir(), "labtrax-web-smoke-"));
 
@@ -63,7 +64,8 @@ async function verifyReceivePaymentsRoute() {
     });
     await page.route("**/api/**", async (route) => {
       const pathname = new URL(route.request().url()).pathname;
-      let body = process.env.LABTRAX_WEB_SMOKE_CASE_HEADER_ONLY ? caseHeaderResponse(route.request()) : {};
+      const restorationFixture = process.env.LABTRAX_WEB_SMOKE_RESTORATION_ONLY ? caseRestorationResponse(route.request()) : null;
+      let body = restorationFixture?.body ?? (process.env.LABTRAX_WEB_SMOKE_CASE_HEADER_ONLY ? caseHeaderResponse(route.request()) : {});
       if (pathname === "/api/auth/login") {
         body = {
           success: true,
@@ -91,7 +93,7 @@ async function verifyReceivePaymentsRoute() {
         body = { entitlement: { status: "active", accessLevel: "full" } };
       }
       await route.fulfill({
-        status: 200,
+        status: restorationFixture?.status ?? 200,
         contentType: "application/json",
         body: JSON.stringify(body),
       });
@@ -102,6 +104,27 @@ async function verifyReceivePaymentsRoute() {
     await page.getByTestId("login-password").fill("browser-smoke-password");
     await page.getByTestId("login-submit").click();
     await page.waitForURL((current) => current.pathname === "/app/");
+
+    if (process.env.LABTRAX_WEB_SMOKE_RESTORATION_ONLY) {
+      try {
+        await verifyCaseRestoration(page, url);
+      } catch (error) {
+        const { mkdirSync } = require("node:fs");
+        const evidenceDir = join(__dirname, "../../../generated-artifacts/mobile-restoration");
+        mkdirSync(evidenceDir, { recursive: true });
+        await page.screenshot({ path: join(evidenceDir, "browser-failure.png") });
+        console.error(`Restoration browser failure at ${page.url()}:\n${await page.locator("body").innerText()}`);
+        throw error;
+      }
+      // The one deliberately refused PATCH emits the browser's expected 409 resource diagnostic.
+      const expectedConflict = "Failed to load resource: the server responded with a status of 409 (Conflict)";
+      const unexpected = runtimeErrors.filter((message) => message !== expectedConflict);
+      if (runtimeErrors.filter((message) => message === expectedConflict).length > 1) {
+        throw new Error("Unexpected additional failed requests in the restoration check");
+      }
+      if (unexpected.length) throw new Error(`Expo web runtime errors:\n${unexpected.join("\n")}`);
+      return;
+    }
 
     if (process.env.LABTRAX_WEB_SMOKE_CASE_HEADER_ONLY) {
       try {
@@ -229,7 +252,8 @@ async function main() {
       cwd: join(__dirname, ".."),
       env: {
         ...process.env,
-        EXPO_PUBLIC_DOMAIN: process.env.EXPO_PUBLIC_DOMAIN || "lab-trax.replit.app",
+        EXPO_PUBLIC_DOMAIN: process.env.LABTRAX_WEB_SMOKE_RESTORATION_ONLY ? "browser-fixture.invalid" :
+          process.env.EXPO_PUBLIC_DOMAIN || "lab-trax.replit.app",
         NODE_OPTIONS: process.env.NODE_OPTIONS || "--max-old-space-size=3072",
       },
       stdio: "inherit",

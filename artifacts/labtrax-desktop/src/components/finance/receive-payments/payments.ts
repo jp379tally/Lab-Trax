@@ -205,7 +205,12 @@ export function batchDraft(
   defaults: PaymentDefaults | null,
 ): Draft {
   const statementId = scopeStatementId(customer, scope);
-  const draft: Draft = { ...draftWithDefaults(statementId, defaults), scopeInvoiceIds: scope.invoiceIds };
+  const draft: Draft = {
+    ...draftWithDefaults(statementId, defaults),
+    doctorIdentity: customer.isDoctorAccount ? customer.doctorIdentity ?? null : null,
+    doctorName: customer.isDoctorAccount ? customer.doctorDisplayName ?? null : null,
+    scopeInvoiceIds: scope.invoiceIds,
+  };
   if (statementId) return draft;
   const invoices = scopeInvoices(customer, scope) ?? [];
   const applications: Record<string, string> = {};

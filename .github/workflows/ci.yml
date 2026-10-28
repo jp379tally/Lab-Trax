@@ -6,6 +6,25 @@ on:
   pull_request:
 
 jobs:
+  dependency-security:
+    name: Dependency security regressions and audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify installed security fixes
+        run: pnpm run test:dependency-security
+      - name: Audit dependency advisories
+        run: node scripts/check-dependency-audit.cjs
+
   validate-workflows:
     name: Validate GitHub Actions workflows
     runs-on: ubuntu-latest
@@ -121,10 +140,10 @@ jobs:
       - name: Prepare non-hidden workspace test scratch
         run: bash scripts/with-workspace-test-scratch.sh --prepare-github
 
-      - name: Install PostgreSQL 16 server tools
+      - name: Install PostgreSQL 16 server tools and PDF converters
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-client-16
+          sudo apt-get install -y postgresql-16 postgresql-client-16 poppler-utils
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Start isolated PostgreSQL with verified TLS
@@ -387,7 +406,8 @@ jobs:
 
   test-labtrax-desktop:
     name: Desktop client tests
-    runs-on: ubuntu-latest
+    # Playwright 1.60's browser/dependency bundle supports Ubuntu 24.04.
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -483,6 +503,7 @@ jobs:
         env:
           # Smoke-test uses no real backend — placeholder is fine.
           VITE_API_BASE_URL: https://example.invalid
+          LABTRAX_RENDERER_SMOKE: "1"
         run: pnpm --filter @workspace/labtrax-desktop exec vite build --config vite.electron.config.ts
 
       # Boots a real Electron binary under xvfb and asserts:
@@ -493,6 +514,8 @@ jobs:
       #     under contextIsolation
       #   * no uncaught exceptions in the renderer or fatal errors on
       #     main-process stderr
+      #   * bundled PDF.js worker loads through app:// and both synthetic
+      #     PDF pages reach the local analysis stub (no backend/model calls)
       # Failure here blocks merge so a broken Electron build never reaches
       # the auto-updater feed.
       - name: Run real-Electron smoke test
@@ -500,7 +523,7 @@ jobs:
 
   test-labtrax-mobile:
     name: Mobile client tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4

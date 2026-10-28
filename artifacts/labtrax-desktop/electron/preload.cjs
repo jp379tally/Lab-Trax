@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
+  getBuildMetadata: () => ipcRenderer.invoke("get-build-metadata"),
   onUpdateDownloadProgress: (callback) => {
     const listener = (_event, percent) => callback(percent);
     ipcRenderer.on("update-download-progress", listener);
@@ -56,6 +57,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   showFolderDialog: () => ipcRenderer.invoke("dialog:show-folder"),
   saveBackupToFolder: (buffer, fileName, folderPath) =>
     ipcRenderer.invoke("backup:save-to-folder", { buffer, fileName, folderPath }),
+  setLocalBackupScheduleActive: (active) =>
+    ipcRenderer.invoke("backup:set-local-schedule-active", active),
+  isBackupFolderAvailable: (folderPath) =>
+    ipcRenderer.invoke("backup:is-folder-accessible", folderPath),
   downloadBackupToFolder: (request) => ipcRenderer.invoke("backup:download-to-folder", request),
   onBackupRunId: (callback) => {
     const listener = (_event, runId) => callback(runId);

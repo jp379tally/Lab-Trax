@@ -14,13 +14,13 @@ import * as zod from 'zod';
 export const CreateSubscriptionCheckoutBody = zod.object({
   "priceId": zod.string().optional().describe('Legacy lab checkout only; new provider checkout never trusts this value.'),
   "purchaseChannel": zod.enum(['web', 'native']).optional(),
-  "successUrl": zod.string().url().optional(),
-  "cancelUrl": zod.string().url().optional()
+  "successUrl": zod.url().optional(),
+  "cancelUrl": zod.url().optional()
 })
 
 export const CreateSubscriptionCheckout200Response = zod.object({
   "ok": zod.boolean(),
-  "url": zod.string().url(),
+  "url": zod.url(),
   "attemptId": zod.string().optional()
 })
 
@@ -350,405 +350,6 @@ export const GetInvoiceDiscountsReport200Response = zod.object({
 })
 
 export const GetInvoiceDiscountsReport403Response = zod.unknown()
-
-
-/**
- * @summary List evidence-backed recovered-case billing for authorized lab billing staff
- */
-
-export const getRecoveryBilling200ResponseRowsItemProposalOneInputRestorationsItemQuantityMax = 32;
-
-export const getRecoveryBilling200ResponseRowsItemProposalOneInputRestorationsMax = 64;
-
-export const getRecoveryBilling200ResponseRowsItemProposalOneInputReviewNotesMax = 4000;
-
-
-export const getRecoveryBilling200ResponseRowsItemProposalOneRowsItemOneQuantityMax = 32;
-
-
-
-export const GetRecoveryBilling200Response = zod.object({
-  "timezone": zod.string(),
-  "rows": zod.array(zod.object({
-  "caseId": zod.string(),
-  "caseNumber": zod.string(),
-  "historicalDate": zod.string(),
-  "patientName": zod.string(),
-  "doctorName": zod.string(),
-  "practiceId": zod.string().nullable(),
-  "rxNotes": zod.string().nullable(),
-  "sourceFlagged": zod.boolean(),
-  "state": zod.enum(['unresolved', 'deleted_case', 'deleted_or_void_billing', 'held', 'released', 'existing_billing', 'do_not_bill', 'existing_work', 'exception', 'proposed', 'needs_prescription_review']),
-  "proposalId": zod.string().nullable(),
-  "proposal": zod.union([zod.object({
-  "version": zod.literal(1),
-  "caseFingerprint": zod.string(),
-  "input": zod.object({
-  "evidenceAttachmentId": zod.string(),
-  "restorations": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(getRecoveryBilling200ResponseRowsItemProposalOneInputRestorationsItemQuantityMax)
-})).min(1).max(getRecoveryBilling200ResponseRowsItemProposalOneInputRestorationsMax),
-  "bridgeConnectors": zod.string().nullish(),
-  "prescriptionReviewed": zod.literal(true),
-  "identityReviewed": zod.literal(true),
-  "duplicateReviewed": zod.literal(true),
-  "reviewNotes": zod.string().min(1).max(getRecoveryBilling200ResponseRowsItemProposalOneInputReviewNotesMax)
-}),
-  "rows": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(getRecoveryBilling200ResponseRowsItemProposalOneRowsItemOneQuantityMax)
-}).and(zod.object({
-  "id": zod.string(),
-  "unitPrice": zod.string(),
-  "priceSource": zod.string().nullable(),
-  "priceSourceId": zod.string().nullable(),
-  "priceSourceName": zod.string().nullable(),
-  "priceKey": zod.string().nullable()
-}))),
-  "lines": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional(),
-  "childItems": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional()
-})).optional()
-})),
-  "total": zod.string(),
-  "exceptions": zod.array(zod.string()),
-  "pricingAt": zod.coerce.date(),
-  "pricingBasis": zod.enum(['current_catalog']),
-  "previousInvoiceId": zod.string().optional(),
-  "previousInvoiceFingerprint": zod.string().optional(),
-  "previousLinesFingerprint": zod.string().optional(),
-  "doctorIdentity": zod.string().nullish()
-}),zod.null()]),
-  "invoice": zod.union([zod.object({
-  "id": zod.string(),
-  "invoiceNumber": zod.string(),
-  "status": zod.string(),
-  "total": zod.string(),
-  "balanceDue": zod.string(),
-  "dueAt": zod.coerce.date().nullable(),
-  "recoveryBilling": zod.record(zod.string(), zod.unknown()).nullable()
-}),zod.null()]),
-  "prescriptions": zod.array(zod.object({
-  "id": zod.string(),
-  "fileName": zod.string()
-})),
-  "decision": zod.record(zod.string(), zod.unknown()).nullable()
-}))
-})
-
-
-export const AnalyzeRecoveryPrescriptionParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-export const AnalyzeRecoveryPrescriptionBody = zod.object({
-  "evidenceAttachmentId": zod.string()
-})
-
-
-export const analyzeRecoveryPrescription200ResponseRestorationsItemQuantityMax = 32;
-
-
-
-export const AnalyzeRecoveryPrescription200Response = zod.object({
-  "analysisId": zod.string(),
-  "restorations": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(analyzeRecoveryPrescription200ResponseRestorationsItemQuantityMax)
-})),
-  "exceptions": zod.array(zod.string()),
-  "extracted": zod.record(zod.string(), zod.unknown())
-})
-
-
-/**
- * Runs the same eligibility checks and current-catalog pricing as staging, but needs no review confirmations or notes and writes no proposal, work or invoice. The result is a current-rate replacement estimate, not the original invoice total.
- * @summary Price entered recovered-case work at current catalog rates without saving anything
- */
-export const PreviewRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-
-export const previewRecoveryBillingBodyRestorationsItemQuantityMax = 32;
-
-export const previewRecoveryBillingBodyRestorationsMax = 64;
-
-
-
-export const PreviewRecoveryBillingBody = zod.object({
-  "evidenceAttachmentId": zod.string(),
-  "restorations": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(previewRecoveryBillingBodyRestorationsItemQuantityMax)
-})).min(1).max(previewRecoveryBillingBodyRestorationsMax),
-  "bridgeConnectors": zod.string().nullish()
-})
-
-
-export const previewRecoveryBilling200ResponseRowsItemOneQuantityMax = 32;
-
-
-
-export const PreviewRecoveryBilling200Response = zod.object({
-  "rows": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(previewRecoveryBilling200ResponseRowsItemOneQuantityMax)
-}).and(zod.object({
-  "id": zod.string(),
-  "unitPrice": zod.string(),
-  "priceSource": zod.string().nullable(),
-  "priceSourceId": zod.string().nullable(),
-  "priceSourceName": zod.string().nullable(),
-  "priceKey": zod.string().nullable()
-}))),
-  "lines": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional(),
-  "childItems": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional()
-})).optional()
-})),
-  "total": zod.string(),
-  "exceptions": zod.array(zod.string()),
-  "pricingAt": zod.coerce.date(),
-  "pricingBasis": zod.enum(['current_catalog']),
-  "persisted": zod.literal(false)
-}).describe('Unsaved current-rate replacement pricing; never a staged proposal or the original total.')
-
-export const PreviewRecoveryBilling409Response = zod.unknown()
-
-
-export const ProposeRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-
-export const proposeRecoveryBillingBodyRestorationsItemQuantityMax = 32;
-
-export const proposeRecoveryBillingBodyRestorationsMax = 64;
-
-export const proposeRecoveryBillingBodyReviewNotesMax = 4000;
-
-
-
-export const ProposeRecoveryBillingBody = zod.object({
-  "evidenceAttachmentId": zod.string(),
-  "restorations": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(proposeRecoveryBillingBodyRestorationsItemQuantityMax)
-})).min(1).max(proposeRecoveryBillingBodyRestorationsMax),
-  "bridgeConnectors": zod.string().nullish(),
-  "prescriptionReviewed": zod.literal(true),
-  "identityReviewed": zod.literal(true),
-  "duplicateReviewed": zod.literal(true),
-  "reviewNotes": zod.string().min(1).max(proposeRecoveryBillingBodyReviewNotesMax)
-})
-
-
-export const proposeRecoveryBilling200ResponseProposalInputRestorationsItemQuantityMax = 32;
-
-export const proposeRecoveryBilling200ResponseProposalInputRestorationsMax = 64;
-
-export const proposeRecoveryBilling200ResponseProposalInputReviewNotesMax = 4000;
-
-
-export const proposeRecoveryBilling200ResponseProposalRowsItemOneQuantityMax = 32;
-
-
-
-export const ProposeRecoveryBilling200Response = zod.object({
-  "proposalId": zod.string(),
-  "proposal": zod.object({
-  "version": zod.literal(1),
-  "caseFingerprint": zod.string(),
-  "input": zod.object({
-  "evidenceAttachmentId": zod.string(),
-  "restorations": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(proposeRecoveryBilling200ResponseProposalInputRestorationsItemQuantityMax)
-})).min(1).max(proposeRecoveryBilling200ResponseProposalInputRestorationsMax),
-  "bridgeConnectors": zod.string().nullish(),
-  "prescriptionReviewed": zod.literal(true),
-  "identityReviewed": zod.literal(true),
-  "duplicateReviewed": zod.literal(true),
-  "reviewNotes": zod.string().min(1).max(proposeRecoveryBilling200ResponseProposalInputReviewNotesMax)
-}),
-  "rows": zod.array(zod.object({
-  "toothNumber": zod.string(),
-  "restorationType": zod.string().min(1),
-  "restorationSubtype": zod.string().nullable(),
-  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullable(),
-  "material": zod.string().nullable(),
-  "shade": zod.string().nullable(),
-  "quantity": zod.number().min(1).max(proposeRecoveryBilling200ResponseProposalRowsItemOneQuantityMax)
-}).and(zod.object({
-  "id": zod.string(),
-  "unitPrice": zod.string(),
-  "priceSource": zod.string().nullable(),
-  "priceSourceId": zod.string().nullable(),
-  "priceSourceName": zod.string().nullable(),
-  "priceKey": zod.string().nullable()
-}))),
-  "lines": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional(),
-  "childItems": zod.array(zod.object({
-  "description": zod.string(),
-  "quantity": zod.number(),
-  "unitPrice": zod.string(),
-  "lineTotal": zod.string(),
-  "priced": zod.boolean().optional()
-})).optional()
-})),
-  "total": zod.string(),
-  "exceptions": zod.array(zod.string()),
-  "pricingAt": zod.coerce.date(),
-  "pricingBasis": zod.enum(['current_catalog']),
-  "previousInvoiceId": zod.string().optional(),
-  "previousInvoiceFingerprint": zod.string().optional(),
-  "previousLinesFingerprint": zod.string().optional(),
-  "doctorIdentity": zod.string().nullish()
-})
-})
-
-
-/**
- * Creates the case's held replacement invoice from its latest staged proposal. The invoice stays held (balance 0.00, not on the customer's balance) until an owner/admin releases it. The proposal must be the latest for the case and have no exceptions; the case must be unchanged since staging, re-resolved current pricing must match, and no other billing may exist. Repeating the request for the same proposal returns the same invoice. Applying one case here needs no operator run approval; the operator batch tooling still applies only proposals authorized by its rehearsed run approval.
- * @summary Owner/admin application of one exact staged proposal as a held replacement invoice
- */
-export const ApplyRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-export const ApplyRecoveryBillingBody = zod.object({
-  "proposalId": zod.string()
-})
-
-export const ApplyRecoveryBilling200Response = zod.object({
-  "invoiceId": zod.string(),
-  "total": zod.string(),
-  "outcome": zod.string()
-})
-
-export const ApplyRecoveryBilling403Response = zod.unknown()
-
-export const ApplyRecoveryBilling409Response = zod.unknown()
-
-
-export const CorrectRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-export const CorrectRecoveryBillingBody = zod.object({
-  "proposalId": zod.string()
-})
-
-export const CorrectRecoveryBilling200Response = zod.object({
-  "invoiceId": zod.string(),
-  "total": zod.string(),
-  "outcome": zod.string()
-})
-
-
-export const ExcludeRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-export const excludeRecoveryBillingBodyReasonMax = 4000;
-
-
-
-export const ExcludeRecoveryBillingBody = zod.object({
-  "reason": zod.string().min(1).max(excludeRecoveryBillingBodyReasonMax)
-})
-
-export const ExcludeRecoveryBilling200Response = zod.object({
-  "decisionId": zod.string()
-})
-
-
-/**
- * @summary Lab-admin-only explicit charge and historical-settlement review
- */
-export const ReleaseRecoveryBillingParams = zod.object({
-  "caseId": zod.coerce.string()
-})
-
-export const releaseRecoveryBillingBodyEvidenceNotesMin = 20;
-export const releaseRecoveryBillingBodyEvidenceNotesMax = 4000;
-
-
-
-export const ReleaseRecoveryBillingBody = zod.object({
-  "chargesReviewed": zod.literal(true),
-  "historicalPaymentsReviewed": zod.literal(true),
-  "historicalSettlement": zod.enum(['independent_evidence_of_no_payment']),
-  "evidenceNotes": zod.string().min(releaseRecoveryBillingBodyEvidenceNotesMin).max(releaseRecoveryBillingBodyEvidenceNotesMax)
-})
-
-export const ReleaseRecoveryBilling200Response = zod.object({
-  "invoiceId": zod.string(),
-  "total": zod.string(),
-  "outcome": zod.string()
-})
-
-export const ReleaseRecoveryBilling409Response = zod.unknown()
 
 
 /**
@@ -3337,6 +2938,10 @@ export const ListCases200Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(listCases200ResponseDataOneItemDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(listCases200ResponseDataOneItemReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -3472,6 +3077,10 @@ export const ListCases200Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(listCases200ResponseDataTwoRowsItemDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(listCases200ResponseDataTwoRowsItemReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -3599,6 +3208,10 @@ export const ListCases401Response = zod.unknown()
  * @summary Create a canonical case
  */
 export const createCaseBodyReceivedAtRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const createCaseBodyScanDateRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const createCaseBodyPrescriptionDueDateRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const createCaseBodyInvoiceNotesMax = 10000;
+
 export const createCaseBodyDueTimeRegExp = new RegExp('^([01]\\d|2[0-3]):[0-5]\\d$');
 export const createCaseBodyRestorationsItemImplantPlatformNotesMax = 10000;
 
@@ -3612,6 +3225,10 @@ export const CreateCaseBody = zod.object({
   "patientLastName": zod.string().nullish(),
   "doctorName": zod.string().nullish(),
   "receivedAt": zod.string().regex(createCaseBodyReceivedAtRegExp).optional().describe('Calendar date the case was received.'),
+  "scanDate": zod.string().regex(createCaseBodyScanDateRegExp).optional().describe('Calendar date explicitly recorded for the scan.'),
+  "prescriptionDueDate": zod.string().regex(createCaseBodyPrescriptionDueDateRegExp).optional().describe('Due date explicitly extracted from the prescription; separate from lab scheduling.'),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).optional().describe('Contact details reviewed for this case, independent of shared practice edits.'),
+  "invoiceNotes": zod.string().max(createCaseBodyInvoiceNotesMax).optional().describe('Notes saved on the initial draft invoice.'),
   "status": zod.string().nullish(),
   "remakeOfCaseId": zod.string().nullish().describe('ID of the case being remade.'),
   "remakeReasonKey": zod.string().nullish().describe('Stable key for the structured remake reason (one of the 19 defined values). Sent alongside remakeReason (free-text label derived from the key). New questionnaire submissions always include this.\n'),
@@ -3697,6 +3314,10 @@ export const CreateCase201Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(createCase201ResponseDataDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(createCase201ResponseDataReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -3895,6 +3516,10 @@ export const ListCasesWorklist200Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(listCasesWorklist200ResponseDataRowsItemDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(listCasesWorklist200ResponseDataRowsItemReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -4070,6 +3695,10 @@ export const ListProviderCases200Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(listProviderCases200ResponseDataItemDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(listProviderCases200ResponseDataItemReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -4262,7 +3891,26 @@ export const ImportCaseFromIteroRxBody = zod.object({
   "providerOrganizationId": zod.string(),
   "doctorNameHint": zod.string().optional(),
   "patientFirstNameHint": zod.string().optional(),
-  "patientLastNameHint": zod.string().optional()
+  "patientLastNameHint": zod.string().optional(),
+  "receivedAt": zod.coerce.date().optional(),
+  "scanDateHint": zod.union([zod.coerce.date(),zod.enum([''])]).optional(),
+  "rxDueDateHint": zod.string().optional().describe('Rx due date, not the lab\'s scheduled due date.'),
+  "labDueDateHint": zod.union([zod.coerce.date(),zod.enum([''])]).optional(),
+  "externalPatientIdHint": zod.string().optional().describe('Source-platform case\/order identifier, separate from the Case Pan barcode.'),
+  "casePanBarcodeHint": zod.string().optional(),
+  "providerContactSnapshot": zod.string().optional().describe('JSON-encoded contact details reviewed for this case.'),
+  "invoiceNotesHint": zod.string().optional(),
+  "toothIndicesHint": zod.string().optional(),
+  "shadeHint": zod.string().optional(),
+  "materialHint": zod.string().optional(),
+  "caseTypeHint": zod.string().optional(),
+  "archHint": zod.string().optional(),
+  "removableSubtypeHint": zod.enum(['', 'partial', 'denture', 'flipper', 'repair_partial', 'repair_denture', 'repair']).optional(),
+  "reviewedRestorationsHint": zod.string().optional().describe('JSON-encoded reviewed restoration rows; prices are resolved by the server.'),
+  "toothAssignments": zod.string().optional().describe('JSON-encoded explicit tooth-chart roles.'),
+  "bridgeConnectors": zod.string().optional().describe('Explicit bridge connector pairs from the reviewed tooth chart.'),
+  "notesHint": zod.string().optional(),
+  "invoiceOverrideLines": zod.string().optional().describe('JSON-encoded role-authorized reviewed invoice lines.')
 })
 
 export const ImportCaseFromIteroRx200Response = zod.object({
@@ -4400,9 +4048,9 @@ export const GetCaseByBarcodeQueryParams = zod.object({
 export const GetCaseByBarcode200Response = zod.object({
   "ok": zod.boolean().optional(),
   "data": zod.object({
-  "case": zod.object({
+  "case": zod.looseObject({
 
-}).passthrough().optional().describe('The matching case row (Drizzle shape)')
+}).optional().describe('The matching case row (Drizzle shape)')
 }).optional()
 })
 
@@ -5040,6 +4688,10 @@ export const GetCase200Response = zod.object({
   "dueDate": zod.string().nullish(),
   "dueTime": zod.string().regex(getCase200ResponseDataDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format.'),
   "receivedAt": zod.string().regex(getCase200ResponseDataReceivedAtRegExp).nullish().describe('Calendar date when the case was received by the lab. Canonical and\nprojected legacy\/mobile cases both expose YYYY-MM-DD.\n'),
+  "scanDate": zod.coerce.date().nullish(),
+  "prescriptionDueDate": zod.coerce.date().nullish(),
+  "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).nullish(),
+  "externalPatientId": zod.string().nullish(),
   "createdAt": zod.string().nullish(),
   "updatedAt": zod.string().nullish(),
   "restorationCount": zod.number().nullish(),
@@ -5181,6 +4833,7 @@ export const updateCaseBodyRemakeReasonMax = 2000;
 export const UpdateCaseBody = zod.object({
   "status": zod.enum(['received', 'in_design', 'scan', 'in_milling', 'post_mill', 'sintering_furnace', 'model_room', 'in_porcelain', 'qc', 'complete', 'shipped', 'delivered', 'on_hold', 'remake', 'cancelled']).optional(),
   "priority": zod.enum(['normal', 'rush']).optional(),
+  "labLocationId": zod.string().nullish().describe('Lab station where the case is physically located. Null clears the stored station without changing the case status.\n'),
   "receivedAt": zod.string().regex(updateCaseBodyReceivedAtRegExp).optional().describe('Calendar date the case was received. Updating this field also updates the Issued date of every invoice linked to the case.\n'),
   "dueDate": zod.coerce.date().nullish(),
   "dueTime": zod.string().regex(updateCaseBodyDueTimeRegExp).nullish().describe('Optional literal wall-clock time of day for the due date, in HH:MM format. Null clears it.'),
@@ -5209,9 +4862,9 @@ export const UpdateCaseBody = zod.object({
 
 export const UpdateCase200Response = zod.object({
   "ok": zod.boolean().optional(),
-  "data": zod.object({
+  "data": zod.looseObject({
 
-}).passthrough().optional().describe('Raw updated case row (Drizzle shape)')
+}).optional().describe('Raw updated case row (Drizzle shape)')
 })
 
 export const UpdateCase400Response = zod.unknown()
@@ -5627,6 +5280,79 @@ export const AddCaseRestoration401Response = zod.unknown()
 export const AddCaseRestoration403Response = zod.unknown()
 
 export const AddCaseRestoration404Response = zod.unknown()
+
+
+/**
+ * Requires lab billing permission. Missing is a nonbillable tooth status.
+ * Refuses paid, finalized or reviewed invoices without committing chart changes.
+ * The chart, connector graph and invoice rebuild commit together or roll back.
+ * @summary Save staged tooth assignments and the case invoice atomically
+ */
+export const SaveCaseToothChartParams = zod.object({
+  "caseId": zod.coerce.string()
+})
+
+export const saveCaseToothChartBodyCreatesItemQuantityMax = 128;
+
+export const saveCaseToothChartBodyCreatesItemUnitPriceMin = 0;
+
+export const saveCaseToothChartBodyCreatesItemImplantPlatformNotesMax = 10000;
+
+export const saveCaseToothChartBodyCreatesMax = 52;
+
+export const saveCaseToothChartBodyUpdatesMax = 52;
+
+export const saveCaseToothChartBodyDeletesMax = 104;
+
+
+
+export const SaveCaseToothChartBody = zod.object({
+  "creates": zod.array(zod.object({
+  "localId": zod.uuid(),
+  "toothNumber": zod.string(),
+  "restorationType": zod.string(),
+  "material": zod.string().nullish(),
+  "restorationSubtype": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "quantity": zod.number().min(1).max(saveCaseToothChartBodyCreatesItemQuantityMax).optional(),
+  "arch": zod.string().nullish(),
+  "unitPrice": zod.number().min(saveCaseToothChartBodyCreatesItemUnitPriceMin).optional(),
+  "implantRetention": zod.string().nullish(),
+  "implantManufacturer": zod.string().nullish(),
+  "implantPlatformNotes": zod.string().max(saveCaseToothChartBodyCreatesItemImplantPlatformNotesMax).nullish()
+})).max(saveCaseToothChartBodyCreatesMax),
+  "updates": zod.array(zod.object({
+  "restorationId": zod.string(),
+  "toothNumber": zod.string(),
+  "restorationType": zod.enum(['Crown', 'Coping', 'Overlay', 'Pontic', 'Diagnostic', 'Inlay/Onlay', 'Offset inlay', 'Veneer', 'Denture', 'Partial denture', 'Bite splint', 'Primary telescopic crown', 'Secondary telescopic crown', 'Attachment']).optional(),
+  "arch": zod.union([zod.literal('upper'),zod.literal('lower'),zod.literal(null)]).nullish(),
+  "material": zod.string().optional(),
+  "restorationSubtype": zod.string().optional(),
+  "shade": zod.string().optional()
+})).max(saveCaseToothChartBodyUpdatesMax),
+  "deletes": zod.array(zod.string()).max(saveCaseToothChartBodyDeletesMax),
+  "bridgeConnectors": zod.string().nullable(),
+  "caseDetails": zod.record(zod.string(), zod.unknown()).optional().describe('Clinical form fields saved in the same transaction as chart and invoice. Doctor\/practice reassignment uses its existing dedicated workflow.'),
+  "hierarchy": zod.record(zod.string(), zod.unknown()).optional().describe('Existing validated whole-case clinical reconciliation, applied before explicit staged row operations.'),
+  "implants": zod.array(zod.object({
+  "restorationId": zod.string(),
+  "values": zod.record(zod.string(), zod.string().nullable())
+})).optional()
+})
+
+export const SaveCaseToothChart200Response = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "invoiceId": zod.string().nullable(),
+  "invoiceAction": zod.enum(['updated', 'created', 'skipped'])
+})
+})
+
+export const SaveCaseToothChart400Response = zod.unknown()
+
+export const SaveCaseToothChart403Response = zod.unknown()
+
+export const SaveCaseToothChart409Response = zod.unknown()
 
 
 /**
@@ -6247,7 +5973,8 @@ export const UpdateInvoiceBody = zod.object({
   "dueAt": zod.coerce.date().nullish(),
   "issuedAt": zod.coerce.date().nullish(),
   "invoiceNumber": zod.string().nullish(),
-  "notes": zod.string().nullish(),
+  "notes": zod.string().nullish().describe('Invoice notes; provider-facing reads and invoice outputs show these only when shareNotesWithProvider is true.'),
+  "shareNotesWithProvider": zod.boolean().optional().describe('Explicitly share invoice notes with the linked provider. Unset legacy values are private.'),
   "providerOrganizationId": zod.string().nullish(),
   "items": zod.array(zod.object({
   "id": zod.string().optional(),
@@ -8121,11 +7848,31 @@ export const DownloadLabScopedBackup500Response = zod.unknown()
  * @summary Run an immediate full backup
  */
 export const RunBackupNowBody = zod.object({
+  "runId": zod.uuid().optional(),
+  "respondAsync": zod.boolean().optional().describe('Opt into HTTP 202 for cloud backups. Requires runId. Older installed clients retain synchronous HTTP 200.'),
+  "archiveKind": zod.enum(['full', 'database-only']).optional(),
   "destination": zod.enum(['onedrive', 'google-drive', 'local', 'network']),
   "path": zod.string().nullish().describe('Target folder path (required for local and network destinations)')
 })
 
 export const RunBackupNow200Response = zod.object({
+  "runId": zod.uuid().optional(),
+  "state": zod.enum(['running']).optional(),
+  "archiveKind": zod.string().nullish(),
+  "partialFailure": zod.boolean().optional(),
+  "warnings": zod.string().nullish(),
+  "ok": zod.boolean().optional(),
+  "size": zod.number().optional().describe('Backup archive size in bytes'),
+  "completedAt": zod.coerce.date().optional(),
+  "fileName": zod.string().optional()
+})
+
+export const RunBackupNow202Response = zod.object({
+  "runId": zod.uuid().optional(),
+  "state": zod.enum(['running']).optional(),
+  "archiveKind": zod.string().nullish(),
+  "partialFailure": zod.boolean().optional(),
+  "warnings": zod.string().nullish(),
   "ok": zod.boolean().optional(),
   "size": zod.number().optional().describe('Backup archive size in bytes'),
   "completedAt": zod.coerce.date().optional(),
@@ -8138,16 +7885,90 @@ export const RunBackupNow403Response = zod.unknown()
 
 
 /**
+ * @summary Get shared phase and exact terminal result for one backup run
+ */
+export const GetBackupRunStatusParams = zod.object({
+  "runId": zod.uuid()
+})
+
+export const GetBackupRunStatus200Response = zod.object({
+  "runId": zod.uuid(),
+  "state": zod.enum(['running', 'awaiting_verification', 'completed', 'failed', 'stale']),
+  "phase": zod.string(),
+  "elapsedMs": zod.number().optional(),
+  "metrics": zod.record(zod.string(), zod.number()).optional(),
+  "error": zod.string().optional(),
+  "result": zod.object({
+  "runId": zod.uuid().optional(),
+  "state": zod.enum(['running']).optional(),
+  "archiveKind": zod.string().nullish(),
+  "partialFailure": zod.boolean().optional(),
+  "warnings": zod.string().nullish(),
+  "ok": zod.boolean().optional(),
+  "size": zod.number().optional().describe('Backup archive size in bytes'),
+  "completedAt": zod.coerce.date().optional(),
+  "fileName": zod.string().optional()
+}).optional()
+})
+
+export const GetBackupRunStatus404Response = zod.unknown()
+
+
+/**
  * Returns the recurring backup schedule stored in system settings.
  * Requires the X-Platform-Admin-Secret header.
  * @summary Get the current backup schedule configuration
  */
 export const GetBackupSchedule200Response = zod.object({
+  "offsite": zod.object({
+  "enabled": zod.boolean().optional(),
+  "running": zod.boolean().optional(),
+  "intervalMinutes": zod.number().optional(),
+  "lastVerifiedAt": zod.string().nullish(),
+  "databaseProtection": zod.object({
+  "mode": zod.enum(['incremental-storage-fresh-export', 'incremental-records-and-media']).optional(),
+  "scope": zod.enum(['production-database-and-media']).optional(),
+  "coverage": zod.enum(['complete', 'partial']).optional(),
+  "mediaFiles": zod.number().optional(),
+  "mediaBytes": zod.number().optional(),
+  "missingFiles": zod.number().optional(),
+  "state": zod.enum(['not_started', 'running', 'verified', 'skipped_busy', 'failed']).optional(),
+  "stage": zod.string().optional(),
+  "lastAttemptAt": zod.string().nullish(),
+  "lastVerifiedAt": zod.string().nullish(),
+  "recoveryPointAt": zod.string().nullish(),
+  "lastDestinationCheckAt": zod.string().nullish(),
+  "point": zod.string().nullish(),
+  "dumpBytes": zod.number().optional(),
+  "newChunks": zod.number().optional(),
+  "newBytes": zod.number().optional().describe('Encrypted new chunk bytes'),
+  "reusedChunks": zod.number().optional(),
+  "error": zod.string().nullish()
+}).optional().describe('Production database and readable media in encrypted content-addressed storage. Fresh database exports; reusable media chunks, not WAL\/PITR. Missing originals mean partial coverage.')
+}).optional(),
+  "sourceEnvironment": zod.enum(['development', 'production']).optional().describe('The connected server\'s immutable backup source. Use the development app or published app to select a source; this field does not rebind a database.'),
   "ok": zod.boolean().optional(),
   "interval": zod.number().nullish().describe('Number of interval units (null if no schedule is set)'),
   "unit": zod.enum(['minutes', 'hours']).nullish().describe('Unit for the interval value'),
   "destination": zod.enum(['onedrive', 'google-drive', 'local', 'network']).nullish(),
   "path": zod.string().nullish(),
+  "databaseRetention": zod.object({
+  "enabled": zod.boolean(),
+  "keepAllWithinHours": zod.number(),
+  "keepHourlyWithinDays": zod.number(),
+  "keepDailyWithinDays": zod.number(),
+  "safetyGraceHours": zod.number(),
+  "approvedAt": zod.coerce.date().nullable(),
+  "approvedBy": zod.string().nullable()
+}).and(zod.object({
+  "status": zod.object({
+  "state": zod.enum(['planned', 'deleting', 'complete', 'paused', 'failed', 'disabled', 'not_started']),
+  "pendingObjects": zod.number(),
+  "deletedObjects": zod.number(),
+  "lastUpdatedAt": zod.coerce.date().nullable(),
+  "error": zod.string().nullable()
+})
+})).optional(),
   "enabled": zod.boolean().optional()
 })
 
@@ -8169,11 +7990,55 @@ export const SaveBackupScheduleBody = zod.object({
 })
 
 export const SaveBackupSchedule200Response = zod.object({
+  "offsite": zod.object({
+  "enabled": zod.boolean().optional(),
+  "running": zod.boolean().optional(),
+  "intervalMinutes": zod.number().optional(),
+  "lastVerifiedAt": zod.string().nullish(),
+  "databaseProtection": zod.object({
+  "mode": zod.enum(['incremental-storage-fresh-export', 'incremental-records-and-media']).optional(),
+  "scope": zod.enum(['production-database-and-media']).optional(),
+  "coverage": zod.enum(['complete', 'partial']).optional(),
+  "mediaFiles": zod.number().optional(),
+  "mediaBytes": zod.number().optional(),
+  "missingFiles": zod.number().optional(),
+  "state": zod.enum(['not_started', 'running', 'verified', 'skipped_busy', 'failed']).optional(),
+  "stage": zod.string().optional(),
+  "lastAttemptAt": zod.string().nullish(),
+  "lastVerifiedAt": zod.string().nullish(),
+  "recoveryPointAt": zod.string().nullish(),
+  "lastDestinationCheckAt": zod.string().nullish(),
+  "point": zod.string().nullish(),
+  "dumpBytes": zod.number().optional(),
+  "newChunks": zod.number().optional(),
+  "newBytes": zod.number().optional().describe('Encrypted new chunk bytes'),
+  "reusedChunks": zod.number().optional(),
+  "error": zod.string().nullish()
+}).optional().describe('Production database and readable media in encrypted content-addressed storage. Fresh database exports; reusable media chunks, not WAL\/PITR. Missing originals mean partial coverage.')
+}).optional(),
+  "sourceEnvironment": zod.enum(['development', 'production']).optional().describe('The connected server\'s immutable backup source. Use the development app or published app to select a source; this field does not rebind a database.'),
   "ok": zod.boolean().optional(),
   "interval": zod.number().nullish().describe('Number of interval units (null if no schedule is set)'),
   "unit": zod.enum(['minutes', 'hours']).nullish().describe('Unit for the interval value'),
   "destination": zod.enum(['onedrive', 'google-drive', 'local', 'network']).nullish(),
   "path": zod.string().nullish(),
+  "databaseRetention": zod.object({
+  "enabled": zod.boolean(),
+  "keepAllWithinHours": zod.number(),
+  "keepHourlyWithinDays": zod.number(),
+  "keepDailyWithinDays": zod.number(),
+  "safetyGraceHours": zod.number(),
+  "approvedAt": zod.coerce.date().nullable(),
+  "approvedBy": zod.string().nullable()
+}).and(zod.object({
+  "status": zod.object({
+  "state": zod.enum(['planned', 'deleting', 'complete', 'paused', 'failed', 'disabled', 'not_started']),
+  "pendingObjects": zod.number(),
+  "deletedObjects": zod.number(),
+  "lastUpdatedAt": zod.coerce.date().nullable(),
+  "error": zod.string().nullable()
+})
+})).optional(),
   "enabled": zod.boolean().optional()
 })
 
@@ -8193,6 +8058,49 @@ export const DisableBackupSchedule200Response = zod.object({
 })
 
 export const DisableBackupSchedule403Response = zod.unknown()
+
+
+/**
+ * Updates the dependency-aware retention policy for production database
+ * recovery points. Enabling cleanup requires explicit owner approval.
+ * The retention policy is disabled by default.
+ * @summary Save the approved production database retention policy
+ */
+export const saveDatabaseProtectionRetentionBodyKeepAllWithinHoursMax = 2160;
+
+export const saveDatabaseProtectionRetentionBodyKeepHourlyWithinDaysMax = 365;
+
+export const saveDatabaseProtectionRetentionBodyKeepDailyWithinDaysMax = 3650;
+
+export const saveDatabaseProtectionRetentionBodySafetyGraceHoursMin = 48;
+export const saveDatabaseProtectionRetentionBodySafetyGraceHoursMax = 720;
+
+
+
+export const SaveDatabaseProtectionRetentionBody = zod.object({
+  "enabled": zod.boolean(),
+  "confirmation": zod.enum(['APPROVE_DATABASE_RETENTION']).optional().describe('Required when enabling destructive cleanup.'),
+  "keepAllWithinHours": zod.number().min(1).max(saveDatabaseProtectionRetentionBodyKeepAllWithinHoursMax).optional(),
+  "keepHourlyWithinDays": zod.number().min(1).max(saveDatabaseProtectionRetentionBodyKeepHourlyWithinDaysMax).optional(),
+  "keepDailyWithinDays": zod.number().min(1).max(saveDatabaseProtectionRetentionBodyKeepDailyWithinDaysMax).optional(),
+  "safetyGraceHours": zod.number().min(saveDatabaseProtectionRetentionBodySafetyGraceHoursMin).max(saveDatabaseProtectionRetentionBodySafetyGraceHoursMax).optional()
+})
+
+export const SaveDatabaseProtectionRetention200Response = zod.object({
+  "enabled": zod.boolean(),
+  "keepAllWithinHours": zod.number(),
+  "keepHourlyWithinDays": zod.number(),
+  "keepDailyWithinDays": zod.number(),
+  "safetyGraceHours": zod.number(),
+  "approvedAt": zod.coerce.date().nullable(),
+  "approvedBy": zod.string().nullable()
+}).and(zod.object({
+  "ok": zod.boolean()
+}))
+
+export const SaveDatabaseProtectionRetention400Response = zod.unknown()
+
+export const SaveDatabaseProtectionRetention403Response = zod.unknown()
 
 
 /**
@@ -8892,7 +8800,7 @@ export const CreateStatementPaymentSessionBody = zod.object({
   "referenceNumber": zod.string().nullish().describe('Required for ACH and other monetary payments'),
   "cardLast4": zod.string().regex(createStatementPaymentSessionBodyCardLast4RegExp).nullish(),
   "memo": zod.string().nullish(),
-  "customerEmail": zod.string().email().nullish(),
+  "customerEmail": zod.email().nullish(),
   "idempotencyKey": zod.string().min(createStatementPaymentSessionBodyIdempotencyKeyMin).max(createStatementPaymentSessionBodyIdempotencyKeyMax).optional(),
   "applications": zod.array(zod.object({
   "invoiceId": zod.string(),
@@ -8942,7 +8850,7 @@ export const CreateStatementCardPaymentSessionBody = zod.object({
   "paymentMethod": zod.enum(['card']),
   "cardLast4": zod.string().regex(createStatementCardPaymentSessionBodyCardLast4RegExp),
   "memo": zod.string().nullish(),
-  "customerEmail": zod.string().email().nullish(),
+  "customerEmail": zod.email().nullish(),
   "idempotencyKey": zod.string().min(createStatementCardPaymentSessionBodyIdempotencyKeyMin).max(createStatementCardPaymentSessionBodyIdempotencyKeyMax),
   "applications": zod.array(zod.object({
   "invoiceId": zod.string(),
@@ -9002,7 +8910,7 @@ export const SendStatementPaymentReceiptParams = zod.object({
 })
 
 export const SendStatementPaymentReceiptBody = zod.object({
-  "to": zod.string().email(),
+  "to": zod.email(),
   "subject": zod.string().optional(),
   "body": zod.string().optional()
 })
@@ -9135,8 +9043,8 @@ export const emailInvoiceBodyAttachmentIdsMax = 20;
 
 
 export const EmailInvoiceBody = zod.object({
-  "to": zod.string().email().optional().describe('Recipient override; falls back to practice billingEmail.'),
-  "cc": zod.array(zod.string().email()).max(emailInvoiceBodyCcMax).optional(),
+  "to": zod.email().optional().describe('Recipient override; falls back to practice billingEmail.'),
+  "cc": zod.array(zod.email()).max(emailInvoiceBodyCcMax).optional(),
   "subject": zod.string().min(1).max(emailInvoiceBodySubjectMax),
   "message": zod.string().min(1).max(emailInvoiceBodyMessageMax),
   "filename": zod.string().min(1).max(emailInvoiceBodyFilenameMax),
@@ -9724,8 +9632,8 @@ export const CreateOrganization401Response = zod.unknown()
  * @summary Get one relationship-scoped provider account
  */
 export const GetSharedProviderAccountQueryParams = zod.object({
-  "labOrganizationId": zod.coerce.string().uuid(),
-  "providerOrganizationId": zod.coerce.string().uuid()
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid()
 })
 
 export const getSharedProviderAccount200ResponseDataCardOneLast4RegExp = new RegExp('^\\d{4}$');
@@ -9757,13 +9665,13 @@ export const GetSharedProviderAccount200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
   "relationship": zod.object({
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid()
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid()
 }),
   "contact": zod.object({
   "name": zod.string().nullable(),
   "displayName": zod.string().nullable(),
-  "billingEmail": zod.string().email().nullable(),
+  "billingEmail": zod.email().nullable(),
   "phone": zod.string().nullable(),
   "addressLine1": zod.string().nullable(),
   "addressLine2": zod.string().nullable(),
@@ -9784,17 +9692,17 @@ export const GetSharedProviderAccount200Response = zod.object({
   "source": zod.enum(['processor'])
 }).nullable(),
   "profileChangeRequests": zod.array(zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesNameMax).optional(),
   "displayName": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(getSharedProviderAccount200ResponseDataProfileChangeRequestsItemChangesAddressLine2Max).nullish(),
@@ -9842,13 +9750,13 @@ export const createSharedProviderAccountChangeRequestBodyChangesZipMax = 500;
 
 
 export const CreateSharedProviderAccountChangeRequestBody = zod.object({
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
   "clientRequestId": zod.string().max(createSharedProviderAccountChangeRequestBodyClientRequestIdMax).optional(),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequestBodyChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequestBodyChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequestBodyChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequestBodyChangesAddressLine2Max).nullish(),
@@ -9881,17 +9789,17 @@ export const createSharedProviderAccountChangeRequest200ResponseDataChangesZipMa
 export const CreateSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -9929,17 +9837,17 @@ export const createSharedProviderAccountChangeRequest201ResponseDataChangesZipMa
 export const CreateSharedProviderAccountChangeRequest201Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(createSharedProviderAccountChangeRequest201ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(createSharedProviderAccountChangeRequest201ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(createSharedProviderAccountChangeRequest201ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(createSharedProviderAccountChangeRequest201ResponseDataChangesAddressLine2Max).nullish(),
@@ -9961,7 +9869,7 @@ export const CreateSharedProviderAccountChangeRequest409Response = zod.unknown()
  * @summary Approve provider contact changes as the counterpart
  */
 export const ApproveSharedProviderAccountChangeRequestParams = zod.object({
-  "requestId": zod.coerce.string().uuid()
+  "requestId": zod.uuid()
 })
 
 export const approveSharedProviderAccountChangeRequest200ResponseDataChangesNameMax = 200;
@@ -9987,17 +9895,17 @@ export const approveSharedProviderAccountChangeRequest200ResponseDataChangesZipM
 export const ApproveSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(approveSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(approveSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -10019,7 +9927,7 @@ export const ApproveSharedProviderAccountChangeRequest409Response = zod.unknown(
  * @summary Reject provider contact changes as the counterpart
  */
 export const RejectSharedProviderAccountChangeRequestParams = zod.object({
-  "requestId": zod.coerce.string().uuid()
+  "requestId": zod.uuid()
 })
 
 export const rejectSharedProviderAccountChangeRequest200ResponseDataChangesNameMax = 200;
@@ -10045,17 +9953,17 @@ export const rejectSharedProviderAccountChangeRequest200ResponseDataChangesZipMa
 export const RejectSharedProviderAccountChangeRequest200Response = zod.object({
   "ok": zod.boolean(),
   "data": zod.object({
-  "id": zod.string().uuid(),
-  "labOrganizationId": zod.string().uuid(),
-  "providerOrganizationId": zod.string().uuid(),
-  "requestedByOrganizationId": zod.string().uuid(),
+  "id": zod.uuid(),
+  "labOrganizationId": zod.uuid(),
+  "providerOrganizationId": zod.uuid(),
+  "requestedByOrganizationId": zod.uuid(),
   "requestedByUserId": zod.string(),
   "source": zod.enum(['lab', 'provider']),
   "status": zod.enum(['pending', 'approved', 'rejected', 'stale']),
   "changes": zod.object({
   "name": zod.string().min(1).max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesNameMax).optional(),
   "displayName": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesDisplayNameMax).nullish(),
-  "billingEmail": zod.string().email().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
+  "billingEmail": zod.email().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesBillingEmailMax).nullish(),
   "phone": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesPhoneMax).nullish(),
   "addressLine1": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine1Max).nullish(),
   "addressLine2": zod.string().max(rejectSharedProviderAccountChangeRequest200ResponseDataChangesAddressLine2Max).nullish(),
@@ -10131,6 +10039,11 @@ export const UpdateOrganizationBody = zod.object({
   "city": zod.string().nullish(),
   "state": zod.string().nullish(),
   "zip": zod.string().nullish(),
+  "billingAddressLine1": zod.string().nullish(),
+  "billingAddressLine2": zod.string().nullish(),
+  "billingCity": zod.string().nullish(),
+  "billingState": zod.string().nullish(),
+  "billingZip": zod.string().nullish(),
   "isActive": zod.boolean().nullish(),
   "statementEmailOptOut": zod.boolean().nullish(),
   "defaultCaseDueDays": zod.number().nullish(),
@@ -10165,6 +10078,53 @@ export const UpdateOrganization200Response = zod.object({
 })
 
 export const UpdateOrganization403Response = zod.unknown()
+
+
+/**
+ * @summary Save contact fields explicitly approved during AI case intake
+ */
+export const UpdateIntakePracticeContactParams = zod.object({
+  "organizationId": zod.coerce.string()
+})
+
+export const UpdateIntakePracticeContactBody = zod.object({
+  "addressLine1": zod.string().nullish(),
+  "addressLine2": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "billingAddressLine1": zod.string().nullish(),
+  "billingAddressLine2": zod.string().nullish(),
+  "billingCity": zod.string().nullish(),
+  "billingState": zod.string().nullish(),
+  "billingZip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "primaryEmail": zod.email().nullish(),
+  "billingEmail": zod.email().nullish()
+})
+
+export const UpdateIntakePracticeContact200Response = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['lab', 'provider']).optional(),
+  "name": zod.string().nullish(),
+  "displayName": zod.string().nullish(),
+  "parentLabOrganizationId": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "defaultCaseDueDays": zod.number().nullish(),
+  "capCaseDueToDefault": zod.boolean().nullish(),
+  "printProviderPreferencesOnLabSlips": zod.boolean().nullish(),
+  "invoiceDueDayOfMonth": zod.number().nullish(),
+  "revenueTargetLow": zod.number().nullish(),
+  "revenueTargetHigh": zod.number().nullish(),
+  "isActive": zod.boolean().nullish()
+}).describe('Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.')
+})
+
+export const UpdateIntakePracticeContact403Response = zod.unknown()
 
 
 /**
@@ -12145,6 +12105,31 @@ export const ListAdminProviderSubscriptions403Response = zod.unknown()
 
 
 /**
+ * @summary Verify the signed-in administrator PIN without creating a platform-admin session
+ */
+export const verifyAdminPinBodyPinMin = 4;
+export const verifyAdminPinBodyPinMax = 4;
+
+
+export const verifyAdminPinBodyPinRegExp = new RegExp('^\\d{4}$');
+
+
+export const VerifyAdminPinBody = zod.object({
+  "pin": zod.string().min(verifyAdminPinBodyPinMin).max(verifyAdminPinBodyPinMax).regex(verifyAdminPinBodyPinRegExp)
+})
+
+export const VerifyAdminPin200Response = zod.object({
+  "ok": zod.boolean()
+})
+
+export const VerifyAdminPin400Response = zod.unknown()
+
+export const VerifyAdminPin401Response = zod.unknown()
+
+export const VerifyAdminPin403Response = zod.unknown()
+
+
+/**
  * @summary Change a provider subscription's fixed plan and/or status
  */
 export const UpdateAdminProviderSubscriptionParams = zod.object({
@@ -12501,7 +12486,7 @@ export const CreateProviderAutopayAuthorizationRequestBody = zod.object({
   "labBills": zod.boolean().optional(),
   "labOrganizationIds": zod.array(zod.string()).optional(),
   "labChargeDay": zod.number().min(1).max(createProviderAutopayAuthorizationRequestBodyLabChargeDayMax).optional(),
-  "recipientEmail": zod.string().email().optional(),
+  "recipientEmail": zod.email().optional(),
   "deliveryMode": zod.enum(['email', 'in_person']).optional(),
   "presentInPerson": zod.boolean().optional().describe('Legacy alias for deliveryMode=in_person')
 })

@@ -20,6 +20,13 @@ import { ScreenShell, SettingsSection, SettingsRow } from "@/components/settings
 import { scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 import { resilientFetch, getApiUrl } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
+import { useAuth } from "@/lib/auth-context";
+import { useVerifyAdminPin } from "@workspace/api-client-react";
+import {
+  clearAdminSettingsPin,
+  setAdminSettingsPin,
+  useAdminSettingsPin,
+} from "@/lib/admin-settings-pin";
 
 interface InstallerInfo {
   version?: string;
@@ -70,11 +77,15 @@ export default function DesktopAppScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const qc = useQueryClient();
+  const { currentUserId } = useAuth();
+  const adminPinVerified = useAdminSettingsPin(currentUserId);
+  const verifyAdminPin = useVerifyAdminPin();
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("idle");
   const [latestInfo, setLatestInfo] = useState<InstallerInfo | null>(null);
 
   const [adminPin, setAdminPin] = useState("");
-  const [pinUnlocked, setPinUnlocked] = useState(false);
+  const [pinError, setPinError] = useState("");
+  const pinRequestInFlight = React.useRef(false);
   const [editVersion, setEditVersion] = useState("");
   const [editUrl, setEditUrl] = useState("");
   const [editNotes, setEditNotes] = useState("");
@@ -104,17 +115,15 @@ export default function DesktopAppScreen() {
   });
 
   const adminQuery = useQuery<AdminInstallerInfo>({
-    queryKey: ["admin-desktop-installer", adminPin],
+    queryKey: ["admin-desktop-installer"],
     queryFn: async () => {
-      const res = await resilientFetch("/api/admin/settings/desktop-installer", {
-        headers: { "X-Platform-Admin-Pin": adminPin },
-      });
+      const res = await resilientFetch("/api/admin/settings/desktop-installer");
       if (res.status === 403) throw new Error("Incorrect PIN or insufficient permissions.");
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       const body = await res.json();
       return body as AdminInstallerInfo;
     },
-    enabled: pinUnlocked && !!adminPin,
+    enabled: isAdmin && adminPinVerified,
     staleTime: 30_000,
     retry: false,
   });
@@ -125,7 +134,6 @@ export default function DesktopAppScreen() {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          "X-Platform-Admin-Pin": adminPin,
         },
         body: JSON.stringify({ downloadUrl: editUrl, version: editVersion, releaseNotes: editNotes }),
       });
@@ -143,12 +151,25 @@ export default function DesktopAppScreen() {
     onError: (err: Error) => Alert.alert("Could not save", err.message),
   });
 
-  function handleUnlockPin() {
-    if (adminPin.length < 2) {
-      Alert.alert("PIN required", "Enter your platform admin PIN.");
-      return;
+  async function verifyAdminSettingsPin(pin: string) {
+    if (pinRequestInFlight.current || !currentUserId) return;
+    pinRequestInFlight.current = true;
+    setPinError("");
+    try {
+      await verifyAdminPin.mutateAsync({ data: { pin } });
+      setAdminSettingsPin(currentUserId, pin);
+      setAdminPin("");
+    } catch (error) {
+      const status = (error as { status?: number })?.status;
+      setPinError(
+        status === 403
+          ? "Incorrect PIN. Try again."
+          : "Could not verify the PIN. Check your connection and try again.",
+      );
+      setAdminPin("");
+    } finally {
+      pinRequestInFlight.current = false;
     }
-    setPinUnlocked(true);
   }
 
   // Auto-check on mount once the current installer info is loaded.
@@ -347,29 +368,42 @@ export default function DesktopAppScreen() {
         {/* Administration — admin only */}
         {isAdmin && (
           <SettingsSection title="Administration" footer="Manage the installer pipeline and version settings. Requires platform admin PIN.">
-            {!pinUnlocked ? (
+            {!adminPinVerified ? (
               <View style={styles.pinSection}>
                 <Text style={[styles.pinLabel, { color: colors.textSecondary }]}>
-                  Enter your platform admin PIN to access installer management:
+                  Enter your four-digit admin PIN to access installer management:
                 </Text>
                 <View style={styles.pinRow}>
                   <TextInput
                     value={adminPin}
-                    onChangeText={setAdminPin}
+                    onChangeText={(value) => {
+                      const next = value.replace(/\D/g, "").slice(0, 4);
+                      setAdminPin(next);
+                      setPinError("");
+                      if (next.length === 4) void verifyAdminSettingsPin(next);
+                    }}
                     placeholder="PIN"
                     keyboardType="number-pad"
                     secureTextEntry
                     style={[styles.pinInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
                     placeholderTextColor={colors.textTertiary}
+                    maxLength={4}
+                    editable={!verifyAdminPin.isPending}
+                    accessibilityLabel="Admin PIN"
+                    testID="desktop-admin-settings-pin"
                   />
-                  <Pressable
-                    style={[styles.pinUnlockBtn, { backgroundColor: colors.tint }]}
-                    onPress={handleUnlockPin}
-                  >
-                    <Ionicons name="lock-open-outline" size={15} color="#fff" />
-                    <Text style={styles.pinUnlockText}>Unlock</Text>
-                  </Pressable>
                 </View>
+                {verifyAdminPin.isPending && (
+                  <View style={styles.pinRow} testID="desktop-admin-pin-pending">
+                    <ActivityIndicator size="small" color={colors.tint} />
+                    <Text style={[styles.pinLabel, { color: colors.textSecondary }]}>Verifying PIN…</Text>
+                  </View>
+                )}
+                {!!pinError && (
+                  <Text style={[styles.adminErrorText, { color: colors.error }]} testID="desktop-admin-pin-error">
+                    {pinError}
+                  </Text>
+                )}
               </View>
             ) : (
               <>
@@ -380,7 +414,13 @@ export default function DesktopAppScreen() {
                     <Text style={[styles.adminErrorText, { color: colors.error }]}>
                       {(adminQuery.error as Error)?.message ?? "Failed to load admin info."}
                     </Text>
-                    <Pressable onPress={() => setPinUnlocked(false)} hitSlop={8}>
+                      <Pressable
+                        onPress={() => {
+                          clearAdminSettingsPin();
+                          setAdminPin("");
+                        }}
+                        hitSlop={8}
+                      >
                       <Text style={[styles.pinResetText, { color: colors.tint }]}>Reset PIN</Text>
                     </Pressable>
                   </View>

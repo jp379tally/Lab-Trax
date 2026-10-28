@@ -295,6 +295,11 @@ export const organizations = pgTable(
     city: text("city"),
     state: text("state"),
     zip: text("zip"),
+    billingAddressLine1: text("billing_address_line_1"),
+    billingAddressLine2: text("billing_address_line_2"),
+    billingCity: text("billing_city"),
+    billingState: text("billing_state"),
+    billingZip: text("billing_zip"),
     isActive: boolean("is_active").default(true).notNull(),
     defaultBankAccountId: varchar("default_bank_account_id"),
     // Public URL of the lab's logo image (PNG/JPG/SVG/WebP), shown in
@@ -849,6 +854,8 @@ export const cases = pgTable(
     status: text("status").default("received").notNull(),
     priority: text("priority").default("normal").notNull(),
     dueDate: timestamp("due_date", { withTimezone: true }),
+    prescriptionDueDate: date("prescription_due_date", { mode: "string" }),
+    scanDate: date("scan_date", { mode: "string" }),
     dueTime: text("due_time"),
     expectedDeliveryDate: timestamp("expected_delivery_date", { withTimezone: true }),
     receivedAt: date("received_at", { mode: "string" })
@@ -900,6 +907,7 @@ export const cases = pgTable(
     deliveryDateProposalDate: timestamp("delivery_date_proposal_date", { withTimezone: true }),
     deliveryDateProposalNote: text("delivery_date_proposal_note"),
     rxNotes: text("rx_notes"),
+    providerContactSnapshot: jsonb("provider_contact_snapshot"),
     shade: text("shade"),
     // Lab workflow step for removable cases (Task #3276). Stored as a short
     // snake_case key: custom_tray | rims_and_plates | wax_setup | process.
@@ -5076,11 +5084,15 @@ export const backupLiveStatus = pgTable(
       .defaultNow()
       .notNull(),
     archiveEvidence: jsonb("archive_evidence"),
+    requestFingerprint: text("request_fingerprint"),
+    requestedByUserId: text("requested_by_user_id"),
+    requestedBySessionHash: text("requested_by_session_hash"),
+    delivery: jsonb("delivery"),
   },
   (table) => ({
     stateCheck: check(
       "backup_live_status_state_check",
-      sql`${table.state} IN ('running', 'awaiting_verification', 'completed', 'failed', 'stale')`,
+      sql`${table.state} IN ('running', 'awaiting_verification', 'finalizing', 'completed', 'failed', 'cancelled', 'stale')`,
     ),
     elapsedMsCheck: check(
       "backup_live_status_elapsed_ms_check",

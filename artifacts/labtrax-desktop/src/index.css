@@ -63,6 +63,8 @@
   --foreground: 222 47% 11%;
   /* border #D9E3EE */
   --border: 213 32% 89%;
+  /* Stronger than control borders; reserved for cards and section boundaries. */
+  --section-border: 211 24% 60%;
   /* surface #FFFFFF */
   --card: 0 0% 100%;
   --card-foreground: 222 47% 11%;
@@ -111,6 +113,7 @@
   --foreground: 210 40% 96%;
   /* border #29415E */
   --border: 213 39% 26%;
+  --section-border: 210 30% 42%;
   /* surface #122033 */
   --card: 217 47% 14%;
   --card-foreground: 210 40% 96%;
@@ -177,6 +180,20 @@
   }
 }
 
+/* Section cards use a separate boundary token so standalone controls retain
+   their existing input, focus, selected, and semantic-state colors. */
+.border-section {
+  border-color: hsl(var(--section-border));
+}
+
+.bg-card.border.border-border:not(button):not(input):not(select):not(textarea) {
+  border-color: hsl(var(--section-border));
+}
+
+.bg-card.border.border-border > :is(header.border-b.border-border, .border-t.border-border) {
+  border-color: hsl(var(--section-border));
+}
+
 /* Sales report layout adapts to its actual content width, not just the window. */
 .reports-frame {
   container-name: reports;
@@ -204,6 +221,76 @@
   }
 }
 
+/* Size the dashboard against its actual space after the resizable navigation,
+   not the browser width. At narrow widths the intake stacks above the cases. */
+.lab-dash {
+  container-name: lab-dashboard;
+  container-type: inline-size;
+}
+
+.dashboard-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  min-width: 0;
+}
+
+@container lab-dashboard (min-width: 1040px) {
+  .dashboard-workspace {
+    grid-template-columns: minmax(420px, min(38%, 560px)) minmax(0, 1fr);
+  }
+}
+
+/* The AI Reader can expand with its dashboard column, while its own chart
+   and fields still respond to the review panel rather than the viewport. */
+.rx-confirm-panel {
+  container-name: rx-confirm;
+  container-type: inline-size;
+}
+
+.rx-review-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rx-provider-contact-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.rx-review-assignment-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.rx-review-chart-region,
+.rx-assignment-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rx-assignment-summary :is(h4, p, li, span) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@container rx-confirm (min-width: 720px) {
+  .rx-review-assignment-grid {
+    grid-template-columns: minmax(0, 1.5fr) minmax(240px, 0.8fr);
+  }
+
+  .rx-provider-contact-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container rx-confirm (max-width: 560px) {
+  .rx-review-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rx-review-form-grid > .col-span-2 {
+    grid-column: 1 / -1;
+  }
+}
+
 @keyframes backup-progress-stripes {
   from { background-position: 0 0; }
   to { background-position: 24px 0; }
@@ -226,7 +313,7 @@
 
 /* ── Dashboard-scoped presentation (does not touch global tokens) ───────── */
 .lab-dash h1 { font-size: 1.75rem; line-height: 2rem; color: #0f1f4a; font-weight: 700; }
-.lab-dash .dash-section > header { border-color: #e2e8f0; padding-top: 0.625rem; padding-bottom: 0.625rem; border-top-left-radius: 0.5rem; border-top-right-radius: 0.5rem; }
+.lab-dash .dash-section > header { border-color: hsl(var(--section-border)); padding-top: 0.625rem; padding-bottom: 0.625rem; border-top-left-radius: 0.5rem; border-top-right-radius: 0.5rem; }
 .lab-dash .dash-section-danger > header { border-color: #fecaca; }
 .lab-dash .dash-section-info > header { border-color: #bfdbfe; }
 .lab-dash .dash-section h2 { font-size: 0.8125rem; }
@@ -234,7 +321,7 @@
 .lab-dash thead tr { background: #f1f5f9; }
 .lab-dash thead th { text-transform: none; letter-spacing: 0; font-size: 0.6875rem; color: #475569; }
 .lab-dash tbody td { padding-top: 0.375rem !important; padding-bottom: 0.375rem !important; }
-.lab-dash tbody tr { border-color: #eef2f7; }
+.lab-dash tbody tr { border-color: hsl(var(--section-border)); }
 .lab-dash .dash-section-danger tbody td:last-child { color: #dc2626; }
 @media (max-width: 767px) {
   .lab-dash table { min-width: 560px; }
@@ -259,3 +346,39 @@
 .lab-dash td > span, .lab-dash td > div { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .lab-dash td [class*="rounded-full"] { white-space: normal; overflow-wrap: normal; text-align: left; line-height: 1.15; }
 .lab-dash th:last-child, .lab-dash td:last-child { padding-left: 0.125rem; padding-right: 0.125rem; }
+
+/* Keep project inputs beside, not above, the reference-sized assignment chart. */
+.new-case-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  min-height: 0;
+}
+.new-case-assignment-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+@media (min-width: 1120px) {
+  .new-case-workspace {
+    grid-template-columns: 250px minmax(0, 1fr);
+    align-items: start;
+  }
+  .new-case-project,
+  .new-case-actions {
+    max-height: calc(94dvh - 170px);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+  .new-case-project {
+    padding-right: 1rem;
+    border-right: 1px solid hsl(var(--border));
+  }
+  .new-case-assignment-grid {
+    grid-template-columns: minmax(320px, 1fr) 245px;
+  }
+  .new-case-workspace > p {
+    grid-column: 1 / -1;
+  }
+}

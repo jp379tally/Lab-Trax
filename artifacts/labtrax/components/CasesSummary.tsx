@@ -67,7 +67,7 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.surface,
       borderRadius: Radius.md,
       borderWidth: 1,
-      borderColor: c.border,
+      borderColor: c.sectionBorder,
       borderTopWidth: 2,
       paddingVertical: 4,
       paddingHorizontal: Spacing.sm,

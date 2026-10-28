@@ -62,6 +62,33 @@ function connectorResponse(token = "graph-token-1") {
 }
 
 describe("onedrive client", () => {
+  it("redacts provider response bodies from failed archive read-back lookups", async () => {
+    const canary = "synthetic-provider-secret-that-must-not-be-logged";
+    setOneDriveFetchForTests(async url => {
+      if (url.includes(CONNECTOR_URL_PART)) return connectorResponse();
+      return jsonResponse(403, { error: canary });
+    });
+    const error = await getOneDriveFileByName("synthetic.enc").catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain("HTTP 403");
+    expect(error.message).not.toContain(canary);
+  });
+
+  it.each([401, 403, 507])("gives actionable HTTP %s upload guidance without retrying or exposing provider bodies", async status => {
+    let providerCalls = 0;
+    const canary = "synthetic-provider-secret";
+    setOneDriveFetchForTests(async url => {
+      if (url.includes(CONNECTOR_URL_PART)) return connectorResponse();
+      providerCalls++;
+      return jsonResponse(status, { error: canary });
+    });
+    const error = await uploadBackupToOneDrive(Buffer.from("synthetic"), "synthetic.enc").catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain(`HTTP ${status}`);
+    expect(error.message).toMatch(status === 507 ? /OneDrive storage capacity/ : status === 401 ? /Reconnect/ : /backup folder/);
+    expect(error.message).not.toContain(canary);
+    expect(providerCalls).toBe(1);
+  });
   beforeEach(() => {
     vi.stubEnv("REPLIT_CONNECTORS_HOSTNAME", "connectors.test.internal");
     vi.stubEnv("REPL_IDENTITY", "test-identity");
@@ -296,6 +323,35 @@ describe("onedrive client", () => {
       const putCalls = calls.filter((c) => c.init?.method === "PUT");
       expect(putCalls).toHaveLength(1);
       expect(putCalls[0]!.init?.headers?.["Content-Range"]).toBe("bytes 0-10/11");
+    });
+
+    it("retries a provider HTTP 502 on the identical session, range and bytes", async () => {
+      const payload = Buffer.from("synthetic-http-502");
+      const ranges: string[] = [];
+      const bodies: Buffer[] = [];
+      let sessions = 0;
+      setOneDriveFetchForTests(async (url, init) => {
+        if (url.includes(CONNECTOR_URL_PART)) return connectorResponse();
+        if (url.includes("/createUploadSession")) {
+          sessions++;
+          return jsonResponse(200, { uploadUrl: "https://upload.example.com/http-retry" });
+        }
+        if (url === "https://upload.example.com/http-retry") {
+          ranges.push(String(init?.headers?.["Content-Range"]));
+          bodies.push(Buffer.from(init?.body as Uint8Array));
+          if (ranges.length === 1) return jsonResponse(502, {});
+          return jsonResponse(201, {
+            id: "synthetic-retry-item", name: "synthetic.enc", size: payload.length,
+          });
+        }
+        throw new Error("Unexpected synthetic request");
+      });
+      const result = await uploadBackupToOneDrive(payload, "synthetic.enc");
+      expect(result.fileName).toBe("synthetic.enc");
+      expect(sessions).toBe(1);
+      expect(ranges).toEqual([`bytes 0-${payload.length - 1}/${payload.length}`,
+        `bytes 0-${payload.length - 1}/${payload.length}`]);
+      expect(bodies).toEqual([payload, payload]);
     });
 
     it("retries a transient chunk transport failure on the same upload session and range", async () => {
@@ -615,7 +671,7 @@ describe("onedrive client", () => {
       await expect(uploadBackupToOneDrive(Buffer.from("x"), "b.zip")).rejects.toThrow(/HTTP 507/);
     });
 
-    it("throws when a chunk upload fails part-way", async () => {
+    it("fails after the bounded HTTP 500 retry budget, without false completion", async () => {
       let attempts = 0;
       setOneDriveFetchForTests(async (url) => {
         if (url.includes(CONNECTOR_URL_PART)) return connectorResponse();
@@ -631,7 +687,7 @@ describe("onedrive client", () => {
       await expect(uploadBackupToOneDrive(Buffer.from("data"), "b.zip")).rejects.toThrow(
         /chunk upload failed \(HTTP 500\)/,
       );
-      expect(attempts).toBe(1);
+      expect(attempts).toBe(4);
     });
 
     it("throws when OneDrive is not connected (no token)", async () => {
@@ -988,7 +1044,13 @@ describe("onedrive client", () => {
             status: 200,
             json: async () => ({}),
             text: async () => "",
-            arrayBuffer: async () => new TextEncoder().encode("ciphertext").buffer,
+            headers: new Headers({ "Content-Length": "10" }),
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("ciphertext"));
+                controller.close();
+              },
+            }),
           };
         }
         throw new Error(`unexpected fetch: ${url}`);
@@ -996,7 +1058,10 @@ describe("onedrive client", () => {
       // The recorded name is deliberately wrong here: a run's history row must
       // resolve through the item id Graph confirmed, never through a name that
       // Graph's rename-on-conflict behaviour may have given to another file.
-      const buf = await downloadFileFromOneDrive("not-the-stored-name.zip.enc", undefined, "item-xyz");
+      const downloaded = await downloadFileFromOneDrive("not-the-stored-name.zip.enc", 10, undefined, "item-xyz");
+      const chunks: Buffer[] = [];
+      for await (const chunk of downloaded) chunks.push(Buffer.from(chunk));
+      const buf = Buffer.concat(chunks);
       expect(buf.toString("utf8")).toBe("ciphertext");
       expect(urls.some((u) => u.includes("/me/drive/items/item-xyz/content"))).toBe(true);
       expect(urls.some((u) => u.includes("not-the-stored-name"))).toBe(false);
@@ -1281,12 +1346,22 @@ describe("onedrive client", () => {
         expect(url).toContain("/me/drive/items/new-item");
         expect(url).not.toContain("/root:");
         if (url.endsWith("/content")) return {
-          ...jsonResponse(200, {}), arrayBuffer: async () => Uint8Array.from(Buffer.from("new")).buffer,
+          ...jsonResponse(200, {}),
+          headers: new Headers({ "Content-Length": "3" }),
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("new"));
+              controller.close();
+            },
+          }),
         };
         return jsonResponse(200, { id: "new-item", name: "backup.zip 22.enc", size: 3 });
       });
       expect((await getOneDriveFileByName("backup.zip.enc", undefined, "new-item"))?.id).toBe("new-item");
-      expect(await downloadFileFromOneDrive("backup.zip.enc", undefined, "new-item")).toEqual(Buffer.from("new"));
+      const downloaded = await downloadFileFromOneDrive("backup.zip.enc", 3, undefined, "new-item");
+      const chunks: Buffer[] = [];
+      for await (const chunk of downloaded) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks)).toEqual(Buffer.from("new"));
     });
   });
 

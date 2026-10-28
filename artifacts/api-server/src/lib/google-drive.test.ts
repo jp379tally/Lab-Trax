@@ -37,6 +37,17 @@ function enableConnector(): void {
   process.env.REPLIT_DEPLOYMENT = "1";
 }
 
+async function collectStream(stream: AsyncIterable<Uint8Array>): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.from(chunk);
+    chunks.push(bytes);
+    size += bytes.length;
+  }
+  return Buffer.concat(chunks, size);
+}
+
 function responseJson(
   body: unknown,
   status = 200,
@@ -126,13 +137,40 @@ describe("Google Drive backup connector", () => {
       });
     });
     setGoogleDriveFetchForTests(proxy);
-    await expect(downloadGoogleDriveBackupFile("exact-item-id", expected.length)).resolves.toEqual(expected);
+    const downloaded = await downloadGoogleDriveBackupFile("exact-item-id", expected.length);
+    await expect(collectStream(downloaded)).resolves.toEqual(expected);
     expect(proxy).toHaveBeenCalledTimes(1);
     proxy.mockResolvedValueOnce(new Response(Buffer.from("truncated")));
-    await expect(downloadGoogleDriveBackupFile("exact-item-id", expected.length))
-      .rejects.toThrow(/returned .* expected/);
+    const truncated = await downloadGoogleDriveBackupFile("exact-item-id", expected.length);
+    await expect(collectStream(truncated)).rejects.toThrow(/returned .* expected/);
     await expect(downloadGoogleDriveBackupFile("exact-item-id", expected.length + 1))
       .rejects.toThrow(/reported .* expected/);
+  });
+
+  it("streams a production-sized archive through bounded chunks without accumulating it", async () => {
+    const expectedSize = 36_543_801_982;
+    const chunk = Buffer.alloc(4 * 1024 * 1024, 0x5a);
+    let remaining = expectedSize;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (remaining === 0) {
+          controller.close();
+          return;
+        }
+        const length = Math.min(chunk.length, remaining);
+        controller.enqueue(chunk.subarray(0, length));
+        remaining -= length;
+      },
+    }, { highWaterMark: 0 });
+    setGoogleDriveFetchForTests(async () => new Response(body, {
+      status: 200,
+      headers: { "Content-Length": String(expectedSize) },
+    }));
+
+    const stream = await downloadGoogleDriveBackupFile("large-item-id", expectedSize);
+    let total = 0;
+    for await (const bytes of stream) total += bytes.byteLength;
+    expect(total).toBe(expectedSize);
   });
 
   it("keeps non-production archives in a separate subfolder", () => {

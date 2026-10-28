@@ -53,7 +53,7 @@ function main(): void {
       "[publish-safety] MIGRATION SAFETY UNVERIFIED: this build has no proposed platform migration diff. Replit's managed migration must be reviewed in the Publish interface; this build does not certify promotion as safe.",
     );
     console.warn(
-      "[publish-safety] A recent, verified off-site production backup is also required. A successful build or backup-history row is not evidence of either check.",
+      "[publish-safety] Ordinary releases require a recent, verified off-site production backup. The owner-authorized backup-repair rollout exception is documented in docs/production-data-preservation.md; it defers live backup verification, not schema review, production identity checks, or completeness safeguards. A successful build or backup-history row is not backup evidence.",
     );
     return;
   }
@@ -90,7 +90,7 @@ function main(): void {
   }
 
   console.info(
-    "[publish-safety] Static scan found no known destructive SQL patterns. Migration safety is still not certified: compare this exact input to Replit's pending diff, verify the production binding, and verify the recent off-site backup before any promotion.",
+    "[publish-safety] Static scan found no known destructive SQL patterns. Migration safety is still not certified: compare this exact input to Replit's pending diff and verify the production binding. Ordinary releases also require a verified recent off-site backup; only the documented owner-authorized backup-repair rollout may defer that live verification.",
   );
 }
 

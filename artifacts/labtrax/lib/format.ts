@@ -3,6 +3,7 @@
 import { formatCalendarDate as formatSharedCalendarDate } from "@workspace/calendar-date";
 
 export function titleCase(s: string): string {
+  if (s === "recovery_draft") return "Historical hold (not collectible)";
   return s
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (m) => m.toUpperCase())

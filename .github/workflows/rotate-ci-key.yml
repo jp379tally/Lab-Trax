@@ -118,9 +118,11 @@ jobs:
             exit 1
           fi
 
-          echo "sa_email=$SA_EMAIL"   >> "$GITHUB_OUTPUT"
-          echo "old_key_id=$OLD_KEY_ID" >> "$GITHUB_OUTPUT"
-          echo "project=$PROJECT"     >> "$GITHUB_OUTPUT"
+          {
+            echo "sa_email=$SA_EMAIL"
+            echo "old_key_id=$OLD_KEY_ID"
+            echo "project=$PROJECT"
+          } >> "$GITHUB_OUTPUT"
           echo "SA: $SA_EMAIL  |  old key: $OLD_KEY_ID  |  project: $PROJECT"
 
       # -----------------------------------------------------------------------
@@ -176,11 +178,10 @@ jobs:
               --project="$PROJECT"
 
             NEW_KEY_ID=$(jq -r '.private_key_id' "$NEW_KEY_FILE")
-            echo "new_key_id=$NEW_KEY_ID" >> "$GITHUB_OUTPUT"
-            echo "skipped=false"          >> "$GITHUB_OUTPUT"
-
             # Store the JSON safely in GITHUB_OUTPUT using a heredoc delimiter
             {
+              echo "new_key_id=$NEW_KEY_ID"
+              echo "skipped=false"
               echo "new_key_json<<__KEYEOF__"
               cat "$NEW_KEY_FILE"
               echo "__KEYEOF__"

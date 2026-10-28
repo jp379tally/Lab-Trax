@@ -5,18 +5,24 @@ import { setMaxListeners } from "node:events";
 import type { Archiver } from "archiver";
 import pLimit from "p-limit";
 import { createReadStream } from "node:fs";
+import { openPinnedLocalMedia, assertPinnedLocalMediaAvailable } from "./production-media-local-write";
 import { createHash } from "node:crypto";
-import { Transform } from "node:stream";
+import { Transform, type Readable } from "node:stream";
 import type { CaseMediaBackupObject } from "./case-media-object-storage";
 import { measureBackupPhase, setBackupLiveProgress } from "./backup-phase";
 
 export const DEFAULT_BACKUP_MEDIA_PREFETCH_CONCURRENCY = 12;
-export type BackupMediaAppender = (archive: Archiver, maxConcurrentFiles?: number) => Promise<void>;
+export type BackupMediaAppender = (
+  archive: Archiver,
+  maxConcurrentFiles?: number,
+  includeArchivePaths?: ReadonlySet<string>,
+) => Promise<void>;
 
 interface MediaSource {
   relativeName: string;
   size: number;
   localPath?: string;
+  openStream?: CaseMediaBackupObject["openStream"];
   copyTo?: CaseMediaBackupObject["copyTo"];
   generation?: string;
   metadata?: Record<string, unknown>;
@@ -29,7 +35,16 @@ export interface BackupFileEvidence {
   size: number;
   sha256: string;
   generation?: string;
+  /** Immutable object generation or a stable local-file identity captured at inventory time. */
+  sourceVersion?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface BackupMediaSourceVersion {
+  archivePath: string;
+  relativeName: string;
+  size: number;
+  sourceVersion: string | null;
 }
 
 const identity = (stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }) =>
@@ -41,7 +56,13 @@ export async function planBackupMedia(
   objects: CaseMediaBackupObject[],
   signal?: AbortSignal,
   options: { archivePrefix?: string; onFile?: (file: BackupFileEvidence) => void; exclude?: (name: string) => boolean } = {},
-): Promise<{ names: Set<string>; fileCount: number; totalBytes: number; append: BackupMediaAppender }> {
+): Promise<{
+  names: Set<string>;
+  fileCount: number;
+  totalBytes: number;
+  sourceVersions: BackupMediaSourceVersion[];
+  append: BackupMediaAppender;
+}> {
   const sources = new Map<string, MediaSource>();
   async function walk(directory: string, relative: string): Promise<void> {
     let entries;
@@ -52,6 +73,8 @@ export async function planBackupMedia(
       throw new Error("Case-media local inventory failed; check disk access before retrying.");
     }
     for (const entry of entries) {
+      if ([".labtrax-media-history", ".upload-staging", ".sessions"].includes(entry.name) ||
+          entry.name.startsWith(".labtrax-media-write-")) continue;
       if (signal?.aborted) throw new Error("Case-media local inventory was aborted.");
       const fullPath = path.join(directory, entry.name);
       const name = relative ? `${relative}/${entry.name}` : entry.name;
@@ -76,15 +99,27 @@ export async function planBackupMedia(
   for (const object of objects) sources.set(object.relativeName, object);
   const media = [...sources.values()];
   const totalBytes = media.reduce((sum, source) => sum + source.size, 0);
+  const sourceVersions = media.map(source => ({
+    archivePath: `${options.archivePrefix ?? "media"}/${source.relativeName}`,
+    relativeName: source.relativeName,
+    size: source.size,
+    sourceVersion: source.generation
+      ? `generation:${source.generation}`
+      : source.localIdentity ? `local:${source.localIdentity}` : null,
+  }));
   const append: BackupMediaAppender = async (
     archive,
     maxConcurrentFiles = DEFAULT_BACKUP_MEDIA_PREFETCH_CONCURRENCY,
+    includeArchivePaths,
   ) => {
-    if (!Number.isSafeInteger(maxConcurrentFiles) ||
-        maxConcurrentFiles < 1 ||
+    if (!Number.isSafeInteger(maxConcurrentFiles) || maxConcurrentFiles < 1 ||
         maxConcurrentFiles > DEFAULT_BACKUP_MEDIA_PREFETCH_CONCURRENCY) {
       throw new Error("Backup media prefetch concurrency is invalid.");
     }
+    const selected = includeArchivePaths
+      ? media.filter(source => includeArchivePaths.has(`${options.archivePrefix ?? "media"}/${source.relativeName}`))
+      : media;
+    const selectedBytes = selected.reduce((sum, source) => sum + source.size, 0);
     const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), "labtrax-backup-prefetch-"));
     const controller = new AbortController();
     setMaxListeners(32, controller.signal);
@@ -95,20 +130,52 @@ export async function planBackupMedia(
     archive.once("error", abort);
     archive.once("close", abort);
     archive.once("warning", abort);
+    // Streamable objects are pinned and read directly into the archive. Any
+    // legacy copyTo source is staged only within the capacity-planned limit.
     const limit = pLimit(maxConcurrentFiles);
     let completedFiles = 0;
     let completedBytes = 0;
+    let readBytes = 0;
+    let lastPublishedAt = 0;
+    let lastActivityAt = Date.now();
+    let lastArchiveBytes = archive.pointer();
+    const publishProgress = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastPublishedAt < 500) return;
+      lastPublishedAt = now;
+      setBackupLiveProgress({ completedFiles, completedBytes: readBytes,
+        totalBytes: selectedBytes, fileCount: selected.length,
+        mediaBytesPerSecond: Math.round(readBytes / Math.max(1, (now - transferStartedAt) / 1000)),
+        archiveBytes: archive.pointer() });
+    };
+    // Monitor the whole ZIP so queued streams paused by backpressure cannot
+    // hide an indefinitely stalled active source or destination.
+    const idleTimer = setInterval(() => {
+      const pointer = archive.pointer();
+      if (pointer !== lastArchiveBytes) {
+        lastArchiveBytes = pointer;
+        lastActivityAt = Date.now();
+      }
+      if (Date.now() - lastActivityAt >= 120_000 && !controller.signal.aborted) {
+        controller.abort(new Error("Backup media transfer made no progress for two minutes. Check storage connectivity and retry; this run is not a complete backup."));
+      }
+    }, 1000);
+    idleTimer.unref?.();
     let activeStagedBytes = 0;
     let peakStagedBytes = 0;
+    const transferStartedAt = Date.now();
     try {
       await measureBackupPhase("case-media transfer into archive", async () => {
-        const results = await Promise.allSettled(media.map((source, index) => limit(async () => {
+        const results = await Promise.allSettled(selected.map((source, index) => limit(async () => {
           if (controller.signal.aborted) throw controller.signal.reason;
           let tempPath: string | undefined;
           let staged = false;
           try {
             let filePath = source.localPath;
-            if (source.copyTo) {
+            let sourceReader: Readable | undefined;
+            if (source.openStream) {
+              sourceReader = source.openStream(controller.signal);
+            } else if (source.copyTo) {
               tempPath = path.join(stagingRoot, String(index));
               await source.copyTo(tempPath, controller.signal);
               filePath = tempPath;
@@ -116,25 +183,32 @@ export async function planBackupMedia(
               staged = true;
               peakStagedBytes = Math.max(peakStagedBytes, activeStagedBytes);
             }
-            if (!filePath) throw new Error("Case-media source has no readable file.");
-            if (source.localPath && identity(await fs.lstat(source.localPath)) !== source.localIdentity) {
-              throw new Error("A local recovery file changed after inventory; retry the complete backup.");
+            if (!sourceReader && !filePath) throw new Error("Case-media source has no readable file.");
+            if (source.localPath && source.localIdentity) {
+              await assertPinnedLocalMediaAvailable(source.localPath, source.localIdentity);
             }
             const name = `${options.archivePrefix ?? "media"}/${source.relativeName}`;
             const hash = createHash("sha256");
             let bytes = 0;
-            const reader = createReadStream(filePath);
+            const reader = sourceReader ?? (source.localPath && source.localIdentity
+              ? openPinnedLocalMedia(source.localPath, source.localIdentity) : createReadStream(filePath!));
             const hashing = new Transform({
               transform(chunk: Buffer, _encoding, callback) {
                 hash.update(chunk);
                 bytes += chunk.length;
+                readBytes += chunk.length;
+                lastActivityAt = Date.now();
+                publishProgress();
                 callback(null, chunk);
               },
             });
             reader.on("error", error => hashing.destroy(error));
             hashing.on("error", error => archive.destroy(error));
             await new Promise<void>((resolve, reject) => {
+              let settled = false;
               const settle = (error?: Error) => {
+                if (settled) return;
+                settled = true;
                 archive.removeListener("entry", onEntry);
                 controller.signal.removeEventListener("abort", onAbort);
                 if (error) reject(error); else resolve();
@@ -142,29 +216,34 @@ export async function planBackupMedia(
               const onEntry = (entry: { name: string }) => {
                 if (entry.name === name) settle();
               };
-              const onAbort = () => settle(new Error("Case-media archiving was aborted."));
+              const onAbort = () => {
+                const error = controller.signal.reason instanceof Error
+                  ? controller.signal.reason : new Error("Case-media archiving was aborted.");
+                reader.unpipe(hashing);
+                reader.destroy(error);
+                hashing.destroy(error);
+                settle(error);
+              };
               if (controller.signal.aborted) return onAbort();
               archive.on("entry", onEntry);
               controller.signal.addEventListener("abort", onAbort, { once: true });
               archive.append(reader.pipe(hashing), { name });
             });
-            if (bytes !== source.size ||
-                (source.localPath && identity(await fs.lstat(source.localPath)) !== source.localIdentity)) {
+            if (bytes !== source.size) {
               throw new Error("Recovery file changed or was truncated during capture; no complete archive was kept.");
             }
             options.onFile?.({
               archivePath: name, relativeName: source.relativeName, size: bytes,
-              sha256: hash.digest("hex"), generation: source.generation, metadata: source.metadata,
+              sha256: hash.digest("hex"), generation: source.generation,
+              sourceVersion: source.generation
+                ? `generation:${source.generation}`
+                : source.localIdentity ? `local:${source.localIdentity}` : undefined,
+              metadata: source.metadata,
             });
             completedFiles++;
             completedBytes += source.size;
-            setBackupLiveProgress({
-              completedFiles,
-              completedBytes,
-              totalBytes,
-              fileCount: media.length,
-              archiveBytes: archive.pointer(),
-            });
+            lastActivityAt = Date.now();
+            publishProgress(true);
           } catch (error) {
             if (!controller.signal.aborted) controller.abort(error);
             throw error;
@@ -177,8 +256,13 @@ export async function planBackupMedia(
         })));
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failure) throw controller.signal.reason ?? failure.reason;
-      }, () => ({ fileCount: media.length, totalBytes, completedFiles, completedBytes, peakStagedBytes, archiveBytes: archive.pointer() }));
+      }, () => ({
+          fileCount: selected.length, totalBytes: selectedBytes, completedFiles, completedBytes, peakStagedBytes,
+        mediaBytesPerSecond: Math.round(completedBytes / Math.max(1, (Date.now() - transferStartedAt) / 1000)),
+        archiveBytes: archive.pointer(),
+      }));
     } finally {
+      clearInterval(idleTimer);
       signal?.removeEventListener("abort", abort);
       archive.removeListener("error", abort);
       archive.removeListener("close", abort);
@@ -186,5 +270,5 @@ export async function planBackupMedia(
       await fs.rm(stagingRoot, { recursive: true, force: true });
     }
   };
-  return { names: new Set(sources.keys()), fileCount: media.length, totalBytes, append };
+  return { names: new Set(sources.keys()), fileCount: media.length, totalBytes, sourceVersions, append };
 }

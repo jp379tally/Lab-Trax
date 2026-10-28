@@ -26,6 +26,48 @@ describe("Electron streaming backup download", () => {
     return footer;
   };
 
+  it.each(["1", "2"])("saves explicitly partial version %s streamed archives with warnings, not complete coverage", async coverageVersion => {
+    const archive = Buffer.concat([Buffer.from("LTR2"), Buffer.alloc(2 * 1024 * 1024)]);
+    let observedHeaders: Record<string, string> = {};
+    const result = await downloadBackupToFolder({ url, folderPath: folder,
+      headers: { "X-LabTrax-Backup-Source": "production", "X-Unapproved-Header": "not-forwarded" } }, {
+      isAllowedUrl,
+      fetch: async (_url: string, options: { headers: Record<string, string> }) => {
+        observedHeaders = options.headers;
+        return new Response(Buffer.concat([archive, footerFor(archive.length)]), {
+        headers: { ...completeEvidence, "x-backup-archive-kind": "partial-production",
+          "x-backup-coverage-version": coverageVersion,
+          "content-type": "application/octet-stream",
+          "x-backup-missing-file-count": "1", "content-disposition": 'attachment; filename="partial.zip.enc"' },
+        });
+      },
+    });
+    expect(observedHeaders["X-LabTrax-Backup-Source"]).toBe("production");
+    expect(observedHeaders).not.toHaveProperty("X-Unapproved-Header");
+    expect(result).toMatchObject({ ok: true, partialFailure: true, missingFileCount: 1 });
+    expect(result.warnings).toContain("Not a complete recovery point");
+    expect((await stat(result.path)).size).toBe(archive.length + 12);
+  });
+
+  it("streams an explicitly requested database-only archive to disk without treating it as complete coverage", async () => {
+    const databaseOnlyUrl = "https://api.example/api/admin/backup/generate?deferRecord=1&archiveKind=database-only";
+    const archive = Buffer.concat([Buffer.from("LTR2"), Buffer.alloc(40)]);
+    const result = await downloadBackupToFolder({ url: databaseOnlyUrl, folderPath: folder }, {
+      isAllowedUrl,
+      fetch: async () => new Response(Buffer.concat([archive, footerFor(archive.length)]), {
+        headers: {
+          "x-backup-archive-kind": "database-only",
+          "x-backup-coverage-version": "0",
+          "x-backup-media-file-count": "0",
+          "content-type": "application/octet-stream",
+          "content-disposition": 'attachment; filename="database-only.zip.enc"',
+        },
+      }),
+    });
+    expect(result).toMatchObject({ ok: true, archiveKind: "database-only", partialFailure: false });
+    expect((await stat(result.path)).size).toBe(archive.length + 12);
+  });
+
   it("writes a 192 MiB stream to a verified local file without a renderer buffer", async () => {
     const chunk = new Uint8Array(1024 * 1024).fill(0x5a);
     let headerSent = false;

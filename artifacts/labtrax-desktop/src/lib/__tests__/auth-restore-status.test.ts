@@ -18,14 +18,28 @@ describe("describeAuthRestoreStatus", () => {
     expect(notice?.message.toLowerCase()).toContain("keychain");
   });
 
-  it("returns a one-time toast when the saved blob fails to decrypt", () => {
+  it("explains that unreadable saved sign-in data won't be used and asks the user to sign in", () => {
     const notice = describeAuthRestoreStatus("decrypt-failed");
     expect(notice).not.toBeNull();
     expect(notice?.kind).toBe("toast");
     expect(notice?.tone).toBe("warning");
-    // The whole point: the user must understand they need to sign in again,
-    // not be silently bounced back to the login screen with no explanation.
-    expect(notice?.message.toLowerCase()).toMatch(/sign in/);
+    expect(notice?.message).toMatch(/couldn't read the saved sign-in/i);
+    expect(notice?.message).toMatch(/won't use the unreadable saved data/i);
+    expect(notice?.message).toMatch(/sign in again/i);
+  });
+
+  it("explains when a restored server session has expired", () => {
+    const notice = describeAuthRestoreStatus("session-expired");
+    expect(notice).toMatchObject({ kind: "toast", tone: "warning" });
+    expect(notice?.message).toMatch(/session has expired/i);
+    expect(notice?.message).toMatch(/sign in again/i);
+  });
+
+  it("explains when saved credentials were restored but the server could not verify them", () => {
+    const notice = describeAuthRestoreStatus("restore-failed");
+    expect(notice).toMatchObject({ kind: "toast", tone: "warning" });
+    expect(notice?.message).toMatch(/couldn't verify it with the server/i);
+    expect(notice?.message).toMatch(/sign in again if needed/i);
   });
 
   it("the keychain-unavailable banner is what end-users actually see when their OS keychain is locked", () => {
@@ -45,6 +59,8 @@ describe("describeAuthRestoreStatus", () => {
       "empty",
       "keychain-unavailable",
       "decrypt-failed",
+      "session-expired",
+      "restore-failed",
     ];
     for (const s of all) {
       // Should never throw and should return either null or a well-formed

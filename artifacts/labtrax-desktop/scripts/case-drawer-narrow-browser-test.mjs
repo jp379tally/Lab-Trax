@@ -156,6 +156,9 @@ try {
         dividers: [...document.querySelectorAll('[data-testid="case-details-metadata-divider"]')].map(rect),
         metadata: rect(document.querySelector('[data-testid="case-details-metadata"]')),
         metadataFields: ["date-created", "due-date", "priority"].map((id) => rect(document.querySelector(`[data-testid="case-details-${id}"]`))),
+        dates: rect(document.querySelector('[data-testid="case-details-dates"]')),
+        dueDateCount: document.querySelectorAll('[data-testid="case-details-due-date"]').length,
+        rush: rect(document.querySelector('[data-testid="case-details-rush-toggle"]')),
         overflow: drawer.scrollWidth > drawer.clientWidth + 1,
       };
     });
@@ -181,15 +184,192 @@ try {
     }
     if (geometry.overflow) throw new Error(`Drawer overflows at ${width}px`);
     const showDividers = geometry.metadata.width >= 640;
-    if (geometry.dividers.length !== 2 || geometry.dividers.some((r) => showDividers ? r.height !== 16 || r.width !== 1 : r.width !== 0)) {
+    if (geometry.dividers.length !== 1 || geometry.dividers.some((r) => showDividers ? r.height !== 16 || r.width !== 1 : r.width !== 0)) {
       throw new Error(`Metadata dividers are incorrect or detached at ${width}px`);
     }
-    if (showDividers && new Set(geometry.metadataFields.map((r) => Math.round(r.top + r.height / 2))).size !== 1) {
+    const [created, due, priority] = geometry.metadataFields;
+    if (geometry.dueDateCount !== 1 || Math.abs(created.left - due.left) > 1 || created.bottom > due.top) {
+      throw new Error(`Dates are duplicated or not vertically left-aligned at ${width}px`);
+    }
+    for (const field of [...geometry.metadataFields, geometry.rush]) {
+      if (field.left < geometry.metadata.left || field.right > geometry.metadata.right ||
+          field.top < geometry.metadata.top || field.bottom > geometry.metadata.bottom) {
+        throw new Error(`Metadata field is clipped at ${width}px`);
+      }
+    }
+    if (overlaps(geometry.dates, priority) || overlaps(geometry.dates, geometry.rush)) {
+      throw new Error(`Priority or rush action overlaps the dates at ${width}px`);
+    }
+    if (showDividers && Math.abs(geometry.dates.top + geometry.dates.height / 2 - priority.top - priority.height / 2) > 1) {
       throw new Error(`A metadata divider is detached from its row at ${width}px`);
     }
     mkdirSync(screenshotDir, { recursive: true });
     await page.screenshot({ path: `${screenshotDir}/${width}${query ? "-long-existing" : ""}.png` });
     console.log(`✓ Case drawer layout verified at ${width}px${query ? " with long name and existing exception" : ""}`);
+  }
+
+  async function checkTabWidths(width, query = "", expectedWidth) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${testUrl}${query}`);
+    await page.getByTestId("case-detail-body").waitFor();
+    await page.evaluate(() => document.fonts.ready);
+
+    const tabLabels = ["Lab Slip", "Restorations", "Notes", "Files", "Invoice", "History"];
+    const widths = [];
+    for (const label of tabLabels) {
+      await page.getByRole("tab", { name: new RegExp(`^${label}(?:\\s|$)`) }).click();
+      const geometry = await page.evaluate(() => {
+        const drawer = document.querySelector('[data-testid="case-drawer"]');
+        const body = document.querySelector('[data-testid="case-detail-body"]');
+        const rect = drawer.getBoundingClientRect();
+        return {
+          width: rect.width,
+          left: rect.left,
+          right: rect.right,
+          overflow: drawer.scrollWidth > drawer.clientWidth + 1 ||
+            body.scrollWidth > body.clientWidth + 1,
+        };
+      });
+      if (geometry.overflow || geometry.left < -1 || geometry.right > width + 1) {
+        throw new Error(`${label} tab overflows the ${width}px ${query.includes("docked") ? "docked " : ""}case drawer`);
+      }
+      widths.push(geometry.width);
+    }
+
+    if (widths.some((tabWidth) => Math.abs(tabWidth - widths[0]) > 1)) {
+      throw new Error(`Case drawer width changes between tabs at ${width}px: ${widths.join(", ")}`);
+    }
+    if (expectedWidth != null && Math.abs(widths[0] - expectedWidth) > 1) {
+      throw new Error(`Case drawer width at ${width}px was ${widths[0]}px; expected ${expectedWidth}px`);
+    }
+    await page.getByRole("tab", { name: /^Lab Slip(?:\s|$)/ }).click();
+    console.log(`✓ Case drawer width is stable across all six tabs at ${width}px${query.includes("docked") ? " docked" : ""}`);
+  }
+
+  async function checkTabKeyboardNavigation() {
+    await page.setViewportSize({ width: 480, height: 900 });
+    await page.goto(testUrl);
+    const tabs = page.getByRole("tab");
+    const labels = ["Lab Slip", "Restorations", "Notes", "Files", "Invoice", "History"];
+    const tablist = page.getByRole("tablist", { name: "Case details" });
+    const panel = page.getByRole("tabpanel");
+    if (await tabs.count() !== labels.length) {
+      throw new Error(`Expected ${labels.length} case tabs, found ${await tabs.count()}`);
+    }
+    await page.getByRole("tab", { name: /^Lab Slip(?:\s|$)/ }).focus();
+    for (let index = 0; index < labels.length; index += 1) {
+      const selected = tabs.nth(index);
+      await selected.press("ArrowRight");
+      const nextIndex = (index + 1) % labels.length;
+      const next = tabs.nth(nextIndex);
+      await next.waitFor({ state: "visible" });
+      const isSelected = await next.getAttribute("aria-selected");
+      const tabIndex = await next.getAttribute("tabindex");
+      const isFocused = await next.evaluate((element) => element === document.activeElement);
+      if (isSelected !== "true" || tabIndex !== "0" || !isFocused) {
+        throw new Error(`ArrowRight did not focus and select ${labels[nextIndex]}`);
+      }
+      if (await panel.getAttribute("aria-labelledby") !== await next.getAttribute("id")) {
+        throw new Error(`The ${labels[nextIndex]} tab is not connected to its panel`);
+      }
+    }
+    await tabs.nth(0).press("ArrowLeft");
+    if (await tabs.nth(labels.length - 1).getAttribute("aria-selected") !== "true") {
+      throw new Error("ArrowLeft did not wrap from the first tab to History");
+    }
+    await tabs.nth(labels.length - 1).press("Home");
+    if (await tabs.nth(0).getAttribute("aria-selected") !== "true") {
+      throw new Error("Home did not activate the first case tab");
+    }
+    await tabs.nth(0).press("End");
+    if (await tabs.nth(labels.length - 1).getAttribute("aria-selected") !== "true") {
+      throw new Error("End did not activate the last case tab");
+    }
+    await page.getByRole("tab", { name: /^Lab Slip(?:\s|$)/ }).click();
+    await tablist.waitFor({ state: "visible" });
+    console.log("✓ Case tabs expose tab semantics and support automatic keyboard navigation");
+  }
+
+  async function checkCaseSectionKeyboardActions() {
+    await page.setViewportSize({ width: 480, height: 900 });
+    await page.goto(`${testUrl}?accessibility=1`);
+    await page.getByTestId("case-detail-body").waitFor();
+
+    async function activateTab(label) {
+      const tab = page.getByRole("tab", { name: new RegExp(`^${label}(?:\\s|$)`) });
+      await tab.focus();
+      if (await tab.getAttribute("aria-selected") !== "true") {
+        await tab.press("Enter");
+      }
+    }
+
+    await activateTab("Lab Slip");
+    const editCaseNumber = page.getByRole("button", { name: "Edit case number", exact: true });
+    await editCaseNumber.focus();
+    await editCaseNumber.press("Enter");
+    const caseNumberInput = page.getByRole("textbox", { name: "Case number", exact: true });
+    await caseNumberInput.waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Save case number", exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Cancel case number edit", exact: true }).waitFor({ state: "visible" });
+    await caseNumberInput.press("Escape");
+    await editCaseNumber.waitFor({ state: "visible" });
+
+    const editBarcode = page.getByRole("button", { name: "Edit barcode", exact: true });
+    await editBarcode.focus();
+    await editBarcode.press("Enter");
+    const barcodeInput = page.getByRole("textbox", { name: "Case pan barcode", exact: true });
+    await barcodeInput.waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Save barcode", exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Cancel barcode edit", exact: true }).waitFor({ state: "visible" });
+    await barcodeInput.press("Escape");
+    await editBarcode.waitFor({ state: "visible" });
+
+    await activateTab("Restorations");
+    const editRestorationPrice = page.getByRole("button", {
+      name: "Edit price for Crown, tooth 8",
+      exact: true,
+    });
+    await editRestorationPrice.focus();
+    await editRestorationPrice.press("Enter");
+    const priceInput = page.getByRole("spinbutton", {
+      name: "Override unit price for Crown, tooth 8",
+      exact: true,
+    });
+    await priceInput.waitFor({ state: "visible" });
+    await priceInput.press("Escape");
+    await editRestorationPrice.waitFor({ state: "visible" });
+
+    await activateTab("Notes");
+    await page.getByRole("textbox", { name: "Case note", exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Dictate note", exact: true }).waitFor({ state: "visible" });
+
+    await activateTab("Files");
+    const expandFiles = page.getByRole("button", { name: "Expand all", exact: true });
+    await expandFiles.focus();
+    await expandFiles.press("Enter");
+    await page.getByRole("button", { name: "Collapse all", exact: true }).waitFor({ state: "visible" });
+    const shareAttachment = page.getByRole("button", {
+      name: "Share case-note.pdf with provider",
+      exact: true,
+    });
+    await shareAttachment.waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Delete attachment case-note.pdf", exact: true }).waitFor({ state: "visible" });
+
+    await activateTab("Invoice");
+    const generateInvoice = page.getByRole("button", { name: "Generate Invoice", exact: true });
+    await generateInvoice.waitFor({ state: "visible" });
+    if (!(await generateInvoice.isEnabled())) {
+      throw new Error("The keyboard-accessible invoice action is unexpectedly disabled");
+    }
+
+    await activateTab("History");
+    const sortHistory = page.getByRole("button", { name: "Newest first", exact: true });
+    await sortHistory.focus();
+    await sortHistory.press("Enter");
+    await page.getByRole("button", { name: "Oldest first", exact: true }).waitFor({ state: "visible" });
+
+    await activateTab("Lab Slip");
+    console.log("✓ Case section actions have clear names and respond to keyboard activation");
   }
 
   async function checkEditFieldWidths(width, query = "") {
@@ -390,9 +570,9 @@ try {
     if (await page.getByTestId("case-pending-actions").count()) {
       throw new Error(`Saving left a staged pending-changes footer open at ${width}px${query}`);
     }
-    await page.getByRole("button", { name: "Lab Slip", exact: true }).click();
+    await page.getByRole("tab", { name: "Lab Slip", exact: true }).click();
     await page.getByTestId("case-details-edit").click();
-    await page.getByRole("button", { name: "History", exact: true }).click();
+    await page.getByRole("tab", { name: "History", exact: true }).click();
     if (await bar.count()) throw new Error("Leaving Lab Slip left the editor footer open");
     console.log(`✓ Pinned case edit actions, last-field access and closure verified at ${width}px${query}`);
   }
@@ -407,6 +587,11 @@ try {
    await checkLayout(320, "?longName=1&exception=1");
    await checkLayout(1024, "?docked=1&longName=1&exception=1");
    await checkLayout(480);
+  await checkTabWidths(1440, "", 1280);
+  await checkTabWidths(360);
+  await checkTabWidths(1024, "?docked=1");
+  await checkTabKeyboardNavigation();
+  await checkCaseSectionKeyboardActions();
 
   const metadata = page.getByTestId("case-details-metadata");
   const metadataFields = [

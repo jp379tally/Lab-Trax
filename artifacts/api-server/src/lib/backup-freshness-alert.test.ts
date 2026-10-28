@@ -33,7 +33,7 @@ const { store, TABLES, collectParams, settingKeyFrom } = vi.hoisted(() => {
   const TABLES = {
     systemSettings: { __table: "system_settings", key: "key", value: "value" },
     users: { __table: "users", id: "id", email: "email", role: "role", userType: "user_type" },
-    notifications: { __table: "notifications" },
+    notifications: { __table: "notifications", type: "type", readAt: "read_at" },
     backupRuns: {
       __table: "backup_runs",
       destination: "destination",
@@ -107,6 +107,10 @@ vi.mock("@workspace/db", () => {
           (a, b) =>
             new Date(String(b["completedAt"])).getTime() -
             new Date(String(a["completedAt"])).getTime(),
+        ).filter(
+          (row) =>
+            !params.includes("complete-production") ||
+            row["partialFailure"] === false,
         );
         return limit === null ? rows : rows.slice(0, limit);
       }
@@ -176,6 +180,22 @@ vi.mock("@workspace/db", () => {
         set: (value: FakeRow) => ({
           where: (cond: unknown) => {
             const params = collectParams(cond);
+            if (table === TABLES.notifications) {
+              if (!params.includes("backup_offsite_failure")) {
+                return Promise.resolve({ rowCount: 0 });
+              }
+              let rowCount = 0;
+              for (const notification of store.notifications) {
+                if (
+                  notification["type"] === "backup_offsite_failure" &&
+                  notification["readAt"] == null
+                ) {
+                  notification["readAt"] = value["readAt"];
+                  rowCount += 1;
+                }
+              }
+              return Promise.resolve({ rowCount });
+            }
             if (table !== TABLES.systemSettings) return Promise.resolve({ rowCount: 0 });
             const key = settingKeyFrom(params);
             const expected = params[params.length - 1];
@@ -243,6 +263,7 @@ import {
   getUndeliveredBackupAlert,
   getBackupAlertDeliveryLog,
   runBackupFreshnessCheck,
+  reconcileOffsiteBackupAlerts,
   verifyOneDriveArchive,
   minPlausibleBackupBytes,
   SETTING_BACKUP_OFFSITE_ENABLED,
@@ -369,6 +390,98 @@ describe("staleness window", () => {
     expect(freshness.source).toBe("none");
     expect(freshness.destinationUnreadable).toBe(true);
     expect(freshness.stale).toBe(true);
+  });
+});
+
+describe("resolving off-site failure alerts", () => {
+  const activeFailure = {
+    type: "backup_offsite_failure",
+    readAt: null,
+  };
+
+  it("resolves active failure notifications after a fresh matched complete archive is confirmed", async () => {
+    store.notifications = [
+      { ...activeFailure },
+      { type: "backup_local_error", readAt: null },
+      { type: "backup_offsite_failure", readAt: new Date("2026-01-01T00:00:00Z") },
+    ];
+    plantArchives([archive(3)]);
+
+    const result = await runBackupFreshnessCheck();
+
+    expect(result.ok).toBe(true);
+    expect(store.notifications.map((notification) => notification["readAt"])).toEqual([
+      expect.any(Date),
+      null,
+      new Date("2026-01-01T00:00:00Z"),
+    ]);
+  });
+
+  it("leaves active notifications unread when the destination archive is stale", async () => {
+    store.notifications = [{ ...activeFailure }];
+    plantArchives([archive(5 * 24 * 60)]);
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(true);
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+
+  it("leaves active notifications unread when the archive run was partial", async () => {
+    store.notifications = [{ ...activeFailure }];
+    plantArchives([archive(3)]);
+    store.backupRuns[0]!.partialFailure = true;
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(true);
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+
+  it("leaves active notifications unread when the destination object has no matching run", async () => {
+    store.notifications = [{ ...activeFailure }];
+    plantArchives([archive(3)], false);
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(true);
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+
+  it("does not treat a successful run record without a listed destination object as confirmation", async () => {
+    store.notifications = [{ ...activeFailure }];
+    store.backupRuns.push({
+      completedAt: new Date(),
+      destination: "onedrive",
+      status: "success",
+      archiveKind: "complete-production",
+      partialFailure: false,
+      fileName: "labtrax-backup-record-only.zip.enc",
+      remoteItemId: "record-only",
+      sizeBytes: ARCHIVE_BYTES,
+    });
+    plantArchives([], false);
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(true);
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+
+  it("leaves active notifications unread when the destination cannot be read", async () => {
+    store.notifications = [{ ...activeFailure }];
+    vi.mocked(listOneDriveBackupFiles).mockRejectedValue(new Error("Graph is down"));
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.destinationUnreadable).toBe(true);
+    expect(freshness.stale).toBe(true);
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
   });
 });
 

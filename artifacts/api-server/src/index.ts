@@ -4,7 +4,8 @@ import { scheduleVendorLinkBackfillIfNeeded } from "./lib/vendor-link-backfill";
 import { scheduleLabInboxStorageRepair } from "./lib/lab-inbox-storage-repair";
 import { scheduleExpectedDeliveryDateBackfillIfNeeded } from "./lib/expected-delivery-date-backfill";
 import { scheduleRemovableRestorationCollapseBackfillIfNeeded } from "./lib/removable-restoration-collapse-backfill";
-import { ensureDbConstraints } from "./lib/db-constraints";
+import { ensureStartupDbConstraints } from "./lib/db-constraints";
+import { restartScheduledBackupJob } from "./lib/backup";
 import { migrateDraftInvoicesToOpen } from "./lib/migrate-draft-invoices";
 import { migrateInvoiceIssuedAt } from "./lib/migrate-invoice-issued-at";
 import {
@@ -19,6 +20,8 @@ import { attachCaseEventsWebSocketServer } from "./lib/case-events-ws";
 import { scheduleRecentCaseInvoiceRepair } from "./lib/ai-intake-invoice-repair";
 import { registerHistoricalStartupJobs } from "./lib/startup-maintenance";
 import { ensureBackupLiveStatusSchema } from "./lib/backup-live-status-store";
+import { ensureProductionMediaJournalSchema } from "./lib/production-media-journal";
+import { startBackupCloudStageCleanup } from "./lib/backup-cloud-staging";
 
 const rawPort = process.env["PORT"];
 
@@ -136,11 +139,14 @@ const server = app.listen(port, (err) => {
     );
   }
 
-  // Fire-and-forget DB constraint installation. Logs loudly on failure
-  // but does NOT crash the process — the app worked for months without
-  // this trigger, and a slow/unreachable DB at boot must not take the
-  // whole service down.
-  ensureDbConstraints().catch((err) => {
+  // Open the listener promptly, but never let a catch-up backup's pg_dump
+  // acquire table locks before startup finishes installing integrity guards.
+  ensureStartupDbConstraints().then(async () => {
+    await ensureBackupLiveStatusSchema();
+    await ensureProductionMediaJournalSchema();
+    startBackupCloudStageCleanup();
+    await restartScheduledBackupJob();
+  }).catch((err) => {
     process.stderr.write(
       `[startup] DB constraint setup failed (server still running): ${
         err instanceof Error ? err.message : String(err)

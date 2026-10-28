@@ -102,7 +102,7 @@ function renderDrawer() {
 
 // Manual restoration additions still stage edits outside the Lab Slip form.
 async function makeDirty() {
-  fireEvent.click(await screen.findByRole("button", { name: /Restorations/i }));
+  fireEvent.click(await screen.findByRole("tab", { name: /Restorations/i }));
   fireEvent.click(await screen.findByRole("button", { name: /Add manually/i }));
   fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
   fireEvent.click(screen.getByRole("button", { name: "Add restoration" }));

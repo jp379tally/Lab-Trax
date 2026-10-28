@@ -2,7 +2,7 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
-import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { BorderWidth, Spacing, Radius, Typography } from "@/constants/tokens";
 import { DismissKeyboardView } from "@/components/ui/DismissKeyboardView";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
@@ -117,11 +117,16 @@ export function SettingsSection({ title, children, footer }: SettingsSectionProp
           {title.toUpperCase()}
         </Text>
       ) : null}
-      <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View
+        style={[
+          styles.sectionCard,
+          { backgroundColor: colors.surface, borderColor: colors.sectionBorder },
+        ]}
+      >
         {items.map((child, idx) => (
           <View key={idx}>
             {idx > 0 && (
-              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <View style={[styles.divider, { backgroundColor: colors.sectionBorder }]} />
             )}
             {child}
           </View>
@@ -216,10 +221,10 @@ const styles = StyleSheet.create({
   },
   sectionCard: {
     borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: BorderWidth.section,
     overflow: "hidden",
   },
-  divider: { height: StyleSheet.hairlineWidth, marginLeft: Spacing.lg + 34 + Spacing.md },
+  divider: { height: BorderWidth.section, marginLeft: Spacing.lg + 34 + Spacing.md },
   footer: {
     ...Typography.caption,
     paddingHorizontal: Spacing.lg,

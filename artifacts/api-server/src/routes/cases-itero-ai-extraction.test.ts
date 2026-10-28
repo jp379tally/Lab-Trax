@@ -33,7 +33,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-itero-ai");
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-itero-ai", "case-media");
 
 // Hoisted spies so the vi.mock factories below can reference them.
 const {
@@ -80,7 +80,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-itero-ai"),
+  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-itero-ai", "case-media"),
   extractMediaFileName: () => null,
 }));
 vi.mock("../lib/case-media-object-storage.js", () => ({
@@ -330,6 +330,8 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
         shade: cases.shade,
         rxNotes: cases.rxNotes,
         dueDate: cases.dueDate,
+        prescriptionDueDate: cases.prescriptionDueDate,
+        expectedDeliveryDate: cases.expectedDeliveryDate,
         priority: cases.priority,
         patientFirstName: cases.patientFirstName,
         doctorName: cases.doctorName,
@@ -340,7 +342,11 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
       .where(eq(cases.id, caseId));
     expect(caseRow.shade).toBe("A2");
     expect(caseRow.rxNotes).toContain("Match adjacent shade");
-    expect(caseRow.dueDate).toBeTruthy();
+    // The unreviewed Rx date is retained without silently committing the lab
+    // to it; reviewed lab due dates are covered by the paired-field regressions.
+    expect(caseRow.prescriptionDueDate).toBe("2026-07-01");
+    expect(caseRow.dueDate).toBeNull();
+    expect(caseRow.expectedDeliveryDate).toBeTruthy();
     expect(caseRow.patientFirstName).toBe("Ada");
     expect(caseRow.doctorName).toBe("Dr. Babbage");
     expect(caseRow.needsAiReview).toBe(false);

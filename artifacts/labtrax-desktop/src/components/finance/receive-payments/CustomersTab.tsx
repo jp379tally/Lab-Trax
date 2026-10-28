@@ -50,8 +50,23 @@ export function CustomersTab({
   onSelectionChange: (next: Selection) => void;
   onViewInvoices: (customer: PayableCustomer) => void;
 }) {
-  const selectedShown = rows.filter((customer) => isSelected(selection, customer.id)).length;
-  const allShown = rows.length > 0 && selectedShown === rows.length;
+  const grouped = new Map<string, PayableCustomer[]>();
+  for (const customer of rows) {
+    const key = customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+    const group = grouped.get(key) ?? [];
+    group.push(customer);
+    grouped.set(key, group);
+  }
+  const orderedRows = [...grouped.values()].flatMap((group) => {
+    if (group.length < 2) return group;
+    const practice = group.find((customer) => !customer.isDoctorAccount);
+    return [
+      ...(practice ? [practice] : []),
+      ...group.filter((customer) => customer.isDoctorAccount),
+    ];
+  });
+  const selectedShown = orderedRows.filter((customer) => isSelected(selection, customer.id)).length;
+  const allShown = orderedRows.length > 0 && selectedShown === orderedRows.length;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -62,12 +77,12 @@ export function CustomersTab({
                 aria-label="Select all shown customers"
                 checked={allShown}
                 indeterminate={selectedShown > 0 && !allShown}
-                disabled={!rows.length}
+                disabled={!orderedRows.length}
                 onChange={(e) =>
                   onSelectionChange(
                     e.target.checked
-                      ? selectCustomers(selection, rows)
-                      : deselectCustomers(selection, rows.map((customer) => customer.id)),
+                      ? selectCustomers(selection, orderedRows)
+                      : deselectCustomers(selection, orderedRows.map((customer) => customer.id)),
                   )
                 }
               />
@@ -90,7 +105,7 @@ export function CustomersTab({
           </tr>
         </thead>
         <tbody>
-          {rows.map((customer) => {
+          {orderedRows.map((customer) => {
             const selected = isSelected(selection, customer.id);
             const byStatement = paysByStatement(selection, customer);
             const note = scopeNote(selection, customer);
@@ -104,7 +119,13 @@ export function CustomersTab({
               >
                 <td className="py-2 pl-3 pr-1">
                   <Checkbox
-                    aria-label={`Select ${customer.name}`}
+                    aria-label={
+                      customer.isDoctorAccount
+                        ? `Select ${customer.doctorDisplayName} at ${customer.practiceName}${
+                            customer.doctorLabelQualifier ? ` (${customer.doctorLabelQualifier})` : ""
+                          }`
+                        : `Select ${customer.name}`
+                    }
                     checked={selected}
                     onChange={(e) =>
                       onSelectionChange(
@@ -116,7 +137,7 @@ export function CustomersTab({
                   />
                 </td>
                 <td className="w-full max-w-0 px-1.5 py-2">
-                  <div className="flex min-w-0 items-center gap-2">
+                  <div className={`flex min-w-0 items-center gap-2 ${customer.isDoctorAccount ? "pl-5" : ""}`}>
                     <span className="hidden @min-[36rem]:inline-flex">
                       <CustomerAvatar id={customer.id} initials={customer.initials} />
                     </span>
@@ -134,7 +155,9 @@ export function CustomersTab({
                         )}
                       </div>
                       <div className="truncate text-[11px] text-muted-foreground">
-                        {customer.accountNumber ?? ""}
+                        <span>{customer.accountLabel}</span>
+                        {customer.accountNumber && customer.accountLabel ? " · " : ""}
+                        <span>{customer.accountNumber ?? ""}</span>
                         <span className="@min-[34rem]:hidden">
                           {customer.accountNumber ? " · " : ""}
                           {customer.unpaidCount} unpaid
@@ -175,7 +198,10 @@ export function CustomersTab({
                     "—"
                   )}
                 </td>
-                <td className="whitespace-nowrap px-1.5 py-2 text-xs tabular-nums">
+                <td
+                  className="whitespace-nowrap px-1.5 py-2 text-xs tabular-nums"
+                  aria-label={`Last payment for ${customer.isDoctorAccount ? customer.doctorDisplayName : customer.name}`}
+                >
                   {customer.lastPaymentAt ? (
                     <>
                       <div>{formatDate(customer.lastPaymentAt)}</div>

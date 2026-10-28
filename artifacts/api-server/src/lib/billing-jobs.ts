@@ -1,4 +1,4 @@
-import { finalizedInvoiceSql } from "./recovery-billing-hold";
+import { finalizedInvoiceSql } from "./historical-invoice-hold";
 import { and, asc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db, pool } from "@workspace/db";
 import {

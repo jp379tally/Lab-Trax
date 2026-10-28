@@ -13,6 +13,7 @@ interface UpdateState {
 export function UpdateBanner() {
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [notesExpanded, setNotesExpanded] = useState(false);
   const snoozeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -21,7 +22,43 @@ export function UpdateBanner() {
     const api = (window as any).electronAPI;
     if (!api) return;
 
-    const unsubProgress = api.onUpdateDownloadProgress((percent: number) => {
+    const applyState = (state: {
+      status?: string;
+      latestVersion?: string | null;
+      downloadProgress?: number | null;
+    }) => {
+      if (state.status === "downloaded") {
+        setUpdate((prev) => ({
+          phase: "ready",
+          version: state.latestVersion ?? prev?.version ?? "",
+          percent: 100,
+          releaseNotes: prev?.releaseNotes ?? null,
+        }));
+        setDismissed(false);
+      } else if (state.status === "downloading") {
+        setUpdate((prev) => ({
+          phase: "downloading",
+          version: state.latestVersion ?? prev?.version ?? "",
+          percent: Math.max(0, Math.min(100, Math.round(state.downloadProgress ?? prev?.percent ?? 0))),
+          releaseNotes: prev?.releaseNotes ?? null,
+        }));
+      }
+    };
+
+    let alive = true;
+    let receivedEvent = false;
+    const unsubState = api.onUpdateState?.((state: { status?: string; latestVersion?: string | null; downloadProgress?: number | null }) => {
+      receivedEvent = true;
+      if (alive) applyState(state);
+    });
+    // The banner may mount after an update was already downloaded. Rehydrate
+    // its initial state so the install action is not lost until another event.
+    Promise.resolve(api.getUpdateState?.()).then((state: any) => {
+      if (alive && state && !receivedEvent) applyState(state);
+    }).catch(() => {});
+
+    const unsubProgress = api.onUpdateDownloadProgress?.((percent: number) => {
+      receivedEvent = true;
       setUpdate((prev) => {
         if (prev?.phase === "ready") return prev;
         return {
@@ -33,8 +70,9 @@ export function UpdateBanner() {
       });
     });
 
-    const unsubDownloaded = api.onUpdateDownloaded(
+    const unsubDownloaded = api.onUpdateDownloaded?.(
       (info: { version: string; releaseNotes: string | null }) => {
+        receivedEvent = true;
         setUpdate({
           phase: "ready",
           version: info.version ?? "",
@@ -50,6 +88,8 @@ export function UpdateBanner() {
     );
 
     return () => {
+      alive = false;
+      unsubState?.();
       unsubProgress?.();
       unsubDownloaded?.();
       if (snoozeTimerRef.current) clearTimeout(snoozeTimerRef.current);
@@ -62,7 +102,15 @@ export function UpdateBanner() {
     const api = (window as any).electronAPI;
     if (!api) return;
     setInstalling(true);
-    await api.installUpdate();
+    setInstallError(null);
+    try {
+      await api.installUpdate();
+    } catch (error) {
+      setInstallError(
+        error instanceof Error ? error.message : "Could not restart to install the update.",
+      );
+      setInstalling(false);
+    }
   }
 
   function handleDismiss() {
@@ -158,6 +206,12 @@ export function UpdateBanner() {
           <X size={14} />
         </button>
       </div>
+
+      {installError && (
+        <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+          {installError}
+        </p>
+      )}
 
       {hasNotes && notesExpanded && (
         <div className="px-4 pb-3">

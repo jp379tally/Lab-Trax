@@ -14,46 +14,110 @@
  * object store, so the test needs no provisioned bucket and runs everywhere.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 
 // In-memory object store shared by the mock. Keyed by "<bucket>/<object>".
 const store = new Map<
   string,
-  { buf: Buffer; contentType: string; updated: string }
+  { buf: Buffer; contentType: string; updated: string; generation: string; md5Hash: string; crc32c: string }
 >();
+let generation = 0;
 let streamFailure = false;
 
 vi.mock("@google-cloud/storage", () => {
+  class CRC32C {
+    private value = 0xffffffff;
+    update(bytes: Buffer) {
+      for (const byte of bytes) {
+        this.value ^= byte;
+        for (let index = 0; index < 8; index++) {
+          this.value = (this.value >>> 1) ^ (this.value & 1 ? 0x82f63b78 : 0);
+        }
+      }
+    }
+    toString() {
+      const checksum = Buffer.alloc(4);
+      checksum.writeUInt32BE((~this.value) >>> 0);
+      return checksum.toString("base64");
+    }
+  }
   class FakeFile {
     constructor(
       private bucketName: string,
       private objectName: string,
+      private pinnedGeneration?: string,
     ) {}
+    get name() { return this.objectName; }
+    get bucket(): FakeBucket { return new FakeBucket(this.bucketName); }
     private key() {
       return `${this.bucketName}/${this.objectName}`;
     }
-    async save(buffer: Buffer, opts?: { contentType?: string }) {
+    async save(buffer: Buffer, opts?: {
+      contentType?: string;
+      metadata?: { contentType?: string };
+      validation?: string;
+      preconditionOpts?: { ifGenerationMatch?: string | number };
+    }) {
+      const previous = store.get(this.key());
+      if (opts?.preconditionOpts?.ifGenerationMatch !== undefined &&
+          String(opts.preconditionOpts.ifGenerationMatch) !== String(previous?.generation ?? 0)) {
+        throw Object.assign(new Error("Precondition failed"), { code: 412 });
+      }
+      if (opts?.validation !== "crc32c") throw new Error("Synthetic upload must validate its CRC32C.");
+      const crc = new CRC32C();
+      crc.update(buffer);
       store.set(this.key(), {
         buf: Buffer.from(buffer),
-        contentType: opts?.contentType ?? "application/octet-stream",
+        contentType: opts?.metadata?.contentType ?? opts?.contentType ?? "application/octet-stream",
         updated: new Date().toISOString(),
+        generation: String(++generation),
+        md5Hash: createHash("md5").update(buffer).digest("base64"),
+        crc32c: crc.toString(),
       });
     }
     async exists() {
-      return [store.has(this.key())] as [boolean];
+      const e = store.get(this.key());
+      return [!!e && (!this.pinnedGeneration || e.generation === this.pinnedGeneration)] as [boolean];
     }
     async getMetadata() {
       const e = store.get(this.key());
+      if (!e || (this.pinnedGeneration && e.generation !== this.pinnedGeneration)) {
+        throw Object.assign(new Error("Not found"), { code: 404 });
+      }
       return [
         {
-          size: e ? e.buf.length : 0,
-          contentType: e?.contentType,
-          updated: e?.updated,
-          timeCreated: e?.updated,
+          size: e.buf.length,
+          contentType: e.contentType,
+          updated: e.updated,
+          timeCreated: e.updated,
+          generation: e.generation,
+          md5Hash: e.md5Hash,
+          crc32c: e.crc32c,
         },
       ];
     }
-    async delete() {
+    async copy(target: FakeFile, opts?: { preconditionOpts?: { ifGenerationMatch?: number } }) {
+      const original = store.get(this.key());
+      if (!original || (this.pinnedGeneration && original.generation !== this.pinnedGeneration)) {
+        throw Object.assign(new Error("Not found"), { code: 404 });
+      }
+      if (opts?.preconditionOpts?.ifGenerationMatch === 0 && store.has(target.key())) {
+        throw Object.assign(new Error("Precondition failed"), { code: 412 });
+      }
+      store.set(target.key(), {
+        ...original,
+        buf: Buffer.from(original.buf),
+        generation: String(++generation),
+      });
+      return [target];
+    }
+    async delete(opts?: { ifGenerationMatch?: string | number }) {
+      const previous = store.get(this.key());
+      if (opts?.ifGenerationMatch !== undefined &&
+          String(opts.ifGenerationMatch) !== String(previous?.generation)) {
+        throw Object.assign(new Error("Precondition failed"), { code: 412 });
+      }
       store.delete(this.key());
     }
     createReadStream() {
@@ -68,8 +132,8 @@ vi.mock("@google-cloud/storage", () => {
   }
   class FakeBucket {
     constructor(private name: string) {}
-    file(objectName: string) {
-      return new FakeFile(this.name, objectName);
+    file(objectName: string, options?: { generation?: string }) {
+      return new FakeFile(this.name, objectName, options?.generation);
     }
   }
   class Storage {
@@ -77,7 +141,7 @@ vi.mock("@google-cloud/storage", () => {
       return new FakeBucket(name);
     }
   }
-  return { Storage };
+  return { Storage, CRC32C };
 });
 
 async function drain(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -104,6 +168,9 @@ describe("lab-logo-storage upload/replace/serve round-trip", () => {
 
   it("serves the bytes of the first upload", async () => {
     const png = Buffer.from("first-png-bytes");
+    const crc = new (await import("@google-cloud/storage")).CRC32C();
+    crc.update(Buffer.from("123456789"));
+    expect(crc.toString()).toBe("4waSgw==");
     await mod.uploadLabLogo(orgId, png, "image/png");
 
     const stream = await mod.openLabLogoStream(orgId);

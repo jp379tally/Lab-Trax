@@ -38,6 +38,10 @@ on:
           - preview
           - development
 
+concurrency:
+  group: eas-mobile-build-counter
+  cancel-in-progress: false
+
 jobs:
   bump-and-build:
     runs-on: ubuntu-latest
@@ -46,6 +50,15 @@ jobs:
       contents: write
 
     steps:
+      - name: Require the release branch
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$RELEASE_REF" != refs/heads/main ]]; then
+            echo "::error::Run mobile builds from main; refusing to push another branch source to main."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           # Fetch full history so git push doesn't fail on shallow clones.
@@ -102,7 +115,7 @@ jobs:
           done
           if [[ "$pushed" != "true" ]]; then
             echo "push_failed=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::All push attempts failed — mobile build number was NOT persisted. The EAS build will still proceed; download the build-counter-fallback workflow artifact and apply it manually (see docs/build-counter-recovery.md)."
+            echo "::warning::All push attempts failed — mobile build number was NOT persisted. The EAS build will be blocked; retain the build-counter-fallback artifact for diagnosis."
           fi
 
       - name: Upload build counter fallback artifact
@@ -152,6 +165,12 @@ jobs:
             BODY_TRUNC=$(head -c 500 "$NOTIFY_BODY")
             echo "::warning::Failed to deliver build-number push failure alert (HTTP $NOTIFY_STATUS): $BODY_TRUNC — admins will not receive an email for this run."
           fi
+
+      - name: Require a persisted build number
+        if: steps.commit-build-number.outputs.push_failed == 'true'
+        run: |
+          echo "::error::Build number could not be saved. EAS was not started; resolve the Git push failure before retrying."
+          exit 1
 
       - name: Build on EAS
         uses: expo/expo-github-action@v8

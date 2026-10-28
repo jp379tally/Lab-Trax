@@ -9,6 +9,8 @@
  */
 
 import { createWriteStream, promises as fsp } from "node:fs";
+import { writeProductionObject, writeProductionObjectStream, deleteProductionObject,
+  openPinnedProductionObject, MEDIA_HISTORY_DIRECTORY } from "./production-media-object-write";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform, type Readable } from "node:stream";
@@ -89,15 +91,16 @@ export interface CaseMediaBackupObject {
   generation?: string;
   modifiedAt?: string;
   metadata?: Record<string, unknown>;
+  openStream?(signal?: AbortSignal): Readable;
   copyTo(destination: string, signal?: AbortSignal): Promise<void>;
 }
 
 export const MEDIA_TRANSFER_IDLE_MS = 60_000;
 
 /**
- * Inventory once, pin object generations, and retain CRC validation. The backup
- * producer consumes these objects with bounded prefetch rather than staging
- * the entire (potentially multi-GB) prefix before it can start archiving.
+ * Inventory once and pin object generations. The backup producer streams these
+ * CRC-validated objects directly into the archive instead of staging media on
+ * local disk.
  */
 export async function listCaseMediaBackupObjects(signal?: AbortSignal): Promise<CaseMediaBackupObject[]> {
   return listPrivateBackupObjects("case-media", signal);
@@ -124,6 +127,7 @@ export async function listPrivateBackupObjects(subdirectory: string = "", signal
     if (!file.name.startsWith(prefix)) throw new Error("App Storage returned an object outside the case-media prefix.");
     const relativeName = file.name.slice(prefix.length);
     if (!relativeName || relativeName.endsWith("/")) return [];
+    if (relativeName.split("/").includes(MEDIA_HISTORY_DIRECTORY)) return [];
     if (!isSafePrivateObjectName(relativeName)) {
       throw new Error("App Storage returned an unsafe case-media object path.");
     }
@@ -151,7 +155,8 @@ function privateRestoreFile(relativeName: string) {
 export async function restorePrivateBackupObject(
   relativeName: string, data: Buffer, metadata: Record<string, unknown>,
 ): Promise<void> {
-  await privateRestoreFile(relativeName).save(data, {
+  await writeProductionObject(privateRestoreFile(relativeName),
+    relativeName.startsWith("case-media/") ? relativeName : `private-objects/${relativeName}`, "private-recovery", data, {
     resumable: false,
     validation: "crc32c",
     metadata,
@@ -160,9 +165,10 @@ export async function restorePrivateBackupObject(
 export async function restorePrivateBackupObjectStream(
   relativeName: string, data: Readable, metadata: Record<string, unknown>,
 ): Promise<void> {
-  await pipeline(data, privateRestoreFile(relativeName).createWriteStream({
+  await writeProductionObjectStream(privateRestoreFile(relativeName),
+    relativeName.startsWith("case-media/") ? relativeName : `private-objects/${relativeName}`, "private-recovery", data, {
     resumable: true, validation: "crc32c", metadata,
-  }));
+  });
 }
 
 /**
@@ -244,7 +250,7 @@ export async function writeCaseMediaToObjectStorage(
 ): Promise<boolean> {
   const file = getObjectFile(diskFilename);
   if (!file) return false;
-  await file.save(data, {
+  await writeProductionObject(file, `case-media/${diskFilename}`, "case-media", data, {
     contentType,
     resumable: false,
     metadata: {
@@ -309,7 +315,7 @@ export async function deleteCaseMediaFromObjectStorage(
   if (!file) return false;
   const [exists] = await file.exists();
   if (!exists) return false;
-  await file.delete();
+  await deleteProductionObject(file, `case-media/${diskFilename}`, "case-media");
   return true;
 }
 
@@ -328,7 +334,6 @@ function pinnedBackupObject(
   if (objectMetadata.contentEncoding && objectMetadata.contentEncoding !== "identity") {
     throw new Error("Case-media inventory contains encoded objects; verify their restored byte sizes before backing up.");
   }
-  const pinned = bucket.file(objectName, { generation: objectMetadata.generation });
   return {
     relativeName,
     size,
@@ -339,6 +344,49 @@ function pinnedBackupObject(
       contentDisposition: objectMetadata.contentDisposition,
       cacheControl: objectMetadata.cacheControl,
       metadata: objectMetadata.metadata,
+    },
+    openStream(parentSignal) {
+      const source = openPinnedProductionObject(bucket.file(objectName), String(objectMetadata.generation), objectMetadata);
+      let lastProgressAt = Date.now();
+      const guarded = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          lastProgressAt = Date.now();
+          callback(null, chunk);
+        },
+      });
+      const abort = () => {
+        const error = new Error("Case-media transfer was aborted.");
+        source.destroy(error);
+        guarded.destroy(error);
+      };
+      const cleanup = () => {
+        clearInterval(idleTimer);
+        parentSignal?.removeEventListener("abort", abort);
+      };
+      const idleTimer = setInterval(() => {
+        const now = Date.now();
+        // ZIP entries are serialized. Queued reads can be paused by downstream
+        // backpressure while a different entry is still making progress.
+        // The parent job deadline still bounds the entire transfer.
+        if (source.isPaused() || guarded.writableNeedDrain) {
+          lastProgressAt = now;
+          return;
+        }
+        if (now - lastProgressAt >= MEDIA_TRANSFER_IDLE_MS) {
+          const error = new Error("Case-media transfer stalled for 60 seconds. Check App Storage connectivity and retry.");
+          source.destroy(error);
+          guarded.destroy(error);
+        }
+      }, 1000);
+      idleTimer.unref?.();
+      if (parentSignal?.aborted) abort();
+      else parentSignal?.addEventListener("abort", abort, { once: true });
+      source.once("error", error => guarded.destroy(error));
+      guarded.once("close", cleanup);
+      guarded.once("end", cleanup);
+      guarded.once("error", cleanup);
+      source.pipe(guarded);
+      return guarded;
     },
     async copyTo(destination, parentSignal) {
       const controller = new AbortController();
@@ -362,7 +410,8 @@ function pinnedBackupObject(
       });
       try {
         await fsp.mkdir(path.dirname(destination), { recursive: true });
-        await pipeline(pinned.createReadStream(), counter, createWriteStream(destination), { signal: controller.signal });
+        await pipeline(openPinnedProductionObject(bucket.file(objectName), String(objectMetadata.generation), objectMetadata),
+          counter, createWriteStream(destination), { signal: controller.signal });
         if (bytes !== size) throw new Error("Case-media transfer size did not match the pinned object; the partial archive was discarded.");
       } catch (error) {
         await fsp.rm(destination, { force: true }).catch(() => undefined);

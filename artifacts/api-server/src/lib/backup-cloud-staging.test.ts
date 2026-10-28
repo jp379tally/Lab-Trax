@@ -5,23 +5,32 @@ import { finished } from "node:stream/promises";
 const fake = vi.hoisted(() => ({
   objects: new Map<string, { bytes: Buffer; generation: string; metadata?: Record<string, string> }>(),
   calls: [] as Array<{ name: string; generation?: string | number; start?: number; end?: number }>,
+  activeRuns: new Set<string>(),
   failDelete: false,
   badSize: false,
   overRead: false,
   shortRead: false,
   stallRead: false,
 }));
-const prefix = ".labtrax-backup-staging/synthetic/non-production";
+const prefixFor = (environment: string) => `.labtrax-backup-staging/synthetic/${environment}`;
+const prefix = prefixFor("non-production");
 vi.mock("./logger", () => ({ logger: { warn: vi.fn() } }));
 vi.mock("./case-media-object-storage", () => ({
   MEDIA_TRANSFER_IDLE_MS: 60_000,
-  getBackupStagingLocation: () => ({
-    prefix,
+  getBackupStagingLocation: (environment: string) => ({
+    prefix: prefixFor(environment),
     bucket: {
-      async getFiles() {
-        return [[...fake.objects].filter(([name]) => name.startsWith(`${prefix}/leases/`)).map(([name, object]) => ({
+      async getFiles(options: { prefix: string }) {
+        return [[...fake.objects].filter(([name]) => name.startsWith(options.prefix)).map(([name, object]) => ({
           name, metadata: { generation: object.generation, metadata: object.metadata },
-          delete: async () => { fake.objects.delete(name); },
+          delete: async (options?: { ifGenerationMatch?: string | number }) => {
+            const current = fake.objects.get(name);
+            if (current && options?.ifGenerationMatch !== undefined &&
+                String(current.generation) !== String(options.ifGenerationMatch)) {
+              throw Object.assign(new Error("Generation mismatch"), { code: 412 });
+            }
+            fake.objects.delete(name);
+          },
         }))];
       },
       file(name: string, options?: { generation?: string | number }) {
@@ -41,8 +50,18 @@ vi.mock("./case-media-object-storage", () => ({
             });
           },
           async getMetadata() {
+            const object = fake.objects.get(name);
+            if (!object) throw Object.assign(new Error("Not found"), { code: 404 });
+            return [{
+              size: object.bytes.length + (fake.badSize ? 1 : 0),
+              generation: object.generation,
+              metadata: object.metadata,
+            }];
+          },
+          async setMetadata(opts: { metadata: Record<string, string> }) {
             const object = fake.objects.get(name)!;
-            return [{ size: object.bytes.length + (fake.badSize ? 1 : 0), generation: object.generation }];
+            object.metadata = opts.metadata;
+            object.generation = String(Number(object.generation) + 1);
           },
           createReadStream(range: { start: number; end: number }) {
             fake.calls.push({ name, generation: options?.generation, ...range });
@@ -52,8 +71,17 @@ vi.mock("./case-media-object-storage", () => ({
             return Readable.from([object.bytes.subarray(range.start,
               range.end + 1 + (fake.overRead ? 1 : 0) - (fake.shortRead ? 1 : 0))]);
           },
-          async delete() {
+          async delete(opts?: { ignoreNotFound?: boolean; ifGenerationMatch?: string | number }) {
             if (fake.failDelete) throw new Error("Synthetic cleanup failure");
+            const object = fake.objects.get(name);
+            if (!object) {
+              if (opts?.ignoreNotFound) return;
+              throw Object.assign(new Error("Not found"), { code: 404 });
+            }
+            if (opts?.ifGenerationMatch !== undefined &&
+                String(object.generation) !== String(opts.ifGenerationMatch)) {
+              throw Object.assign(new Error("Generation mismatch"), { code: 412 });
+            }
             fake.objects.delete(name);
           },
         };
@@ -61,12 +89,20 @@ vi.mock("./case-media-object-storage", () => ({
     },
   }),
 }));
+vi.mock("./backup-live-status-store", () => ({
+  isBackupRunActive: vi.fn(async (runId: string) => fake.activeRuns.has(runId)),
+}));
 
-import { createBackupCloudStage, MAX_BACKUP_RANGE_BYTES } from "./backup-cloud-staging";
+import {
+  cleanupExpiredBackupCloudStages,
+  createBackupCloudStage,
+  MAX_BACKUP_RANGE_BYTES,
+} from "./backup-cloud-staging";
 
 beforeEach(() => {
   fake.objects.clear();
   fake.calls.length = 0;
+  fake.activeRuns.clear();
   fake.failDelete = fake.badSize = fake.overRead = fake.shortRead = fake.stallRead = false;
 });
 afterEach(() => vi.useRealTimers());
@@ -138,6 +174,64 @@ describe("private cloud backup staging", () => {
     await next.cleanup();
     await active.cleanup();
     await old.cleanup();
+  });
+
+  it("reclaims expired browser archives without starting another backup", async () => {
+    const stage = await sealedStage();
+    const leaseName = [...fake.objects.keys()].find(name => name.includes("/leases/"))!;
+    const archiveName = [...fake.objects.keys()].find(name => name.includes("/archives/"))!;
+    const lease = fake.objects.get(leaseName)!;
+    lease.metadata = { ...lease.metadata, expiresAt: "1000" };
+
+    await cleanupExpiredBackupCloudStages("non-production", 2000);
+
+    expect(fake.objects.has(archiveName)).toBe(false);
+    expect(fake.objects.has(leaseName)).toBe(false);
+    await stage.cleanup();
+  });
+
+  it("leaves active and other-environment stages untouched", async () => {
+    const stage = await sealedStage();
+    const leaseName = [...fake.objects.keys()].find(name => name.includes("/leases/"))!;
+    const archiveName = [...fake.objects.keys()].find(name => name.includes("/archives/"))!;
+    const runId = leaseName.split("/").at(-1)!.replace(/\.json$/, "");
+    fake.objects.get(leaseName)!.metadata!.expiresAt = "1000";
+    fake.activeRuns.add(runId);
+    const foreignPrefix = prefixFor("production");
+    const foreignRunId = "0a3ed324-8725-4450-9234-2147c5bc0a01";
+    const foreignLeaseName = `${foreignPrefix}/leases/${foreignRunId}.json`;
+    const foreignArchiveName = `${foreignPrefix}/archives/${foreignRunId}.zip.enc`;
+    fake.objects.set(foreignLeaseName, {
+      bytes: Buffer.from("lease"), generation: "8", metadata: { expiresAt: "1000" },
+    });
+    fake.objects.set(foreignArchiveName, { bytes: Buffer.from("archive"), generation: "9" });
+
+    await cleanupExpiredBackupCloudStages("non-production", 2000);
+    expect(fake.objects.has(archiveName)).toBe(true);
+    expect(fake.objects.has(leaseName)).toBe(true);
+    await cleanupExpiredBackupCloudStages("production", 2000);
+    expect(fake.objects.has(foreignArchiveName)).toBe(false);
+    expect(fake.objects.has(foreignLeaseName)).toBe(false);
+    await stage.cleanup();
+  });
+
+  it("keeps the retry lease when a pinned archive generation cannot be deleted", async () => {
+    const stage = await sealedStage();
+    const leaseName = [...fake.objects.keys()].find(name => name.includes("/leases/"))!;
+    const archiveName = [...fake.objects.keys()].find(name => name.includes("/archives/"))!;
+    const lease = fake.objects.get(leaseName)!;
+    lease.metadata = { ...lease.metadata, expiresAt: "1000" };
+    fake.objects.get(archiveName)!.generation = "99";
+
+    await cleanupExpiredBackupCloudStages("non-production", 2000);
+
+    expect(fake.objects.has(archiveName)).toBe(true);
+    expect(fake.objects.has(leaseName)).toBe(true);
+    fake.objects.get(archiveName)!.generation = lease.metadata.archiveGeneration!;
+    await cleanupExpiredBackupCloudStages("non-production", 2000);
+    expect(fake.objects.has(archiveName)).toBe(false);
+    expect(fake.objects.has(leaseName)).toBe(false);
+    await stage.cleanup();
   });
 
   it("does not substitute a newer generation", async () => {

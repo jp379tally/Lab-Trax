@@ -1,3 +1,4 @@
+import { writeProductionUpload } from "./production-media-local-write";
 /**
  * Move base64 photos OUT of legacy case blobs and into case-media storage.
  *
@@ -243,7 +244,7 @@ export const defaultLegacyMediaFileWriter: LegacyMediaFileWriter = {
   async write({ fileName, bytes, contentType }) {
     const target = resolveInMediaDir(fileName);
     await fsp.mkdir(caseMediaDir, { recursive: true });
-    await fsp.writeFile(target, bytes);
+    await writeProductionUpload(target, bytes, "legacy-media");
     let objectStorage = false;
     if (caseMediaObjectStorageAvailable()) {
       objectStorage = await writeCaseMediaToObjectStorage(fileName, bytes, contentType);

@@ -5,6 +5,145 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface VerifyAdminPinInput {
+  /**
+     * @minLength 4
+     * @maxLength 4
+     * @pattern ^\d{4}$
+     */
+  pin: string;
+}
+
+export const VerifyAdminPinResultValue = {
+  ok: true,
+} as const;
+export type VerifyAdminPinResult = typeof VerifyAdminPinResultValue;
+
+export type ToothChartCommitInputCreatesItem = {
+  localId: string;
+  toothNumber: string;
+  restorationType: string;
+  /** @nullable */
+  material?: string | null;
+  /** @nullable */
+  restorationSubtype?: string | null;
+  /** @nullable */
+  shade?: string | null;
+  /**
+     * @minimum 1
+     * @maximum 128
+     */
+  quantity?: number;
+  /** @nullable */
+  arch?: string | null;
+  /** @minimum 0 */
+  unitPrice?: number;
+  /** @nullable */
+  implantRetention?: string | null;
+  /** @nullable */
+  implantManufacturer?: string | null;
+  /**
+     * @maxLength 10000
+     * @nullable
+     */
+  implantPlatformNotes?: string | null;
+};
+
+export type ToothChartCommitInputUpdatesItemRestorationType = typeof ToothChartCommitInputUpdatesItemRestorationType[keyof typeof ToothChartCommitInputUpdatesItemRestorationType];
+
+
+export const ToothChartCommitInputUpdatesItemRestorationType = {
+  Crown: 'Crown',
+  Coping: 'Coping',
+  Overlay: 'Overlay',
+  Pontic: 'Pontic',
+  Diagnostic: 'Diagnostic',
+  'Inlay/Onlay': 'Inlay/Onlay',
+  Offset_inlay: 'Offset inlay',
+  Veneer: 'Veneer',
+  Denture: 'Denture',
+  Partial_denture: 'Partial denture',
+  Bite_splint: 'Bite splint',
+  Primary_telescopic_crown: 'Primary telescopic crown',
+  Secondary_telescopic_crown: 'Secondary telescopic crown',
+  Attachment: 'Attachment',
+} as const;
+
+/**
+ * @nullable
+ */
+export type ToothChartCommitInputUpdatesItemArch = typeof ToothChartCommitInputUpdatesItemArch[keyof typeof ToothChartCommitInputUpdatesItemArch] | null;
+
+
+export const ToothChartCommitInputUpdatesItemArch = {
+  upper: 'upper',
+  lower: 'lower',
+} as const;
+
+export type ToothChartCommitInputUpdatesItem = {
+  restorationId: string;
+  toothNumber: string;
+  restorationType?: ToothChartCommitInputUpdatesItemRestorationType;
+  /** @nullable */
+  arch?: ToothChartCommitInputUpdatesItemArch;
+  material?: string;
+  restorationSubtype?: string;
+  shade?: string;
+};
+
+/**
+ * Clinical form fields saved in the same transaction as chart and invoice. Doctor/practice reassignment uses its existing dedicated workflow.
+ */
+export type ToothChartCommitInputCaseDetails = { [key: string]: unknown };
+
+/**
+ * Existing validated whole-case clinical reconciliation, applied before explicit staged row operations.
+ */
+export type ToothChartCommitInputHierarchy = { [key: string]: unknown };
+
+export type ToothChartCommitInputImplantsItemValues = {[key: string]: string | null};
+
+export type ToothChartCommitInputImplantsItem = {
+  restorationId: string;
+  values: ToothChartCommitInputImplantsItemValues;
+};
+
+export interface ToothChartCommitInput {
+  /** @maxItems 52 */
+  creates: ToothChartCommitInputCreatesItem[];
+  /** @maxItems 52 */
+  updates: ToothChartCommitInputUpdatesItem[];
+  /** @maxItems 104 */
+  deletes: string[];
+  /** @nullable */
+  bridgeConnectors: string | null;
+  /** Clinical form fields saved in the same transaction as chart and invoice. Doctor/practice reassignment uses its existing dedicated workflow. */
+  caseDetails?: ToothChartCommitInputCaseDetails;
+  /** Existing validated whole-case clinical reconciliation, applied before explicit staged row operations. */
+  hierarchy?: ToothChartCommitInputHierarchy;
+  implants?: ToothChartCommitInputImplantsItem[];
+}
+
+export type ToothChartCommitResultDataInvoiceAction = typeof ToothChartCommitResultDataInvoiceAction[keyof typeof ToothChartCommitResultDataInvoiceAction];
+
+
+export const ToothChartCommitResultDataInvoiceAction = {
+  updated: 'updated',
+  created: 'created',
+  skipped: 'skipped',
+} as const;
+
+export type ToothChartCommitResultData = {
+  /** @nullable */
+  invoiceId: string | null;
+  invoiceAction: ToothChartCommitResultDataInvoiceAction;
+};
+
+export interface ToothChartCommitResult {
+  ok: boolean;
+  data: ToothChartCommitResultData;
+}
+
 export interface CreatorAccess {
   isCreator: boolean;
   pinConfigured: boolean;
@@ -285,277 +424,6 @@ export type InvoiceDiscountReportResultData = {
 export interface InvoiceDiscountReportResult {
   ok: boolean;
   data: InvoiceDiscountReportResultData;
-}
-
-/**
- * @nullable
- */
-export type RecoveryWorkArch = typeof RecoveryWorkArch[keyof typeof RecoveryWorkArch] | null;
-
-
-export const RecoveryWorkArch = {
-  upper: 'upper',
-  lower: 'lower',
-} as const;
-
-export interface RecoveryWork {
-  toothNumber: string;
-  /** @minLength 1 */
-  restorationType: string;
-  /** @nullable */
-  restorationSubtype: string | null;
-  /** @nullable */
-  arch: RecoveryWorkArch;
-  /** @nullable */
-  material: string | null;
-  /** @nullable */
-  shade: string | null;
-  /**
-     * @minimum 1
-     * @maximum 32
-     */
-  quantity: number;
-}
-
-export interface RecoveryEvidenceInput {
-  evidenceAttachmentId: string;
-}
-
-export interface RecoveryProposalInput {
-  evidenceAttachmentId: string;
-  /**
-     * @minItems 1
-     * @maxItems 64
-     */
-  restorations: RecoveryWork[];
-  /** @nullable */
-  bridgeConnectors?: string | null;
-  prescriptionReviewed: true;
-  identityReviewed: true;
-  duplicateReviewed: true;
-  /**
-     * @minLength 1
-     * @maxLength 4000
-     */
-  reviewNotes: string;
-}
-
-export interface RecoveryPreviewInput {
-  evidenceAttachmentId: string;
-  /**
-     * @minItems 1
-     * @maxItems 64
-     */
-  restorations: RecoveryWork[];
-  /** @nullable */
-  bridgeConnectors?: string | null;
-}
-
-export type RecoveryPricePreviewPricingBasis = typeof RecoveryPricePreviewPricingBasis[keyof typeof RecoveryPricePreviewPricingBasis];
-
-
-export const RecoveryPricePreviewPricingBasis = {
-  current_catalog: 'current_catalog',
-} as const;
-
-export type RecoveryPricedWork = RecoveryWork & ({
-  id: string;
-  unitPrice: string;
-  /** @nullable */
-  priceSource: string | null;
-  /** @nullable */
-  priceSourceId: string | null;
-  /** @nullable */
-  priceSourceName: string | null;
-  /** @nullable */
-  priceKey: string | null;
-});
-
-export interface RecoveryPricedChild {
-  description: string;
-  quantity: number;
-  unitPrice: string;
-  lineTotal: string;
-  priced?: boolean;
-  [key: string]: unknown;
- }
-
-export interface RecoveryPricedLine {
-  description: string;
-  quantity: number;
-  unitPrice: string;
-  lineTotal: string;
-  priced?: boolean;
-  childItems?: RecoveryPricedChild[];
-  [key: string]: unknown;
- }
-
-/**
- * Unsaved current-rate replacement pricing; never a staged proposal or the original total.
- */
-export interface RecoveryPricePreview {
-  rows: RecoveryPricedWork[];
-  lines: RecoveryPricedLine[];
-  total: string;
-  exceptions: string[];
-  pricingAt: string;
-  pricingBasis: RecoveryPricePreviewPricingBasis;
-  persisted: false;
-}
-
-export type RecoveryProposalVersion = typeof RecoveryProposalVersion[keyof typeof RecoveryProposalVersion];
-
-
-export const RecoveryProposalVersion = {
-  NUMBER_1: 1,
-} as const;
-
-export type RecoveryProposalPricingBasis = typeof RecoveryProposalPricingBasis[keyof typeof RecoveryProposalPricingBasis];
-
-
-export const RecoveryProposalPricingBasis = {
-  current_catalog: 'current_catalog',
-} as const;
-
-export interface RecoveryProposal {
-  version: RecoveryProposalVersion;
-  caseFingerprint: string;
-  input: RecoveryProposalInput;
-  rows: RecoveryPricedWork[];
-  lines: RecoveryPricedLine[];
-  total: string;
-  exceptions: string[];
-  pricingAt: string;
-  pricingBasis: RecoveryProposalPricingBasis;
-  previousInvoiceId?: string;
-  previousInvoiceFingerprint?: string;
-  previousLinesFingerprint?: string;
-  /** @nullable */
-  doctorIdentity?: string | null;
-}
-
-export interface RecoveryProposalResult {
-  proposalId: string;
-  proposal: RecoveryProposal;
-}
-
-export interface RecoveryProposalReference {
-  proposalId: string;
-}
-
-export type RecoveryAnalysisExtracted = { [key: string]: unknown };
-
-export interface RecoveryAnalysis {
-  analysisId: string;
-  restorations: RecoveryWork[];
-  exceptions: string[];
-  extracted: RecoveryAnalysisExtracted;
-}
-
-export type RecoveryReleaseInputHistoricalSettlement = typeof RecoveryReleaseInputHistoricalSettlement[keyof typeof RecoveryReleaseInputHistoricalSettlement];
-
-
-export const RecoveryReleaseInputHistoricalSettlement = {
-  independent_evidence_of_no_payment: 'independent_evidence_of_no_payment',
-} as const;
-
-export interface RecoveryReleaseInput {
-  chargesReviewed: true;
-  historicalPaymentsReviewed: true;
-  historicalSettlement: RecoveryReleaseInputHistoricalSettlement;
-  /**
-     * @minLength 20
-     * @maxLength 4000
-     */
-  evidenceNotes: string;
-}
-
-export interface RecoveryWriteResult {
-  invoiceId: string;
-  total: string;
-  outcome: string;
-}
-
-export interface RecoveryExclusionInput {
-  /**
-     * @minLength 1
-     * @maxLength 4000
-     */
-  reason: string;
-}
-
-export interface RecoveryExclusionResult {
-  decisionId: string;
-}
-
-/**
- * @nullable
- */
-export type RecoveryBillingInvoiceRecoveryBilling = { [key: string]: unknown } | null;
-
-export interface RecoveryBillingInvoice {
-  id: string;
-  invoiceNumber: string;
-  status: string;
-  total: string;
-  balanceDue: string;
-  /** @nullable */
-  dueAt: string | null;
-  /** @nullable */
-  recoveryBilling: RecoveryBillingInvoiceRecoveryBilling;
-}
-
-export type RecoveryBillingRowState = typeof RecoveryBillingRowState[keyof typeof RecoveryBillingRowState];
-
-
-export const RecoveryBillingRowState = {
-  unresolved: 'unresolved',
-  deleted_case: 'deleted_case',
-  deleted_or_void_billing: 'deleted_or_void_billing',
-  held: 'held',
-  released: 'released',
-  existing_billing: 'existing_billing',
-  do_not_bill: 'do_not_bill',
-  existing_work: 'existing_work',
-  exception: 'exception',
-  proposed: 'proposed',
-  needs_prescription_review: 'needs_prescription_review',
-} as const;
-
-export type RecoveryBillingRowPrescriptionsItem = {
-  id: string;
-  fileName: string;
-};
-
-/**
- * @nullable
- */
-export type RecoveryBillingRowDecision = { [key: string]: unknown } | null;
-
-export interface RecoveryBillingRow {
-  caseId: string;
-  caseNumber: string;
-  historicalDate: string;
-  patientName: string;
-  doctorName: string;
-  /** @nullable */
-  practiceId: string | null;
-  /** @nullable */
-  rxNotes: string | null;
-  sourceFlagged: boolean;
-  state: RecoveryBillingRowState;
-  /** @nullable */
-  proposalId: string | null;
-  proposal: RecoveryProposal | null;
-  invoice: RecoveryBillingInvoice | null;
-  prescriptions: RecoveryBillingRowPrescriptionsItem[];
-  /** @nullable */
-  decision: RecoveryBillingRowDecision;
-}
-
-export interface RecoveryBillingList {
-  timezone: string;
-  rows: RecoveryBillingRow[];
 }
 
 export type ScanOutputFormat = typeof ScanOutputFormat[keyof typeof ScanOutputFormat];
@@ -1990,6 +1858,11 @@ export interface UpdateOrganizationInput {
   city?: string | null;
   state?: string | null;
   zip?: string | null;
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingZip?: string | null;
   isActive?: boolean | null;
   statementEmailOptOut?: boolean | null;
   defaultCaseDueDays?: number | null;
@@ -2014,6 +1887,22 @@ export interface UpdateOrganizationInput {
   revenueTargetHigh?: number | null;
   licenseNumber?: string | null;
   accountNumber?: string | null;
+}
+
+export interface IntakePracticeContactInput {
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingZip?: string | null;
+  phone?: string | null;
+  primaryEmail?: string | null;
+  billingEmail?: string | null;
 }
 
 /**
@@ -2397,6 +2286,8 @@ export interface CanonicalRemakeRef {
   [key: string]: unknown;
  }
 
+export type CanonicalCaseProviderContactSnapshot = { [key: string]: unknown } | null;
+
 export type DoctorPreferenceUnit = typeof DoctorPreferenceUnit[keyof typeof DoctorPreferenceUnit];
 
 
@@ -2485,6 +2376,10 @@ export interface CanonicalCase {
      * @pattern ^\d{4}-\d{2}-\d{2}$
      */
   receivedAt?: string | null;
+  scanDate?: string | null;
+  prescriptionDueDate?: string | null;
+  providerContactSnapshot?: CanonicalCaseProviderContactSnapshot;
+  externalPatientId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   restorationCount?: number | null;
@@ -2635,6 +2530,11 @@ export interface NonWorklistCaseListResult {
   data?: CanonicalCase[] | NonWorklistCasePage;
 }
 
+/**
+ * Contact details reviewed for this case, independent of shared practice edits.
+ */
+export type CreateCaseInputProviderContactSnapshot = { [key: string]: unknown };
+
 export type CreateCaseInputPriority = typeof CreateCaseInputPriority[keyof typeof CreateCaseInputPriority] | null;
 
 
@@ -2721,6 +2621,23 @@ export interface CreateCaseInput {
      * @pattern ^\d{4}-\d{2}-\d{2}$
      */
   receivedAt?: string;
+  /**
+     * Calendar date explicitly recorded for the scan.
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  scanDate?: string;
+  /**
+     * Due date explicitly extracted from the prescription; separate from lab scheduling.
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  prescriptionDueDate?: string;
+  /** Contact details reviewed for this case, independent of shared practice edits. */
+  providerContactSnapshot?: CreateCaseInputProviderContactSnapshot;
+  /**
+     * Notes saved on the initial draft invoice.
+     * @maxLength 10000
+     */
+  invoiceNotes?: string;
   status?: string | null;
   /** ID of the case being remade. */
   remakeOfCaseId?: string | null;
@@ -3591,7 +3508,10 @@ export interface UpdateInvoiceInput {
   dueAt?: string | null;
   issuedAt?: string | null;
   invoiceNumber?: string | null;
+  /** Invoice notes; provider-facing reads and invoice outputs show these only when shareNotesWithProvider is true. */
   notes?: string | null;
+  /** Explicitly share invoice notes with the linked provider. Unset legacy values are private. */
+  shareNotesWithProvider?: boolean;
   providerOrganizationId?: string | null;
   items?: UpdateInvoiceInputItemsItem[] | null;
   /** Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields. */
@@ -3763,6 +3683,14 @@ export interface AuditedOrganizationRecoveryResult {
   fullRestoreVerified: false;
 }
 
+export type BackupRunRequestArchiveKind = typeof BackupRunRequestArchiveKind[keyof typeof BackupRunRequestArchiveKind];
+
+
+export const BackupRunRequestArchiveKind = {
+  full: 'full',
+  'database-only': 'database-only',
+} as const;
+
 export type BackupRunRequestDestination = typeof BackupRunRequestDestination[keyof typeof BackupRunRequestDestination];
 
 
@@ -3774,17 +3702,56 @@ export const BackupRunRequestDestination = {
 } as const;
 
 export interface BackupRunRequest {
+  runId?: string;
+  /** Opt into HTTP 202 for cloud backups. Requires runId. Older installed clients retain synchronous HTTP 200. */
+  respondAsync?: boolean;
+  archiveKind?: BackupRunRequestArchiveKind;
   destination: BackupRunRequestDestination;
   /** Target folder path (required for local and network destinations) */
   path?: string | null;
 }
 
+export type BackupRunResultState = typeof BackupRunResultState[keyof typeof BackupRunResultState];
+
+
+export const BackupRunResultState = {
+  running: 'running',
+} as const;
+
 export interface BackupRunResult {
+  runId?: string;
+  state?: BackupRunResultState;
+  archiveKind?: string | null;
+  partialFailure?: boolean;
+  warnings?: string | null;
   ok?: boolean;
   /** Backup archive size in bytes */
   size?: number;
   completedAt?: string;
   fileName?: string;
+}
+
+export type BackupJobStatusState = typeof BackupJobStatusState[keyof typeof BackupJobStatusState];
+
+
+export const BackupJobStatusState = {
+  running: 'running',
+  awaiting_verification: 'awaiting_verification',
+  completed: 'completed',
+  failed: 'failed',
+  stale: 'stale',
+} as const;
+
+export type BackupJobStatusMetrics = {[key: string]: number};
+
+export interface BackupJobStatus {
+  runId: string;
+  state: BackupJobStatusState;
+  phase: string;
+  elapsedMs?: number;
+  metrics?: BackupJobStatusMetrics;
+  error?: string;
+  result?: BackupRunResult;
 }
 
 /**
@@ -3818,6 +3785,85 @@ export interface BackupScheduleInput {
   enabled: boolean;
 }
 
+export type DatabaseProtectionStatusMode = typeof DatabaseProtectionStatusMode[keyof typeof DatabaseProtectionStatusMode];
+
+
+export const DatabaseProtectionStatusMode = {
+  'incremental-storage-fresh-export': 'incremental-storage-fresh-export',
+  'incremental-records-and-media': 'incremental-records-and-media',
+} as const;
+
+export type DatabaseProtectionStatusScope = typeof DatabaseProtectionStatusScope[keyof typeof DatabaseProtectionStatusScope];
+
+
+export const DatabaseProtectionStatusScope = {
+  'production-database-and-media': 'production-database-and-media',
+} as const;
+
+export type DatabaseProtectionStatusCoverage = typeof DatabaseProtectionStatusCoverage[keyof typeof DatabaseProtectionStatusCoverage];
+
+
+export const DatabaseProtectionStatusCoverage = {
+  complete: 'complete',
+  partial: 'partial',
+} as const;
+
+export type DatabaseProtectionStatusState = typeof DatabaseProtectionStatusState[keyof typeof DatabaseProtectionStatusState];
+
+
+export const DatabaseProtectionStatusState = {
+  not_started: 'not_started',
+  running: 'running',
+  verified: 'verified',
+  skipped_busy: 'skipped_busy',
+  failed: 'failed',
+} as const;
+
+/**
+ * Production database and readable media in encrypted content-addressed storage. Fresh database exports; reusable media chunks, not WAL/PITR. Missing originals mean partial coverage.
+ */
+export interface DatabaseProtectionStatus {
+  mode?: DatabaseProtectionStatusMode;
+  scope?: DatabaseProtectionStatusScope;
+  coverage?: DatabaseProtectionStatusCoverage;
+  mediaFiles?: number;
+  mediaBytes?: number;
+  missingFiles?: number;
+  state?: DatabaseProtectionStatusState;
+  stage?: string;
+  lastAttemptAt?: string | null;
+  lastVerifiedAt?: string | null;
+  recoveryPointAt?: string | null;
+  lastDestinationCheckAt?: string | null;
+  point?: string | null;
+  dumpBytes?: number;
+  newChunks?: number;
+  /** Encrypted new chunk bytes */
+  newBytes?: number;
+  reusedChunks?: number;
+  error?: string | null;
+}
+
+export type BackupScheduleResultOffsite = {
+  enabled?: boolean;
+  running?: boolean;
+  intervalMinutes?: number;
+  lastVerifiedAt?: string | null;
+  databaseProtection?: DatabaseProtectionStatus;
+  [key: string]: unknown;
+ };
+
+/**
+ * The connected server's immutable backup source. Use the development app or published app to select a source; this field does not rebind a database.
+ */
+export type BackupScheduleResultSourceEnvironment = typeof BackupScheduleResultSourceEnvironment[keyof typeof BackupScheduleResultSourceEnvironment];
+
+
+export const BackupScheduleResultSourceEnvironment = {
+  development: 'development',
+  production: 'production',
+} as const;
+
 /**
  * Unit for the interval value
  */
@@ -3839,7 +3885,49 @@ export const BackupScheduleResultDestination = {
   network: 'network',
 } as const;
 
+export interface DatabaseProtectionRetentionConfig {
+  enabled: boolean;
+  keepAllWithinHours: number;
+  keepHourlyWithinDays: number;
+  keepDailyWithinDays: number;
+  safetyGraceHours: number;
+  /** @nullable */
+  approvedAt: string | null;
+  /** @nullable */
+  approvedBy: string | null;
+}
+
+export type DatabaseProtectionRetentionStatusState = typeof DatabaseProtectionRetentionStatusState[keyof typeof DatabaseProtectionRetentionStatusState];
+
+
+export const DatabaseProtectionRetentionStatusState = {
+  planned: 'planned',
+  deleting: 'deleting',
+  complete: 'complete',
+  paused: 'paused',
+  failed: 'failed',
+  disabled: 'disabled',
+  not_started: 'not_started',
+} as const;
+
+export interface DatabaseProtectionRetentionStatus {
+  state: DatabaseProtectionRetentionStatusState;
+  pendingObjects: number;
+  deletedObjects: number;
+  /** @nullable */
+  lastUpdatedAt: string | null;
+  /** @nullable */
+  error: string | null;
+}
+
+export type DatabaseProtectionRetentionSchedule = DatabaseProtectionRetentionConfig & {
+  status: DatabaseProtectionRetentionStatus;
+};
+
 export interface BackupScheduleResult {
+  offsite?: BackupScheduleResultOffsite;
+  /** The connected server's immutable backup source. Use the development app or published app to select a source; this field does not rebind a database. */
+  sourceEnvironment?: BackupScheduleResultSourceEnvironment;
   ok?: boolean;
   /** Number of interval units (null if no schedule is set) */
   interval?: number | null;
@@ -3847,8 +3935,49 @@ export interface BackupScheduleResult {
   unit?: BackupScheduleResultUnit;
   destination?: BackupScheduleResultDestination;
   path?: string | null;
+  databaseRetention?: DatabaseProtectionRetentionSchedule;
   enabled?: boolean;
 }
+
+/**
+ * Required when enabling destructive cleanup.
+ */
+export type DatabaseProtectionRetentionInputConfirmation = typeof DatabaseProtectionRetentionInputConfirmation[keyof typeof DatabaseProtectionRetentionInputConfirmation];
+
+
+export const DatabaseProtectionRetentionInputConfirmation = {
+  APPROVE_DATABASE_RETENTION: 'APPROVE_DATABASE_RETENTION',
+} as const;
+
+export interface DatabaseProtectionRetentionInput {
+  enabled: boolean;
+  /** Required when enabling destructive cleanup. */
+  confirmation?: DatabaseProtectionRetentionInputConfirmation;
+  /**
+     * @minimum 1
+     * @maximum 2160
+     */
+  keepAllWithinHours?: number;
+  /**
+     * @minimum 1
+     * @maximum 365
+     */
+  keepHourlyWithinDays?: number;
+  /**
+     * @minimum 1
+     * @maximum 3650
+     */
+  keepDailyWithinDays?: number;
+  /**
+     * @minimum 48
+     * @maximum 720
+     */
+  safetyGraceHours?: number;
+}
+
+export type DatabaseProtectionRetentionResult = DatabaseProtectionRetentionConfig & {
+  ok: boolean;
+};
 
 export interface OneDriveBackupStatusResult {
   ok?: boolean;
@@ -4522,6 +4651,8 @@ export const UpdateCaseInputRemakeCategory = {
 export interface UpdateCaseInput {
   status?: UpdateCaseInputStatus;
   priority?: UpdateCaseInputPriority;
+  /** Lab station where the case is physically located. Null clears the stored station without changing the case status. */
+  labLocationId?: string | null;
   /**
      * Calendar date the case was received. Updating this field also updates the Issued date of every invoice linked to the case.
      * @pattern ^\d{4}-\d{2}-\d{2}$
@@ -8062,6 +8193,19 @@ export const ListCasesWorklistSortDir = {
   desc: 'desc',
 } as const;
 
+export type ImportCaseFromIteroRxBodyRemovableSubtypeHint = typeof ImportCaseFromIteroRxBodyRemovableSubtypeHint[keyof typeof ImportCaseFromIteroRxBodyRemovableSubtypeHint];
+
+
+export const ImportCaseFromIteroRxBodyRemovableSubtypeHint = {
+  '': '',
+  partial: 'partial',
+  denture: 'denture',
+  flipper: 'flipper',
+  repair_partial: 'repair_partial',
+  repair_denture: 'repair_denture',
+  repair: 'repair',
+} as const;
+
 export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
   file: string;
@@ -8071,6 +8215,32 @@ export type ImportCaseFromIteroRxBody = {
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;
+  receivedAt?: string;
+  scanDateHint?: string | '';
+  /** Rx due date, not the lab's scheduled due date. */
+  rxDueDateHint?: string;
+  labDueDateHint?: string | '';
+  /** Source-platform case/order identifier, separate from the Case Pan barcode. */
+  externalPatientIdHint?: string;
+  casePanBarcodeHint?: string;
+  /** JSON-encoded contact details reviewed for this case. */
+  providerContactSnapshot?: string;
+  invoiceNotesHint?: string;
+  toothIndicesHint?: string;
+  shadeHint?: string;
+  materialHint?: string;
+  caseTypeHint?: string;
+  archHint?: string;
+  removableSubtypeHint?: ImportCaseFromIteroRxBodyRemovableSubtypeHint;
+  /** JSON-encoded reviewed restoration rows; prices are resolved by the server. */
+  reviewedRestorationsHint?: string;
+  /** JSON-encoded explicit tooth-chart roles. */
+  toothAssignments?: string;
+  /** Explicit bridge connector pairs from the reviewed tooth chart. */
+  bridgeConnectors?: string;
+  notesHint?: string;
+  /** JSON-encoded role-authorized reviewed invoice lines. */
+  invoiceOverrideLines?: string;
 };
 
 export type ImportCaseFromIteroZipBody = {

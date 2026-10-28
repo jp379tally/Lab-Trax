@@ -21,6 +21,11 @@ describe("dashboard Today sales navigation", () => {
       }],
     });
     const view = await render(<DashboardScreen />);
+    const content = view.getByTestId("dashboard-scroll").children;
+    const index = (id: string) => content.findIndex((child) =>
+      typeof child !== "string" && child.props.testID === id);
+    expect(index("dashboard-today-sales")).toBe(index("dashboard-greeting") + 1);
+    expect(index("dashboard-today-sales")).toBeLessThan(index("dashboard-summary"));
     await fireEvent.press(view.getByLabelText("Today's sales — tap to open finance report"));
     expect(router.push).toHaveBeenCalledWith(TODAY_SALES_ROUTE);
     expect(TODAY_SALES_ROUTE).toBe("/manage/reports?preset=today");

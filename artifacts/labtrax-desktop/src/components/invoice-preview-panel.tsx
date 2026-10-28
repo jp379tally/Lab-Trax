@@ -7,8 +7,18 @@ import { formatInvoiceDate } from "@/lib/invoice-date";
 import { StatusBadge } from "@/components/StatusBadge";
 import type { Invoice, InvoiceDisplayMetadata } from "@/lib/types";
 
-function isDraftStatus(status: unknown): boolean {
-  return String(status) === "draft" || String(status) === "recovery_draft";
+function isHistoricalInvoiceHeld(invoice: Invoice | null | undefined): boolean {
+  if (!invoice) return false;
+  const metadata = (invoice.displayMetadata ?? invoice.displayMetadataJson) as
+    Record<string, unknown> | null | undefined;
+  const recoveryBilling = metadata?.recoveryBilling;
+  return String(invoice.status) === "recovery_draft" ||
+    Boolean(recoveryBilling && typeof recoveryBilling === "object" &&
+      (recoveryBilling as { state?: unknown }).state === "held");
+}
+
+function isDraftStatus(invoice: Invoice | null | undefined): boolean {
+  return String(invoice?.status) === "draft" || isHistoricalInvoiceHeld(invoice);
 }
 
 export const INVOICE_PREVIEW_QUERY_KEY = ["invoice-preview"] as const;
@@ -226,8 +236,12 @@ export function InvoicePreviewPanel({
       </div>
 
       <div className="flex gap-2 border-t border-border px-5 py-3">
-        {isDraftStatus(inv?.status) ? (
-          <p className="text-xs text-muted-foreground">Draft invoices are read-only here; use their original creation or review workflow.</p>
+        {isDraftStatus(inv) ? (
+          <p className="text-xs text-muted-foreground">
+            {isHistoricalInvoiceHeld(inv)
+              ? "Historical reconstructed invoice remains held and is not collectible."
+              : "Draft invoices are read-only here; use their original creation or review workflow."}
+          </p>
         ) : canEdit ? <button
           type="button"
           disabled={!inv}
@@ -237,7 +251,7 @@ export function InvoicePreviewPanel({
         >
           <Pencil size={13} /> Edit Invoice
         </button> : null}
-        {canRecordPayment && !isDraftStatus(inv?.status) && (
+        {canRecordPayment && !isDraftStatus(inv) && (
           <button
             type="button"
             disabled={!inv || !!inv.frozen}

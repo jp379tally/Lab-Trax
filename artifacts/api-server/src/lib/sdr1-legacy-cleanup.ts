@@ -1,18 +1,20 @@
 import {
-  assertRecoveryDataAvailable,
   legacyCleanupConfiguration,
-  RECOVERY_LAB_ID,
-} from "./recovery-billing-scope";
+  legacyCleanupConfigurationAvailable,
+  legacyCleanupUnavailableMessage,
+} from "./sdr1-legacy-cleanup-config";
 
-/** Runtime-only values are loaded from the private, validated support config. */
-export const SDR1_ORG_ID = RECOVERY_LAB_ID;
+/** Runtime-only values are loaded from the private cleanup configuration. */
+export const SDR1_ORG_ID = legacyCleanupConfiguration.labOrganizationId;
 export const SDR1_CLEANUP_CONFIRM = legacyCleanupConfiguration.confirmationPhrase;
 export const SDR1_ERA_START_MS = legacyCleanupConfiguration.eraStartMs;
 export const SDR1_ERA_END_MS = legacyCleanupConfiguration.eraEndMs;
 export const SDR1_TARGET_PATIENTS = legacyCleanupConfiguration.targetPatients;
+export const SDR1_CLEANUP_AVAILABLE = legacyCleanupConfigurationAvailable;
+export const SDR1_CLEANUP_UNAVAILABLE_MESSAGE = legacyCleanupUnavailableMessage;
 
 export function assertSdr1CleanupDataAvailable(): void {
-  assertRecoveryDataAvailable();
+  if (!SDR1_CLEANUP_AVAILABLE) throw new Error(SDR1_CLEANUP_UNAVAILABLE_MESSAGE);
 }
 
 export type Sdr1CleanupConfiguration = {

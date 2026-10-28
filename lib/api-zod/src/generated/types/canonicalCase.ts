@@ -7,6 +7,7 @@
  */
 import type { CanonicalActivityEntry } from './canonicalActivityEntry';
 import type { CanonicalAttachment } from './canonicalAttachment';
+import type { CanonicalCaseProviderContactSnapshot } from './canonicalCaseProviderContactSnapshot';
 import type { CanonicalRemakeRef } from './canonicalRemakeRef';
 import type { CanonicalRestoration } from './canonicalRestoration';
 import type { DoctorPreferences } from './doctorPreferences';
@@ -40,6 +41,10 @@ export interface CanonicalCase {
      * @pattern ^\d{4}-\d{2}-\d{2}$
      */
   receivedAt?: string | null;
+  scanDate?: Date | null;
+  prescriptionDueDate?: Date | null;
+  providerContactSnapshot?: CanonicalCaseProviderContactSnapshot;
+  externalPatientId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   restorationCount?: number | null;

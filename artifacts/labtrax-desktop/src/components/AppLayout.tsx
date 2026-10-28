@@ -55,11 +55,20 @@ import {
   useGetDoctorDuplicateClusters,
   getGetDoctorDuplicateClustersQueryKey,
 } from "@workspace/api-client-react";
-import { apiFetch, apiFetchArrayBuffer, apiDownloadBackupToFolder, serverAssetUrl } from "@/lib/api";
+import {
+  apiFetch,
+  apiFetchArrayBuffer,
+  createLocalBackupApiSession,
+  serverAssetUrl,
+} from "@/lib/api";
 import { Avatar, AvatarImage, AvatarFallback } from "./ui/avatar";
 import { startLocalBackupScheduler } from "@/lib/local-backup-scheduler";
 import type { LocalBackupLiveStatus } from "@/lib/local-backup-execution";
-import { setScheduledLocalBackupProgress } from "@/lib/local-backup-progress";
+import {
+  activateScheduledLocalBackupSession,
+  deactivateScheduledLocalBackupSession,
+  setScheduledLocalBackupProgress,
+} from "@/lib/local-backup-progress";
 import { BackupStalenessBanner, useBackupFreshness } from "./BackupStalenessBanner";
 import type { MeResponse } from "@/lib/types";
 import { useCreatorAccess } from "@/lib/creator";
@@ -73,7 +82,6 @@ interface NavItem {
   badge?: string;
   adminOnly?: boolean;
   billingOnly?: boolean;
-  recoveryBillingOnly?: boolean;
   ownerOnly?: boolean;
   creatorOnly?: boolean;
   /** Visible only to billing-role members of this specific lab. */
@@ -156,7 +164,6 @@ export const SECONDARY: (NavItem | NavGroup)[] = [
           { label: "Invoices", path: "/invoices", icon: Receipt },
           { label: "Statements", path: "/statements", icon: CreditCard },
           { label: "Bank Register", path: "/finance", icon: Wallet },
-          { label: "Recovery Billing", path: "/recovery-billing", icon: Receipt, billingOnly: true, recoveryBillingOnly: true },
         ],
       },
       { label: "Pricing", path: "/pricing", icon: Tag },
@@ -292,6 +299,10 @@ const POLL_INTERVAL_MS = 60_000;
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const IDLE_LOGOUT_FLAG = "labtrax_idle_logout_v1";
+const SIDEBAR_WIDTH_KEY = "labtrax_sidebar_width_v1";
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 360;
+const DEFAULT_SIDEBAR_WIDTH = 260;
 
 const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart"] as const;
 
@@ -301,41 +312,118 @@ export function AppLayout({ children }: Props) {
   const isAdmin = user?.role === "admin";
   const [menuOpen, setMenuOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const savedWidthValue = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      if (savedWidthValue === null || savedWidthValue.trim() === "") {
+        return DEFAULT_SIDEBAR_WIDTH;
+      }
+      const savedWidth = Number(savedWidthValue);
+      return Number.isFinite(savedWidth)
+        ? Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, savedWidth))
+        : DEFAULT_SIDEBAR_WIDTH;
+    } catch {
+      return DEFAULT_SIDEBAR_WIDTH;
+    }
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   useEffect(() => { setNavOpen(false); }, [location]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    } catch {
+      // The current width still works for this session when storage is unavailable.
+    }
+  }, [sidebarWidth]);
+  const updateSidebarWidth = useCallback((width: number) => {
+    setSidebarWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width)));
+  }, []);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiPanelCases, setAiPanelCases] = useState<AiCaseContext[]>([]);
 
-  // Local-folder scheduled backups are executed by this desktop app while it
-  // is open (the server cannot reach the local disk). The scheduler no-ops in
-  // plain browsers and for non-local schedules, and backs off on 403.
+  // Local-folder scheduled backups are executed by this user's Desktop
+  // companion (the server cannot reach the local disk). When enabled, the
+  // Electron main process keeps the renderer alive in the system tray after
+  // the window closes. The scheduler no-ops in plain browsers and for
+  // non-local schedules, and backs off on 403.
   useEffect(() => {
     if (!isAdmin) return;
     const electronAPI = (window as unknown as {
       electronAPI?: {
         downloadBackupToFolder?: unknown;
+        isBackupFolderAvailable?: (folder: string) => Promise<boolean>;
         onBackupRunId?: (callback: (runId: string) => void) => () => void;
         saveBackupToFolder?: (
           buffer: Uint8Array,
           fileName: string,
           folderPath: string,
         ) => Promise<{ ok: boolean; path?: string; error?: string }>;
+        setLocalBackupScheduleActive?: (
+          active: boolean,
+        ) => Promise<{ active: boolean; backgroundAvailable: boolean }>;
       };
     }).electronAPI;
     if (!electronAPI?.saveBackupToFolder && !electronAPI?.downloadBackupToFolder) return;
-    return startLocalBackupScheduler({
-      apiFetch,
-      apiFetchArrayBuffer,
+    const session = Symbol(`local-backup:${user!.id}`);
+    activateScheduledLocalBackupSession(session);
+    const backupApi = createLocalBackupApiSession();
+    const stopScheduler = startLocalBackupScheduler({
+      apiFetch: backupApi.apiFetch,
+      apiFetchArrayBuffer: backupApi.apiFetchArrayBuffer,
       saveBackupToFolder: electronAPI.saveBackupToFolder,
-      downloadBackupToFolder: electronAPI.downloadBackupToFolder ? apiDownloadBackupToFolder : undefined,
+      isFolderAvailable: electronAPI.isBackupFolderAvailable,
+      downloadBackupToFolder: electronAPI.downloadBackupToFolder
+        ? backupApi.downloadBackupToFolder
+        : undefined,
       onDownloadRunId: electronAPI.onBackupRunId,
       getLiveStatus: (runId) =>
-        apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`),
-      onProgress: setScheduledLocalBackupProgress,
-      storage: window.localStorage,
+        backupApi.apiFetch<LocalBackupLiveStatus>(
+          `/admin/backup/status/${encodeURIComponent(runId)}`,
+        ),
+      onProgress: (progress) => setScheduledLocalBackupProgress(progress, session),
+      onError: (message) => {
+        toast({
+          title: "Backup history could not be confirmed",
+          description: message,
+          variant: "destructive",
+          duration: 12_000,
+        });
+      },
+      onScheduleActive: (active) => {
+        const setActive = electronAPI.setLocalBackupScheduleActive;
+        if (!setActive) return;
+        void setActive(active).then((result) => {
+          if (active && !result.backgroundAvailable) {
+            toast({
+              title: "Local backup companion unavailable",
+              description: "Keep LabTrax Desktop open; the system tray could not be started on this laptop.",
+              variant: "destructive",
+              duration: 8000,
+            });
+          }
+        }).catch(() => {
+          if (active) {
+            toast({
+              title: "Local backup companion unavailable",
+              description: "Keep LabTrax Desktop open; background mode could not be enabled.",
+              variant: "destructive",
+              duration: 8000,
+            });
+          }
+        });
+      },
+      storage: {
+        getItem: (key) => window.localStorage.getItem(`${key}:${user!.id}`),
+        setItem: (key, value) => window.localStorage.setItem(`${key}:${user!.id}`, value),
+      },
     });
-  }, [isAdmin]);
+    return () => {
+      stopScheduler();
+      deactivateScheduledLocalBackupSession(session);
+    };
+  }, [isAdmin, user?.id]);
 
   const openAiPanel = useCallback(
     (ctx?: AiCaseContext | AiCaseContext[]) => {
@@ -355,6 +443,7 @@ export function AppLayout({ children }: Props) {
   // Notification ids already observed by the poller. `null` until the first
   // poll seeds it, so we don't toast pre-existing notifications on mount.
   const seenNotifIdsRef = useRef<Set<string> | null>(null);
+  const offsiteFailureToastDismissalsRef = useRef(new Map<string, () => void>());
   const notificationRead = useRef(createSingleFlight<Notification[]>());
   const notificationUser = useRef(user?.id);
   notificationUser.current = user?.id;
@@ -384,12 +473,6 @@ export function AppLayout({ children }: Props) {
     enabled: !!user,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
-  });
-  const recoveryBillingAccessQuery = useQuery({
-    queryKey: ["billing-recovery", "access", user?.id],
-    queryFn: () => apiFetch<{ available: boolean; role?: "admin" | "staff" }>("/billing-recovery/access"),
-    enabled: !!user,
-    retry: false,
   });
   const refetchMe = meQuery.refetch;
   const requestLabs = customerRequestLabs(meQuery.data);
@@ -559,6 +642,15 @@ export function AppLayout({ children }: Props) {
       const unread = items.some((n) => !n.readAt);
       setHasUnread(unread);
 
+      // The server marks active off-site failure notifications read only after
+      // confirming a fresh complete archive in the destination. Dismiss the
+      // matching persistent toast too, without affecting other alerts.
+      for (const n of items) {
+        if (n.type !== "backup_offsite_failure" || !n.readAt) continue;
+        offsiteFailureToastDismissalsRef.current.get(n.id)?.();
+        offsiteFailureToastDismissalsRef.current.delete(n.id);
+      }
+
       // Pop a proactive toast the moment a join-request decision lands, so the
       // user doesn't have to open the bell to learn they were approved or
       // declined. On the first poll we seed the seen-set without toasting to
@@ -584,7 +676,7 @@ export function AppLayout({ children }: Props) {
             });
           }
           if (n.type === "backup_local_error" || n.type === "backup_offsite_failure") {
-            toast({
+            const toastResult = toast({
               title: n.title,
               description: n.body,
               // Off-site protection lapsing is the one alert that must not be
@@ -592,6 +684,9 @@ export function AppLayout({ children }: Props) {
               variant: "destructive",
               duration: n.type === "backup_offsite_failure" ? Infinity : 8000,
             });
+            if (n.type === "backup_offsite_failure") {
+              offsiteFailureToastDismissalsRef.current.set(n.id, toastResult.dismiss);
+            }
           }
         }
       }
@@ -668,7 +763,6 @@ export function AppLayout({ children }: Props) {
 
   function renderNavItem(item: NavItem, depth = 0) {
     if (item.billingOnly && !hasBillingLab) return null;
-    if (item.recoveryBillingOnly && recoveryBillingAccessQuery.data?.available !== true) return null;
     if (item.labId && !(meQuery.data?.memberships ?? []).some((m) => m.status === "active" && m.organization?.id === item.labId && BILLING_ROLES.has(m.role))) return null;
     if (item.adminOnly && user?.role !== "admin") return null;
     if (item.ownerOnly && !(isCreator && isOwnerOfLab)) return null;
@@ -712,7 +806,7 @@ export function AppLayout({ children }: Props) {
           <span className="relative shrink-0">
             <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
           </span>
-          <span className="flex-1">{item.label}</span>
+          <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{item.label}</span>
           {showMessengerDot && (
             <span
               className="shrink-0 inline-flex items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-none text-white"
@@ -785,7 +879,7 @@ export function AppLayout({ children }: Props) {
             <Link
               href={group.path}
               title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
-              className={`flex flex-1 items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+              className={`flex min-w-0 flex-1 items-center gap-3 rounded-md text-sm font-medium transition-colors ${
                 indent ? "py-1.5" : "px-3 py-2"
               } ${
                 headerActive
@@ -795,7 +889,7 @@ export function AppLayout({ children }: Props) {
               style={indent ? { paddingLeft: 24 + depth * 12 } : undefined}
             >
               <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
-              <span className="flex-1">{group.label}</span>
+              <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{group.label}</span>
               {showGroupDupBadge && <DuplicateCountBadge count={dupClusterCount} />}
               {showBackupDot && (
                 <AlertTriangle
@@ -836,7 +930,7 @@ export function AppLayout({ children }: Props) {
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          className={`w-full flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+          className={`w-full min-w-0 flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
             indent ? "py-1.5" : "px-3 py-2"
           } ${
             headerActive
@@ -846,7 +940,7 @@ export function AppLayout({ children }: Props) {
           style={indent ? { paddingLeft: 24 + depth * 12, paddingRight: 12 } : undefined}
         >
           <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
-          <span className="flex-1 text-left">{group.label}</span>
+          <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug text-left">{group.label}</span>
           {chevron}
         </button>
         {childList}
@@ -875,9 +969,57 @@ export function AppLayout({ children }: Props) {
         id="app-nav"
         data-testid="app-sidebar"
         data-open={navOpen}
-        style={{ "--sidebar": "222 62% 12%", "--sidebar-primary": "217 82% 48%", "--sidebar-primary-foreground": "0 0% 100%" } as React.CSSProperties}
-        className={`fixed inset-y-0 left-0 z-50 w-[240px] max-w-[85vw] md:static md:z-auto md:translate-x-0 ${location === "/" ? "md:w-[160px]" : ""} transition-transform duration-200 shrink-0 bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
+        style={{
+          "--sidebar": "222 62% 12%",
+          "--sidebar-primary": "217 82% 48%",
+          "--sidebar-primary-foreground": "0 0% 100%",
+          "--app-sidebar-width": `${sidebarWidth}px`,
+        } as React.CSSProperties}
+        className={`fixed inset-y-0 left-0 z-50 w-[240px] max-w-[85vw] md:static md:relative md:z-auto md:translate-x-0 md:w-[var(--app-sidebar-width)] md:max-w-none transition-transform duration-200 shrink-0 bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
       >
+        <button
+          type="button"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize navigation sidebar"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={sidebarWidth}
+          data-testid="sidebar-resize-handle"
+          className="absolute inset-y-0 right-[-5px] z-10 hidden w-[10px] cursor-col-resize touch-none items-center justify-center bg-transparent outline-none after:h-full after:w-px after:bg-sidebar-border hover:after:w-[2px] hover:after:bg-sidebar-primary focus-visible:after:w-[2px] focus-visible:after:bg-sidebar-primary md:flex"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setIsResizingSidebar(true);
+            updateSidebarWidth(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if (isResizingSidebar) updateSidebarWidth(event.clientX);
+          }}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            setIsResizingSidebar(false);
+          }}
+          onPointerCancel={() => setIsResizingSidebar(false)}
+          onKeyDown={(event) => {
+            const step = event.shiftKey ? 32 : 16;
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              updateSidebarWidth(sidebarWidth - step);
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              updateSidebarWidth(sidebarWidth + step);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              updateSidebarWidth(MIN_SIDEBAR_WIDTH);
+            } else if (event.key === "End") {
+              event.preventDefault();
+              updateSidebarWidth(MAX_SIDEBAR_WIDTH);
+            }
+          }}
+        />
         <div className="px-5 py-4 border-b border-sidebar-border flex items-center justify-between">
           <Logo size={34} variant="dark" />
           <button

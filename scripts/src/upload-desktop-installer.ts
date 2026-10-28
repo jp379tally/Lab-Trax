@@ -28,6 +28,8 @@
 
 import { readFile, stat, access } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Storage } from "@google-cloud/storage";
 import type { ExternalAccountClientOptions } from "google-auth-library";
@@ -39,6 +41,7 @@ import {
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 const LATEST_YML_KEY_SUFFIX = "desktop-installer/latest.yml";
+const RELEASE_IDENTITY_KEY_SUFFIX = "desktop-installer/release-identity.json";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ELECTRON_DIST = resolve(
@@ -147,6 +150,22 @@ async function main() {
     process.exit(1);
   }
   const cfg = KIND_CONFIG[kind];
+  const signatureVerification = process.env.LABTRAX_DESKTOP_SIGNATURE_VERIFICATION;
+  if (signatureVerification !== "verified-installer" &&
+      signatureVerification !== "verified-contained-executable") {
+    throw new Error(
+      "Refusing to upload an installer without successful code-signature verification.",
+    );
+  }
+  const expectedSignatureVerification = kind === "zip"
+    ? "verified-contained-executable"
+    : "verified-installer";
+  if (signatureVerification !== expectedSignatureVerification) {
+    throw new Error(
+      `Signature verification mode ${signatureVerification} does not match installer kind ${kind}.`,
+    );
+  }
+  const sourceRevision = resolveSourceRevision();
 
   let st: Awaited<ReturnType<typeof stat>>;
   try {
@@ -216,6 +235,11 @@ async function main() {
     metadata: { contentDisposition: cfg.contentDisposition },
   });
   const [meta] = await file.getMetadata();
+  if (Number(meta.size) !== buffer.length) {
+    throw new Error(
+      `Uploaded installer size ${String(meta.size)} does not match local size ${buffer.length}.`,
+    );
+  }
   console.log(
     `[upload-installer] ✓ Uploaded. Size=${meta.size}B updated=${meta.updated}`,
   );
@@ -223,7 +247,81 @@ async function main() {
   if (prevalidatedYmlBuffer) {
     await uploadLatestYml(storage, privateDir, prevalidatedYmlBuffer);
   }
+  await uploadReleaseIdentity(storage, privateDir, {
+    version: await resolveVersion(),
+    sourceRevision,
+    signatureVerification,
+    fileName,
+    size: buffer.length,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+  });
   await pushInstallerMetadata(cfg.downloadUrl);
+}
+
+function resolveSourceRevision(): string {
+  const configured = process.env.GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? "";
+  if (!/^[a-f0-9]{40}$/i.test(configured)) {
+    throw new Error("A full 40-character source revision is required for installer identity.");
+  }
+  try {
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: resolve(__dirname, "../.."),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!/^[a-f0-9]{40}$/i.test(revision) ||
+        revision.toLowerCase() !== configured.toLowerCase()) {
+      throw new Error("Installer source revision does not match the checked-out source.");
+    }
+    return revision.toLowerCase();
+  } catch {
+    throw new Error(
+      "Unable to verify that installer source revision matches the checked-out source.",
+    );
+  }
+}
+
+async function uploadReleaseIdentity(
+  storage: Storage,
+  privateDir: string,
+  identity: {
+    version: string;
+    sourceRevision: string;
+    signatureVerification: "verified-installer" | "verified-contained-executable";
+    fileName: string;
+    size: number;
+    sha256: string;
+  },
+): Promise<void> {
+  const fullPath = `${privateDir}/${RELEASE_IDENTITY_KEY_SUFFIX}`;
+  const trimmed = fullPath.startsWith("/") ? fullPath.slice(1) : fullPath;
+  const slash = trimmed.indexOf("/");
+  const bucketName = trimmed.slice(0, slash);
+  const objectName = trimmed.slice(slash + 1);
+  const file = storage.bucket(bucketName).file(objectName);
+  const sidecarBytes = Buffer.from(JSON.stringify({
+    schemaVersion: 1,
+    version: identity.version,
+    sourceRevision: identity.sourceRevision,
+    signatureVerification: identity.signatureVerification,
+    artifact: {
+      fileName: identity.fileName,
+      size: identity.size,
+      sha256: identity.sha256,
+    },
+  }));
+  await file.save(sidecarBytes, {
+    contentType: "application/json",
+    resumable: false,
+  });
+  const [meta] = await file.getMetadata();
+  if (Number(meta.size) !== sidecarBytes.length) {
+    throw new Error("Uploaded Desktop release identity sidecar has an unexpected size.");
+  }
+  const [storedBytes] = await file.download();
+  if (!storedBytes.equals(sidecarBytes)) {
+    throw new Error("Uploaded Desktop release identity sidecar failed its exact-byte read-back check.");
+  }
 }
 
 /**

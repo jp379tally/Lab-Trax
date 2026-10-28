@@ -6,6 +6,7 @@ import { Platform } from "react-native";
 import InvoicesScreen, { resetInvoiceRegisterSnapshotsForTests } from "@/app/finance/invoices";
 import { isInvoiceOverdue } from "@/lib/invoice-web-fields";
 import { invoiceBadgeVariant } from "@/components/invoices-web/InvoiceRegisterRow";
+import { InvoiceDetailView } from "@/components/invoices-web/InvoiceDetailPanel";
 import { emitMockCacheInvalidate, resetMockFetchHandler, setMockFetchHandler, resetMockAppState, setMockAppState } from "../../vitest.setup";
 
 const original = Platform.OS;
@@ -86,12 +87,32 @@ describe("web register row actions", () => {
     expect(screen.queryByTestId("invoice-menu-readonly-i0")).not.toBeNull();
   });
 
-  it("native keeps its own row behaviour for recovery drafts (no web register row)", async () => {
+  it.each([
+    { status: "recovery_draft" },
+    { status: "open", displayMetadataJson: { recoveryBilling: { state: "held" } } },
+  ])("shows historical holds as non-collectible in the invoice details: %o", async (heldState) => {
     Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
-    seed("admin", { status: "recovery_draft" });
-    const screen = await render(<InvoicesScreen />);
-    expect(screen.queryByTestId("invoice-more-i0")).toBeNull();
-    expect(screen.queryByTestId("invoice-i0")).not.toBeNull();
+    const screen = await render(<InvoiceDetailView
+      invoice={{
+        id: "held-invoice",
+        invoiceNumber: "INV-HELD",
+        ...heldState,
+        total: "100.00",
+        balanceDue: "0.00",
+        labOrganizationId: "lab-1",
+        providerOrganization: { name: "Zenith" },
+      } as never}
+      loading={false}
+      error={false}
+      canWrite
+      onRetry={() => {}}
+      onClose={() => {}}
+      onEdit={() => {}}
+      onRecordPayment={() => {}}
+    />);
+    expect(screen.getByText(/Historical reconstructed invoice remains held and is not collectible/)).not.toBeNull();
+    expect(screen.queryByTestId("invoice-detail-edit")).toBeNull();
+    expect(screen.queryByTestId("invoice-detail-payment")).toBeNull();
   });
 
   it("invalidating invoices resets the pager to page 1", async () => {

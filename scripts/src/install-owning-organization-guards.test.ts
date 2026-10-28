@@ -17,6 +17,16 @@ describe("post-merge owning-organization guards", () => {
     ]);
   });
 
+  it("keeps a verified ownership trigger in place instead of locking its table on every startup", () => {
+    const sql = buildOwningOrganizationGuardSql();
+    expect(sql).toContain("AND t.tgfoid = 'assert_owning_organization_exists()'::regprocedure");
+    expect(sql).toContain("AND t.tgtype = 23");
+    expect(sql).toContain("AND t.tgargs = decode(");
+    expect(sql).toContain("AND t.tgattr::text =");
+    expect(sql).toContain("AND cardinality(t.tgattr) = 0");
+    expect(sql).toContain("IF NOT EXISTS (");
+  });
+
   it("rolls back an installation error and reports failure rather than skipping it", async () => {
     const failure = new Error("DDL rejected");
     const query = vi.fn(async (sql: string) => {

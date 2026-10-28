@@ -4,9 +4,15 @@
  * authenticated API calls and never reads or stores credential values.
  */
 import * as fs from "node:fs";
+import type { Readable } from "node:stream";
 import { ReplitConnectors } from "@replit/connectors-sdk";
 import { logger } from "./logger";
 import { setBackupLiveProgress } from "./backup-phase";
+import { createVerifiedBackupDownloadStream } from "./backup-download-stream";
+import { createHash } from "node:crypto";
+import type { DatabaseObjectStore } from "./database-protection";
+import { isDatabaseProtectionObjectName } from "./database-protection-object-name";
+import { objectVersionSchema, type ObjectVersion } from "./object-version-proof";
 
 const GOOGLE_API = "https://www.googleapis.com";
 const CONNECTOR_NAME = "google-drive";
@@ -16,6 +22,7 @@ export const GOOGLE_DRIVE_NON_PRODUCTION_FOLDER =
 const GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const API_TIMEOUT_MS = 60_000;
 const UPLOAD_TIMEOUT_MS = 300_000;
+const DOWNLOAD_TIMEOUT_MS = 1_800_000;
 const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_RETRIES = 3;
@@ -271,6 +278,9 @@ interface DriveFile {
   createdTime?: unknown;
   webViewLink?: unknown;
   parents?: unknown;
+  headRevisionId?: unknown;
+  version?: unknown;
+  sha256Checksum?: unknown;
 }
 
 function driveFileSize(value: unknown): number | null {
@@ -297,26 +307,28 @@ function normalizeDriveFile(value: DriveFile): GoogleDriveBackupFile | null {
   };
 }
 
-async function listDriveFiles(query: string, fields: string): Promise<DriveFile[]> {
+async function listDriveFiles(query: string, fields: string, signal?: AbortSignal,
+  paging: { pageSize: number; maxPages: number } = { pageSize: 100, maxPages: MAX_LIST_PAGES }): Promise<DriveFile[]> {
   const files: DriveFile[] = [];
   let pageToken: string | undefined;
   let pageCount = 0;
   do {
+    signal?.throwIfAborted();
     pageCount += 1;
-    if (pageCount > MAX_LIST_PAGES) {
+    if (pageCount > paging.maxPages) {
       throw new Error("Google Drive returned too many pages while listing backup files.");
     }
     const params = new URLSearchParams({
       q: query,
       fields: `nextPageToken,files(${fields})`,
-      pageSize: "100",
+      pageSize: String(paging.pageSize),
       spaces: "drive",
     });
     if (pageToken) params.set("pageToken", pageToken);
     const page = await driveJson<{
       files?: DriveFile[];
       nextPageToken?: string;
-    }>(`/drive/v3/files?${params.toString()}`);
+    }>(`/drive/v3/files?${params.toString()}`, { signal });
     if (!Array.isArray(page.files)) {
       throw new Error("Google Drive returned a malformed file-list response.");
     }
@@ -334,7 +346,7 @@ function escapeDriveQueryString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-async function ensureFolder(name: string, parentId?: string): Promise<{ id: string }> {
+async function ensureFolder(name: string, parentId?: string, signal?: AbortSignal): Promise<{ id: string }> {
   const clauses = [
     `name = '${escapeDriveQueryString(name)}'`,
     `mimeType = '${GOOGLE_FOLDER_MIME_TYPE}'`,
@@ -344,7 +356,9 @@ async function ensureFolder(name: string, parentId?: string): Promise<{ id: stri
   const matches = await listDriveFiles(
     clauses.join(" and "),
     "id,name,mimeType,createdTime",
+    signal,
   );
+  if (matches.length > 1) throw new Error("Google Drive backup folder identity is ambiguous.");
   const existing = matches.find((file) =>
     typeof file.id === "string" &&
     file.name === name &&
@@ -362,6 +376,7 @@ async function ensureFolder(name: string, parentId?: string): Promise<{ id: stri
         ...(parentId ? { parents: [parentId] } : {}),
       }),
       headers: { "Content-Type": "application/json" },
+      signal,
     },
   );
   if (typeof created.id !== "string" || !created.id.trim() ||
@@ -376,14 +391,15 @@ export async function getGoogleDriveBackupFolderId(): Promise<string> {
 }
 
 /** Resolve a Drive folder path, creating missing folders along the way. */
-export async function getGoogleDriveFolderIdForPath(folderPath: string): Promise<string> {
+export async function getGoogleDriveFolderIdForPath(folderPath: string, signal?: AbortSignal): Promise<string> {
   const pathParts = folderPath.split("/").filter(Boolean);
   if (pathParts.length === 0 || pathParts.some((part) => part === "." || part === "..")) {
     throw new Error("Google Drive folder path is invalid.");
   }
   let parentId: string | undefined;
   for (const part of pathParts) {
-    const folder = await ensureFolder(part, parentId);
+    signal?.throwIfAborted();
+    const folder = await ensureFolder(part, parentId, signal);
     parentId = folder.id;
   }
   if (!parentId) throw new Error("Google Drive folder path is not configured.");
@@ -645,14 +661,14 @@ export async function downloadGoogleDriveBackupFile(
   fileId: string,
   expectedSize: number,
   signal?: AbortSignal,
-): Promise<Buffer> {
+): Promise<Readable> {
   if (!fileId.trim() || !Number.isSafeInteger(expectedSize) || expectedSize <= 0) {
     throw new Error("Google Drive archive download requires an item ID and a valid expected size.");
   }
   if (signal?.aborted) {
     throw new Error("Google Drive archive download timed out or was cancelled.");
   }
-  const timeout = withTimeout(signal, UPLOAD_TIMEOUT_MS);
+  const timeout = withTimeout(signal, DOWNLOAD_TIMEOUT_MS);
   try {
     const params = new URLSearchParams({ alt: "media" });
     const response = await getProxyFetch()(
@@ -669,45 +685,21 @@ export async function downloadGoogleDriveBackupFile(
       );
     }
     if (!response.body) {
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length !== expectedSize) {
-        throw new Error(
-          `Google Drive archive download returned ${bytes.length} bytes; expected ${expectedSize}.`,
-        );
-      }
-      return bytes;
+      throw new Error("Google Drive archive download returned no stream.");
     }
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > expectedSize) {
-          await reader.cancel();
-          throw new Error("Google Drive archive download exceeded the verified archive size.");
-        }
-        chunks.push(Buffer.from(value));
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    if (total !== expectedSize) {
-      throw new Error(
-        `Google Drive archive download returned ${total} bytes; expected ${expectedSize}.`,
-      );
-    }
-    return Buffer.concat(chunks, total);
+    return createVerifiedBackupDownloadStream(
+      response.body,
+      expectedSize,
+      "Google Drive",
+      timeout.dispose,
+    );
   } catch (error: unknown) {
+    timeout.dispose();
     if (timeout.signal.aborted) {
       throw new Error("Google Drive archive download timed out or was cancelled.");
     }
     if (error instanceof Error && error.message.startsWith("Google Drive ")) throw error;
     throw new Error("Google Drive archive download failed. Check the connection and network, then try again.");
-  } finally {
-    timeout.dispose();
   }
 }
 
@@ -801,5 +793,107 @@ export async function deleteGoogleDriveBackupFile(fileId: string): Promise<void>
 
 export function googleDriveItemPath(fileId: string): string {
   return `GoogleDrive:item:${encodeURIComponent(fileId)}`;
+}
+
+/** Encrypted immutable recovery objects, isolated from legacy archive retention.
+ * Initial reuse proof always includes SHA-256 and authenticated byte read-back.
+ * Later reuse requires a fresh, unchanged Drive file/revision/version identity. */
+export function databaseGoogleDriveStore(folder: string, signal?: AbortSignal): DatabaseObjectStore {
+  const stats = { bytesRead: 0, bytesWritten: 0, recordBodyBytesRead: 0 };
+  let folderPromise: Promise<string> | undefined;
+  const folderId = () => {
+    signal?.throwIfAborted();
+    return folderPromise ??= getGoogleDriveFolderIdForPath(folder, signal);
+  };
+  const checkName = (name: string) => {
+    signal?.throwIfAborted();
+    if (!isDatabaseProtectionObjectName(name)) throw new Error("Invalid database protection object name.");
+  };
+  const fields = "id,name,size,createdTime,mimeType,parents,headRevisionId,version,sha256Checksum";
+  const list = async (name?: string) => {
+    const id = await folderId();
+    const query = [`'${escapeDriveQueryString(id)}' in parents`, "trashed = false",
+      `mimeType != '${GOOGLE_FOLDER_MIME_TYPE}'`,
+      ...(name ? [`name = '${escapeDriveQueryString(name)}'`] : [])].join(" and ");
+    const rows = await listDriveFiles(query, fields, signal, { pageSize: 1000, maxPages: 1000 });
+    if (name && rows.some(row => row.name !== name)) throw new Error("Google Drive returned inconsistent protection object identity.");
+    const seen = new Set<string>();
+    return rows.filter(row => typeof row.name === "string" && isDatabaseProtectionObjectName(row.name)).map(row => {
+      const file = normalizeDriveFile(row);
+      if (!file || !file.parentIds.includes(id) || (name && file.name !== name) || seen.has(file.name)) {
+        throw new Error("Google Drive protection object identity is invalid or ambiguous.");
+      }
+      seen.add(file.name);
+      return { ...file, raw: row };
+    });
+  };
+  const find = async (name: string) => { checkName(name); return (await list(name))[0] ?? null; };
+  const versionOf = async (file: Awaited<ReturnType<typeof find>>): Promise<ObjectVersion | null> => {
+    if (!file) return null;
+    const revision = file.raw.headRevisionId, version = file.raw.version;
+    if (typeof revision !== "string" || !revision || typeof version !== "string" || !/^\d+$/.test(version)) {
+      throw new Error("Google Drive content-version continuity evidence is unavailable.");
+    }
+    return objectVersionSchema.parse({ provider: "google-drive-content-v1", driveId: await folderId(),
+      itemId: file.id, contentTag: `${revision}:${version}`, bytes: file.size });
+  };
+  const store: DatabaseObjectStore = {
+    readStats: () => ({ ...stats }),
+    async list() { return (await list()).map(file => ({ name: file.name, createdAt: file.createdDateTime })); },
+    async getVersion(name) { return versionOf(await find(name)); },
+    async getVersions(names) {
+      names.forEach(checkName);
+      const wanted = new Set(names);
+      const versions = new Map<string, ObjectVersion | null>(names.map(name => [name, null]));
+      for (const file of await list()) if (wanted.has(file.name)) versions.set(file.name, await versionOf(file));
+      return versions;
+    },
+    async getIntegrity(name) {
+      const file = await find(name);
+      if (!file) return null;
+      const value = file.raw.sha256Checksum;
+      return { bytes: file.size, sha1: null,
+        sha256: typeof value === "string" && /^[a-fA-F0-9]{64}$/.test(value) ? value.toLowerCase() : null };
+    },
+    async get(name) {
+      const file = await find(name);
+      if (!file) return null;
+      if (file.size <= 0 || file.size > 8 * 1024 * 1024) throw new Error("Google Drive recovery object size is invalid.");
+      const stream = await downloadGoogleDriveBackupFile(file.id, file.size, signal);
+      const parts: Buffer[] = [];
+      let size = 0;
+      for await (const part of stream) {
+        signal?.throwIfAborted();
+        size += part.length;
+        if (size > file.size) throw new Error("Google Drive recovery object exceeded its recorded size.");
+        stats.bytesRead += part.length;
+        if (name.startsWith("records-body-")) stats.recordBodyBytesRead += part.length;
+        parts.push(Buffer.from(part));
+      }
+      if (size !== file.size) throw new Error("Google Drive recovery object was truncated.");
+      return Buffer.concat(parts, size);
+    },
+    async put(name, bytes) {
+      checkName(name);
+      if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("Google Drive recovery object size is invalid.");
+      const existing = await find(name);
+      if (!existing) {
+        const id = await folderId();
+        const uploaded = await uploadGoogleDriveBackupSource({ size: bytes.length,
+          async readChunk(offset, length) { signal?.throwIfAborted(); return bytes.subarray(offset, offset + length); } },
+          name, { signal, folderOverride: { id, path: folder } });
+        if (uploaded.name !== name || uploaded.size !== bytes.length || !uploaded.parentIds.includes(id)) {
+          throw new Error("Google Drive recovery upload identity or size does not match.");
+        }
+        stats.bytesWritten += uploaded.size;
+      }
+      const received = await store.get(name);
+      if (!received || createHash("sha256").update(received).digest("hex") !== createHash("sha256").update(bytes).digest("hex")) {
+        throw new Error("Google Drive encrypted recovery object SHA-256 read-back failed; existing objects were preserved.");
+      }
+    },
+    async delete() { throw new Error("Google Drive recovery object deletion is disabled; all recovery points are retained."); },
+  };
+  return store;
 }
 

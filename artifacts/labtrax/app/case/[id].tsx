@@ -35,6 +35,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import {
   KeyboardAvoidingView as ControllerKeyboardAvoidingView,
@@ -134,7 +135,7 @@ import {
   type CaseExceptionQueueItem,
 } from "@/lib/case-exceptions";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { BorderWidth, Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import {
   DismissKeyboardView,
@@ -179,16 +180,14 @@ import {
   deriveCaseHierarchy,
   normalizeCaseHierarchy,
   getMaterialSubtypeLabel,
-  getSubtypeLabel,
   getCaseTypeLabel,
   parseCustomToken,
-  CASE_TAXONOMY,
-  CASE_TYPES,
   remakeReasonUsesField,
   type CaseType,
   type CaseSubtype,
   type MaterialSubtype,
   type CaseHierarchy,
+  toothBridgeLabels,
 } from "@workspace/case-taxonomy";
 import {
   getGetCatalogTreeQueryKey,
@@ -231,8 +230,11 @@ import { confirmSaveAttachment } from "@/lib/save-attachment-prompt";
 import { useLongPressGuard } from "@/lib/use-long-press-guard";
 import { caseLocationLabel } from "@/lib/case-location-label";
 import { isActiveCaseRecord } from "@/lib/case-quick-actions";
-import { archSelectionFromRows, ARCH_OPTIONS, isArchRequired, type ArchSelection } from "@/lib/arch";
+import { archSelectionFromRows, isArchRequired, type ArchSelection } from "@/lib/arch";
 import { MobileToothShadeRows } from "@/components/case-detail/MobileToothShadeRows";
+import { CaseDetailField, CaseDetailSelect, CaseDetailOptions, caseDetailFieldStyles } from "@/components/case-detail/CaseDetailField";
+import { hasMixedCaseHierarchy, caseHierarchyLabels } from "@/lib/case-hierarchy-display";
+import { CaseHierarchyDialogFields } from "@/components/case-detail/CaseHierarchyDialogFields";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
 // GET /api/cases/:id returns the full desktop DetailedCase payload. The
@@ -1279,6 +1281,7 @@ function EditTextRow({
   autoCapitalize,
   testID,
   multiline,
+  stacked = false,
   styles,
   colors,
 }: {
@@ -1289,14 +1292,15 @@ function EditTextRow({
   autoCapitalize?: "none" | "words" | "sentences" | "characters";
   testID?: string;
   multiline?: boolean;
+  stacked?: boolean;
   styles: Styles;
   colors: ThemeColors;
 }) {
   return (
     <View style={styles.editRow}>
-      <Text style={styles.editLabel}>{label}</Text>
+      <Text style={stacked ? [caseDetailFieldStyles.heading, { color: colors.text }] : styles.editLabel}>{label}</Text>
       <TextInput
-        style={[styles.input, multiline && { minHeight: 90, textAlignVertical: "top" }]}
+        style={[styles.input, stacked && caseDetailFieldStyles.input, multiline && { minHeight: 90, textAlignVertical: "top" }]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -1319,6 +1323,8 @@ function SelectRow({
   colors,
   testID,
   valueTextStyle,
+  disabled = false,
+  stacked = false,
 }: {
   label: string;
   valueLabel: string;
@@ -1328,12 +1334,22 @@ function SelectRow({
   colors: ThemeColors;
   testID?: string;
   valueTextStyle?: React.ComponentProps<typeof Text>["style"];
+  disabled?: boolean;
+  stacked?: boolean;
 }) {
   return (
     <View style={styles.editRow}>
-      <Text style={styles.editLabel}>{label}</Text>
-      <Pressable style={styles.selectValue} onPress={onPress} testID={testID}>
-        <Text style={[styles.selectValueText, valueTextStyle]}>{valueLabel}</Text>
+      <Text style={stacked ? [caseDetailFieldStyles.heading, { color: colors.text }] : styles.editLabel}>{label}</Text>
+      <Pressable
+        style={[styles.selectValue, stacked && caseDetailFieldStyles.control]}
+        onPress={onPress}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${valueLabel}`}
+        accessibilityState={disabled ? { disabled: true } : undefined}
+        testID={testID}
+      >
+        <Text style={[styles.selectValueText, stacked && caseDetailFieldStyles.value, valueTextStyle]}>{valueLabel}</Text>
         <Ionicons
           name={icon ?? "chevron-down"}
           size={16}
@@ -4434,29 +4450,31 @@ function Header({
         isRush && { backgroundColor: colors.error + "0D" },
       ]}
     >
-      <Pressable
-        onPress={onBack}
-        hitSlop={10}
-        style={styles.backBtn}
-        testID="case-back"
-      >
-        <Ionicons name="chevron-back" size={24} color={colors.text} />
-      </Pressable>
-      <View style={styles.headerTitles}>
-        <Text
-          style={[styles.headerTitle, isRush && { color: colors.error }]}
-          numberOfLines={1}
+      <View style={styles.headerMain} testID="case-header-main">
+        <Pressable
+          onPress={onBack}
+          hitSlop={10}
+          style={styles.backBtn}
+          testID="case-back"
         >
-          {title}
-        </Text>
-        {subtitle ? (
+          <Ionicons name="chevron-back" size={24} color={colors.text} />
+        </Pressable>
+        <View style={styles.headerTitles}>
           <Text
-            style={[styles.headerSubtitle, isRush && { color: colors.error }]}
-            testID="case-header-patient"
+            style={[styles.headerTitle, isRush && { color: colors.error }]}
+            numberOfLines={1}
           >
-            {subtitle}
+            {title}
           </Text>
-        ) : null}
+          {subtitle ? (
+            <Text
+              style={[styles.headerSubtitle, isRush && { color: colors.error }]}
+              testID="case-header-patient"
+            >
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
       </View>
       {right ? <View style={styles.headerRight}>{right}</View> : null}
     </View>
@@ -4519,13 +4537,29 @@ function CaseHeaderLocator({
   const meQuery = useMe();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [locateTargetId, setLocateTargetId] = useState<string | null>(null);
-  const [locateTargetStatus, setLocateTargetStatus] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
+  const locateInFlightRef = useRef(false);
+  const committedLocateRef = useRef<{
+    caseId: string;
+    locationId: string;
+    status: string;
+  } | null>(null);
   const [locateMsg, setLocateMsg] = useState<string | null>(null);
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (successTimer.current) clearTimeout(successTimer.current);
   }, []);
+  useEffect(() => {
+    const committed = committedLocateRef.current;
+    if (!committed) return;
+    if (
+      committed.caseId !== c.id ||
+      (c.labLocationId === committed.locationId &&
+        (c.status ?? "").toLowerCase() === committed.status.toLowerCase())
+    ) {
+      committedLocateRef.current = null;
+    }
+  }, [c.id, c.labLocationId, c.status]);
 
   const locationsOrgId =
     c.labOrganizationId ??
@@ -4553,38 +4587,46 @@ function CaseHeaderLocator({
   const locateTargetLabel =
     selectableStations.find((o) => o.id === locateTargetId)?.label ?? null;
 
-  async function locate() {
-    if (!canEdit || editing || locating || !locateTargetStatus) return;
+  async function locate(targetId: string, targetStatus: string) {
+    if (!canEdit || editing || locateInFlightRef.current || locating) return;
+    locateInFlightRef.current = true;
     setLocating(true);
+    setLocateMsg(null);
     try {
       await update.mutateAsync({
         caseId: c.id,
         data: {
-          status: locateTargetStatus as UpdateCaseInputStatus,
-          ...(locateTargetId ? { labLocationId: locateTargetId } : {}),
-        },
+          status: targetStatus as UpdateCaseInputStatus,
+          labLocationId: targetId,
+        } as UpdateCaseInput & { labLocationId: string },
       });
     } catch (e) {
       Alert.alert("Couldn't locate case", errorMessage(e));
+      locateInFlightRef.current = false;
       setLocating(false);
       return;
     }
     // The write has committed; a refresh failure must not offer a duplicate retry.
-    const returned = isReturnedLocate(c.status, locateTargetStatus);
-    const released = locateTargetStatus === "complete" && !!c.casePanBarcode?.trim();
-    setLocateMsg(released
-      ? "Case located successfully. Barcode released."
-      : "Case located successfully.");
+    const returned = isReturnedLocate(c.status, targetStatus);
+    const released = targetStatus === "complete" && !!c.casePanBarcode?.trim();
+    committedLocateRef.current = {
+      caseId: c.id,
+      locationId: targetId,
+      status: targetStatus,
+    };
     setLocateTargetId(null);
-    setLocateTargetStatus(null);
     await Promise.allSettled([
       Promise.resolve().then(onSaved),
       Promise.resolve().then(() => qc.invalidateQueries({ queryKey: ["cases"] })),
       Promise.resolve().then(() => qc.invalidateQueries({ queryKey: ["invoices"] })),
       Promise.resolve().then(() => qc.invalidateQueries({ queryKey: ["invoice-for-case", c.id] })),
     ]);
+    setLocateMsg(released
+      ? "Case located successfully. Barcode released."
+      : "Case located successfully.");
     if (successTimer.current) clearTimeout(successTimer.current);
     successTimer.current = setTimeout(() => setLocateMsg(null), 3000);
+    locateInFlightRef.current = false;
     setLocating(false);
     if (returned) onReturnedLocate();
   }
@@ -4630,37 +4672,39 @@ function CaseHeaderLocator({
                   label="Move to station"
                   valueLabel={locateTargetLabel ?? "Select station…"}
                   valueTextStyle={{ flexShrink: 1, minWidth: 0 }}
-                  onPress={() => setPickerOpen(true)}
+                  onPress={() => {
+                    if (!locating && !committedLocateRef.current) setPickerOpen(true);
+                  }}
                   styles={styles}
                   colors={colors}
                   testID="locate-select"
+                  disabled={locating || committedLocateRef.current !== null}
                 />
               </View>
-              <Pressable
-                style={[styles.btnPrimary, styles.locateBtn, (!locateTargetStatus || locating) && styles.btnDisabled]}
-                onPress={locate}
-                disabled={!locateTargetStatus || locating}
-                testID="locate-confirm"
-              >
-                {locating ? <ActivityIndicator color={colors.textInverse} size="small" /> : <Text style={styles.btnPrimaryText}>Locate</Text>}
-              </Pressable>
+              {locating ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs }} testID="locate-pending">
+                  <ActivityIndicator color={colors.tint} size="small" />
+                  <Text style={styles.locateStatusText}>Locating…</Text>
+                </View>
+              ) : null}
             </View>
           )}
           {locateMsg ? <Text style={styles.locateSuccess} testID="locate-success">{locateMsg}</Text> : null}
         </>
       ) : null}
       <OptionPickerModal
-        visible={pickerOpen && canEdit && !editing}
+        visible={pickerOpen && canEdit && !editing && !locating}
         title="Locate Case"
         options={selectableStations}
         selected={locateTargetId}
         onSelect={(id) => {
-          if (!canEdit || editing) return;
+          if (!canEdit || editing || locateInFlightRef.current) return;
           const picked = selectableStations.find((s) => s.id === id);
           if (!picked) return;
           setLocateTargetId(picked.id);
-          setLocateTargetStatus(picked.value);
+          setLocateMsg(null);
           setPickerOpen(false);
+          void locate(picked.id, picked.value);
         }}
         onClose={() => setPickerOpen(false)}
         styles={styles}
@@ -4714,6 +4758,8 @@ function OverviewSection({
   ) => void;
   unregisterScreenEditActions: (owner: string) => void;
 }) {
+  const { fontScale } = useWindowDimensions();
+  const useLargeTextOverviewLayout = fontScale >= 1.3;
   const rushColor = isRush ? colors.error : undefined;
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
@@ -5023,16 +5069,7 @@ function OverviewSection({
         firstRestoration.material ?? null,
       )
     : null;
-  const hierarchyIsMixed =
-    firstHierarchy !== null &&
-    restorations.slice(1).some((restoration) => {
-      const hierarchy = deriveCaseHierarchy(
-        restoration.restorationType ?? null,
-        (restoration as any).restorationSubtype ?? null,
-        restoration.material ?? null,
-      );
-      return JSON.stringify(hierarchy) !== JSON.stringify(firstHierarchy);
-    });
+  const hierarchyIsMixed = hasMixedCaseHierarchy(restorations);
 
   function openHierarchyEdit() {
     setDraftCt(firstHierarchy?.caseType ?? null);
@@ -5055,6 +5092,14 @@ function OverviewSection({
 
   async function saveHierarchy() {
     if (hierarchySaving || !draftCt) return;
+    if (!hierarchyIsMixed &&
+        draftCt === firstHierarchy?.caseType &&
+        draftSt === (firstHierarchy?.subtype ?? (firstHierarchy?.customSubtypeId ? `custom:${firstHierarchy.customSubtypeId}` : null)) &&
+        draftMat === (firstHierarchy?.materialSubtype ?? (firstHierarchy?.customMaterialSubtypeId ? `custom:${firstHierarchy.customMaterialSubtypeId}` : null)) &&
+        draftArch === archSelectionFromRows(restorations)) {
+      setHierarchyEditOpen(false);
+      return;
+    }
     setHierarchySaving(true);
     setHierarchyError(null);
     try {
@@ -5082,9 +5127,14 @@ function OverviewSection({
         removable: "Full Denture",
         ortho: "Night Guard",
       };
+      const savedLabels = caseHierarchyLabels(firstHierarchy, firstRestoration ?? {}, hierarchyCatalogQuery.data?.data);
+      const sameSubtype = draftCt === firstHierarchy?.caseType &&
+        draftSt === (firstHierarchy?.subtype ?? (firstHierarchy?.customSubtypeId ? `custom:${firstHierarchy.customSubtypeId}` : null));
+      const sameMaterial = sameSubtype &&
+        draftMat === (firstHierarchy?.materialSubtype ?? (firstHierarchy?.customMaterialSubtypeId ? `custom:${firstHierarchy.customMaterialSubtypeId}` : null));
       const restorationTypeLabel =
         stNode?.label ??
-        (draftSt
+        (sameSubtype && firstRestoration?.restorationType ? firstRestoration.restorationType : draftSt
           ? draftSt
           : (HIERARCHY_REPRESENTATIVE[draftCt] ?? getCaseTypeLabel(draftCt)));
       // Send explicit null for cleared fields; omission preserves row values.
@@ -5092,7 +5142,7 @@ function OverviewSection({
               restorationType: restorationTypeLabel,
               restorationSubtype: encoded ?? null,
               material: (draftMat
-                ? (matNode?.label ?? null)
+                 ? (matNode?.label ?? (sameMaterial && savedLabels.material !== "—" ? savedLabels.material : null))
                 : null),
               ...(restorationIds.length === 0 ? { toothNumbers: [] } : {}),
               ...(isArchRequired(draftCt)
@@ -5120,6 +5170,7 @@ function OverviewSection({
   // hierarchy edit above. Mirror that exactly: everyone else sees plain text.
   const canEditStep = isAdmin;
   const [stepPickerOpen, setStepPickerOpen] = useState(false);
+  const [priorityPickerOpen, setPriorityPickerOpen] = useState(false);
   const [stepSaving, setStepSaving] = useState(false);
   const [stepShadeValue, setStepShadeValue] = useState(c.stepShade ?? "");
   const [stepShadeSaving, setStepShadeSaving] = useState(false);
@@ -5423,6 +5474,7 @@ function OverviewSection({
 
 
   function startEdit() {
+    setPriorityPickerOpen(false);
     setImplantDrafts(Object.fromEntries((c.restorations ?? []).filter((row) => row.id).map((row) => [row.id!, row])));
     confirmedImplants.current = {};
     const nextForm = formFromCase(c);
@@ -5434,6 +5486,7 @@ function OverviewSection({
 
   function cancelEdit() {
     setPicker(null);
+    setPriorityPickerOpen(false);
     setDueTimeEnabled(!!c.dueTime);
     setEditing(false);
   }
@@ -5629,6 +5682,98 @@ function OverviewSection({
       setPendingPrintBarcode(null);
     }
   }
+
+  const savedArch = archSelectionFromRows(restorations);
+  const showArch = !hierarchyIsMixed && firstHierarchy?.caseType && isArchRequired(firstHierarchy.caseType);
+  const stepIsRemovable = hierarchyEditOpen
+    ? draftCt === "removable"
+    : firstHierarchy?.caseType === "removable" ||
+      restorations.some((row) => isRemovableRestorationType(row.restorationType ?? ""));
+  const restorationFields = (
+    <View style={styles.restorationDetailsPanel} testID="overview-restoration-details">
+      {editing ? <>
+        <CaseClinicalEditor
+          value={clinicalDraft}
+          onChange={setClinicalDraft}
+          catalog={hierarchyCatalogQuery.data?.data}
+          canEditHierarchy={canEdit}
+          canEditStep={canEditStep}
+          disabled={overviewSaving || update.isPending}
+          empty={restorations.filter((row) => row.restorationType !== "missing").length === 0}
+          mixed={hierarchyIsMixed}
+        />
+        {isImplantRestoration(clinicalDraft) && restorations.filter((row) => row.id).map((row, index) => <View key={row.id} style={{ gap: Spacing.sm }}>
+          <Text style={[Typography.h3, { color: colors.text }]}>Line {index + 1} · Tooth {row.toothNumber || "—"} · Implant</Text>
+          <ImplantDetailsControls fieldLayout="overview" value={implantDrafts[row.id!] ?? row}
+            onChange={(details) => setImplantDrafts((current) => ({ ...current, [row.id!]: details }))}
+            disabled={overviewSaving || update.isPending || !canEdit} />
+        </View>)}
+        <EditTextRow stacked label="Gingival shade" value={form.gingivialShade}
+          onChangeText={(t) => setForm((f) => ({ ...f, gingivialShade: t }))}
+          styles={styles} colors={colors} testID="clinical-gingival-shade" />
+      </> : <>
+        <CaseHierarchyQuickPicker
+          key={caseId} caseId={caseId} hierarchy={firstHierarchy}
+          savedValues={firstRestoration ?? {}} canEdit={canEdit}
+          empty={restorations.length === 0} mixed={hierarchyIsMixed}
+          catalog={hierarchyCatalogQuery.data?.data}
+          arch={savedArch ?? ""} refresh={refreshClinicalQueries}
+        />
+        {showArch ? <CaseDetailSelect label="Arch"
+          valueLabel={savedArch === "both" ? "Upper + Lower" : savedArch === "upper" ? "Upper" : savedArch === "lower" ? "Lower" : "Required"}
+          valueTestID="hierarchy-arch-value" testID="hierarchy-edit-arch-btn"
+          expanded={hierarchyEditOpen} disabled={hierarchySaving}
+          onPress={canEdit ? openHierarchyEdit : undefined} /> : null}
+        {stepIsRemovable ? <>
+          <CaseDetailSelect label="Step" valueLabel={stepLabel(c.step)}
+            testID="step-select" valueTestID={canEditStep ? undefined : "step-value"}
+            expanded={stepPickerOpen} busy={stepSaving}
+            onPress={canEditStep ? () => setStepPickerOpen(true) : undefined} />
+          {c.step === "wax_setup" ? <CaseDetailField label="Wax Setup Shade">
+            {canEditStep ? <>
+              <TextInput
+                style={[caseDetailFieldStyles.input, { color: colors.text, borderColor: colors.border }]}
+                value={stepShadeValue} onChangeText={setStepShadeValue}
+                onBlur={() => void commitStepShade()} onSubmitEditing={() => void commitStepShade()}
+                placeholder="e.g. A2" placeholderTextColor={colors.textTertiary}
+                editable={!stepShadeSaving} returnKeyType="done"
+                accessibilityLabel="Wax Setup Shade" testID="step-shade-input" />
+              {stepShadeSaving ? <ActivityIndicator size="small" color={colors.textTertiary} /> : null}
+            </> : <Text testID="step-shade-value" style={styles.bodyText}>{c.stepShade || "—"}</Text>}
+          </CaseDetailField> : null}
+        </> : null}
+      </>}
+      <View style={styles.restorationFieldStack} testID="tooth-shade-custom-shade">
+        <View style={styles.restorationFieldStack} testID="overview-tooth-custom-shade">
+          <MobileToothShadeRows
+            restorations={restorations} caseId={caseId} labOrganizationId={labOrganizationId}
+            canEdit={canEdit && !editing} onSaved={onSaved}
+            legacyTeeth={restorations.length ? "" : c.teeth ?? ""}
+            legacyShade={c.shade ?? ""}
+          />
+          {editing && canEdit ? <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+            Individual tooth and arch shades can be changed in Overview after closing Edit. The Shade field above is a draft applied on Save.
+          </Text> : null}
+          {(!editing || !isImplantRestoration(clinicalDraft)) && restorations.filter(isImplantRestoration).map((row, index) =>
+            <SavedImplantDetails key={row.id ?? index} fieldLayout="overview" row={row} caseId={caseId} canEdit={canEdit} />)}
+          <CustomShadeMetadata c={c} canEdit={canEdit}
+            saving={customShadeSaving || customShadeTechSaving}
+            techValue={customShadeTechValue} onTechChange={setCustomShadeTechValue}
+            onTechCommit={() => void commitCustomShadeTech()} onToggle={patchCustomShade}
+            styles={styles} colors={colors} />
+        </View>
+      </View>
+      {!editing && c.gingivialShade?.trim() ? <CaseDetailField label="Gingival shade">
+        <Text style={styles.bodyText}>{c.gingivialShade}</Text>
+      </CaseDetailField> : null}
+      {c.bridgeConnectors?.trim() ? <CaseDetailField label="Bridge connectors">
+        <Text style={styles.bodyText}>{c.bridgeConnectors}</Text>
+      </CaseDetailField> : null}
+      {!editing ? <CaseDetailField label="Received Date">
+        <Text style={styles.bodyText}>{formatDate(c.receivedAt)}</Text>
+      </CaseDetailField> : null}
+    </View>
+  );
 
   return (
     <View style={styles.sectionGap}>
@@ -5863,36 +6008,12 @@ function OverviewSection({
           </View>
         </View>
 
+        {!editing ? restorationFields : null}
         {editing ? (
-          <View>
-            <Text style={styles.detailSectionTitle}>Patient &amp; Provider</Text>
-            <EditTextRow
-              label="Patient first name"
-              value={form.patientFirstName}
-              onChangeText={(t) =>
-                setForm((f) => ({ ...f, patientFirstName: t }))
-              }
-              styles={styles}
-              colors={colors}
-            />
-            <EditTextRow
-              label="Patient last name"
-              value={form.patientLastName}
-              onChangeText={(t) =>
-                setForm((f) => ({ ...f, patientLastName: t }))
-              }
-              styles={styles}
-              colors={colors}
-            />
-            <EditTextRow
-              label="Doctor"
-              value={form.doctorName}
-              onChangeText={(t) => setForm((f) => ({ ...f, doctorName: t }))}
-              styles={styles}
-              colors={colors}
-            />
+          <View testID="overview-edit-fields">
             <Text style={styles.detailSectionTitle}>Schedule &amp; Priority</Text>
             <SelectRow
+              stacked
               label="Received Date"
               valueLabel={
                 form.receivedAt
@@ -5906,6 +6027,7 @@ function OverviewSection({
               testID="select-received"
             />
             <SelectRow
+              stacked
               label="Due date"
               valueLabel={formatDateInput(form.dueDate)}
               icon="calendar-outline"
@@ -5947,6 +6069,7 @@ function OverviewSection({
                 </Pressable>
                 {dueTimeEnabled ? (
                   <SelectRow
+                    stacked
                     label="Due time"
                     valueLabel={formatDueTime(form.dueTime) ?? "Select a time"}
                     icon="time-outline"
@@ -5958,16 +6081,33 @@ function OverviewSection({
                 ) : null}
               </View>
             ) : null}
-            <SegmentedRow
-              label="Priority"
-              options={PRIORITY_OPTIONS}
-              value={form.priority}
-              onChange={(v) => setForm((f) => ({ ...f, priority: v }))}
-              styles={styles}
-              testID="priority"
-            />
+            <View style={{ gap: Spacing.xs, marginVertical: Spacing.md }}>
+              <CaseDetailSelect label="Priority"
+                valueLabel={PRIORITY_OPTIONS.find((option) => option.value === form.priority)?.label ?? form.priority}
+                testID="priority-select" valueTestID="priority-value"
+                expanded={priorityPickerOpen} disabled={overviewSaving || update.isPending}
+                onPress={() => setPriorityPickerOpen((open) => !open)} />
+              {priorityPickerOpen ? <CaseDetailOptions label="Priority"
+                options={PRIORITY_OPTIONS.map((option) => ({ key: option.value, label: option.label }))}
+                selected={form.priority} disabled={overviewSaving || update.isPending}
+                optionTestID={(key) => `priority-${key}`}
+                onSelect={(priority) => {
+                  setForm((f) => ({ ...f, priority }));
+                  setPriorityPickerOpen(false);
+                }} /> : null}
+            </View>
+            {restorationFields}
+            <View testID="overview-edit-patient-provider">
+              <Text style={styles.detailSectionTitle}>Patient &amp; Provider</Text>
+              <EditTextRow stacked label="Patient first name" value={form.patientFirstName}
+                onChangeText={(t) => setForm((f) => ({ ...f, patientFirstName: t }))} styles={styles} colors={colors} />
+              <EditTextRow stacked label="Patient last name" value={form.patientLastName}
+                onChangeText={(t) => setForm((f) => ({ ...f, patientLastName: t }))} styles={styles} colors={colors} />
+              <EditTextRow stacked label="Doctor" value={form.doctorName}
+                onChangeText={(t) => setForm((f) => ({ ...f, doctorName: t }))} styles={styles} colors={colors} />
+            </View>
             <View style={styles.editRow}>
-              <Text style={styles.editLabel}>Pan Barcode</Text>
+              <Text style={[caseDetailFieldStyles.heading, { color: colors.text }]}>Pan Barcode</Text>
               <View style={{ flex: 1 }}>
                 <View
                   style={{
@@ -6041,30 +6181,9 @@ function OverviewSection({
               </View>
             </View>
 
-            <CaseClinicalEditor
-              value={clinicalDraft}
-              onChange={setClinicalDraft}
-              catalog={hierarchyCatalogQuery.data?.data}
-              canEditHierarchy={canEdit}
-              canEditStep={canEditStep}
-              disabled={overviewSaving || update.isPending}
-            />
-            {isImplantRestoration(clinicalDraft) && (c.restorations ?? []).filter((row) => row.id).map((row, index) => <View key={row.id} style={{ marginVertical: 12 }}>
-              <Text style={{ color: colors.text, fontWeight: "600" }}>Line {index + 1} · Tooth {row.toothNumber || "—"} · Implant</Text>
-              <ImplantDetailsControls value={implantDrafts[row.id!] ?? row} onChange={(details) => setImplantDrafts((current) => ({ ...current, [row.id!]: details }))} disabled={overviewSaving || update.isPending || !canEdit} />
-            </View>)}
-              <EditTextRow
-                label="Gingival shade"
-                value={form.gingivialShade}
-                onChangeText={(t) =>
-                  setForm((f) => ({ ...f, gingivialShade: t }))
-                }
-                styles={styles}
-                colors={colors}
-                testID="clinical-gingival-shade"
-              />
               <Text style={styles.detailSectionTitle}>Rx Notes</Text>
               <EditTextRow
+                stacked
                 label="Prescription Notes"
                 value={form.rxNotes}
                 onChangeText={(text) => setForm((f) => ({ ...f, rxNotes: text }))}
@@ -6226,18 +6345,39 @@ function OverviewSection({
               testID="overview-patient-doctor-practice"
             >
               {!editing ? <Text style={styles.detailSectionTitle}>Patient &amp; Provider</Text> : null}
-              <View style={styles.patientProviderGrid} testID="overview-patient-provider-grid">
+              <View
+                style={[
+                  styles.patientProviderGrid,
+                  useLargeTextOverviewLayout && styles.patientProviderGridLargeText,
+                ]}
+                testID="overview-patient-provider-grid"
+              >
               {!editing ? (
               <>
-              <View style={styles.patientProviderField} testID="overview-patient-details">
+              <View
+                style={[
+                  styles.patientProviderField,
+                  useLargeTextOverviewLayout && styles.patientProviderFieldLargeText,
+                ]}
+                testID="overview-patient-details"
+              >
                 <Text style={[styles.infoFieldLabel, rushColor ? { color: rushColor } : undefined]}>
                   Patient
                 </Text>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: Spacing.xs, marginTop: Spacing.xs }}>
-                  <Text style={styles.bodyText}>{patientName(c)}</Text>
-                </View>
+                <Text
+                  testID="overview-patient-name"
+                  style={styles.patientNameValue}
+                >
+                  {patientName(c)}
+                </Text>
               </View>
-              <View style={styles.patientProviderField} testID="overview-doctor-details">
+              <View
+                style={[
+                  styles.patientProviderField,
+                  useLargeTextOverviewLayout && styles.patientProviderFieldLargeText,
+                ]}
+                testID="overview-doctor-details"
+              >
                 <Text style={[styles.infoFieldLabel, rushColor ? { color: rushColor } : undefined]}>
                   Doctor
                 </Text>
@@ -6254,7 +6394,14 @@ function OverviewSection({
               </View>
               </>
               ) : null}
-              <View style={[styles.patientProviderField, styles.practiceProviderField]} testID="overview-practice-contact">
+              <View
+                style={[
+                  styles.patientProviderField,
+                  styles.practiceProviderField,
+                  useLargeTextOverviewLayout && styles.patientProviderFieldLargeText,
+                ]}
+                testID="overview-practice-contact"
+              >
                 <Text style={[styles.infoFieldLabel, rushColor ? { color: rushColor } : undefined]}>
                   Practice
                 </Text>
@@ -6275,322 +6422,22 @@ function OverviewSection({
               </View>
               </View>
             </View>
-            <View style={styles.restorationDetailsPanel} testID="overview-restoration-details">
-            <Text style={styles.detailSectionTitle}>Restoration Details</Text>
-            <View
-              style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                alignItems: "flex-start",
-                columnGap: Spacing.lg,
-                rowGap: Spacing.sm,
-                marginBottom: Spacing.md,
-              }}
-              testID="tooth-shade-custom-shade"
-            >
-              <View
-                style={{
-                  flexDirection: "row",
-                  flexWrap: "wrap",
-                  alignItems: "flex-start",
-                  columnGap: Spacing.lg,
-                  rowGap: Spacing.sm,
-                }}
-                testID="overview-tooth-custom-shade"
-              >
-                <MobileToothShadeRows
-                  restorations={restorations}
-                  caseId={caseId}
-                  labOrganizationId={labOrganizationId}
-                  canEdit={canEdit}
-                  onSaved={async () => {
-                    await onSaved();
-                  }}
-                  legacyTeeth={
-                    restorations.length > 0
-                      ? ""
-                      : c.teeth ?? ""
-                  }
-                  legacyShade={
-                    uniqueJoin(restorations.map((r) => r.shade)) || c.shade || ""
-                  }
-                />
-                {restorations.filter(isImplantRestoration).map((row, index) => <SavedImplantDetails key={row.id ?? index} row={row} caseId={caseId} canEdit={canEdit} />)}
-                <CustomShadeMetadata
-                  c={c}
-                  canEdit={canEdit}
-                  saving={customShadeSaving || customShadeTechSaving}
-                  techValue={customShadeTechValue}
-                  onTechChange={setCustomShadeTechValue}
-                  onTechCommit={() => void commitCustomShadeTech()}
-                  onToggle={patchCustomShade}
-                  styles={styles}
-                  colors={colors}
-                />
-              </View>
-            </View>
-            {!editing ? <FieldRow
-              label="Received Date"
-              value={formatDate(c.receivedAt)}
-              styles={styles}
-              rushColor={rushColor}
-            /> : null}
-            {/* Case Type / Sub Type / Case Material — case-level hierarchy */}
-            {!editing && (() => {
-              const displayHierarchy = hierarchyIsMixed ? null : firstHierarchy;
-              const ctLabel = displayHierarchy?.caseType
-                ? getCaseTypeLabel(displayHierarchy.caseType)
-                : hierarchyIsMixed
-                  ? "Multiple"
-                  : "—";
-              const stLabel =
-                displayHierarchy?.caseType && displayHierarchy.subtype
-                  ? getSubtypeLabel(
-                      displayHierarchy.caseType,
-                      displayHierarchy.subtype as CaseSubtype,
-                    )
-                  : hierarchyIsMixed
-                    ? "Multiple"
-                    : uniqueJoin(restorations.map((restoration) => restoration.material));
-              const matLabel =
-                displayHierarchy?.caseType &&
-                displayHierarchy.subtype &&
-                displayHierarchy.materialSubtype
-                  ? getMaterialSubtypeLabel(
-                      displayHierarchy.caseType,
-                      displayHierarchy.subtype as CaseSubtype,
-                      displayHierarchy.materialSubtype as MaterialSubtype,
-                    )
-                  : hierarchyIsMixed
-                    ? "Multiple"
-                    : "—";
-              const savedArch = archSelectionFromRows(restorations);
-              // Keep mobile's existing lab-editor permission for hierarchy
-              // edits; workflow Step remains admin/owner-only.
-              const showEdit = canEdit && !editing;
-              const stepIsRemovable = hierarchyEditOpen
-                ? draftCt === "removable"
-                : firstHierarchy?.caseType === "removable" ||
-                  restorations.some((r) =>
-                    isRemovableRestorationType(r.restorationType ?? ""),
-                  );
-              const stepField = (
-                <View style={{ flex: 1, minWidth: 120 }}>
-                  <Text style={styles.fieldLabel}>Step</Text>
-                  <View style={{ alignItems: "flex-start", gap: 4, marginTop: 2 }}>
-                    {canEditStep ? (
-                      <Pressable
-                        hitSlop={8}
-                        testID="step-select"
-                        accessibilityRole="button"
-                        accessibilityLabel="Change step"
-                        disabled={stepSaving}
-                        onPress={() => setStepPickerOpen(true)}
-                        style={{ flexDirection: "row", alignItems: "center", gap: 4, opacity: stepSaving ? 0.6 : 1 }}
-                      >
-                        <Text style={styles.fieldValue}>{stepLabel(c.step)}</Text>
-                        {stepSaving ? (
-                          <ActivityIndicator size="small" color={colors.textTertiary} />
-                        ) : (
-                          <Ionicons name="chevron-down" size={14} color={colors.tint} />
-                        )}
-                      </Pressable>
-                    ) : (
-                      <Text testID="step-value" style={styles.fieldValue}>
-                        {stepLabel(c.step)}
-                      </Text>
-                    )}
-                    {c.step === "wax_setup" ? (
-                      canEditStep ? (
-                        <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs }}>
-                          <Text style={{ fontSize: 11, color: colors.textSecondary }}>Shade</Text>
-                          <TextInput
-                            style={[styles.input, { minWidth: 90, paddingVertical: 4 }]}
-                            value={stepShadeValue}
-                            onChangeText={setStepShadeValue}
-                            onBlur={() => void commitStepShade()}
-                            onSubmitEditing={() => void commitStepShade()}
-                            placeholder="e.g. A2"
-                            placeholderTextColor={colors.textTertiary}
-                            editable={!stepShadeSaving}
-                            returnKeyType="done"
-                            testID="step-shade-input"
-                          />
-                          {stepShadeSaving ? <ActivityIndicator size="small" color={colors.textTertiary} /> : null}
-                        </View>
-                      ) : c.stepShade ? (
-                        <Text testID="step-shade-value" style={{ fontSize: 11, color: colors.textSecondary }}>
-                          Shade: {c.stepShade}
-                        </Text>
-                      ) : null
-                    ) : null}
-                  </View>
-                </View>
-              );
-              // All three rows are always rendered (with "—" placeholders) and
-              // each carries its own edit affordance, so a case that has no
-              // subtype or material yet can still have one set from mobile.
-              const hierarchyRow = (
-                label: string,
-                value: string,
-                valueTestID: string,
-                testID: string,
-                accessibilityLabel: string,
-              ) => {
-                const field = (
-                  <>
-                  <Text
-                    style={[
-                      styles.fieldLabel,
-                      rushColor ? { color: rushColor } : undefined,
-                    ]}
-                  >
-                    {label}
-                  </Text>
-                  <View style={{ alignItems: "flex-end", flexShrink: 1 }}>
-                    <Text
-                      testID={valueTestID}
-                      style={[
-                        styles.fieldValue,
-                        rushColor ? { color: rushColor } : undefined,
-                      ]}
-                    >
-                      {value}
-                    </Text>
-                    {showEdit ? (
-                      <Pressable
-                        hitSlop={8}
-                        onPress={openHierarchyEdit}
-                        testID={testID}
-                        accessibilityLabel={accessibilityLabel}
-                        style={{ marginTop: 4 }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 12,
-                            color: colors.tint,
-                            fontWeight: "500",
-                          }}
-                        >
-                          Edit
-                        </Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                  </>
-                );
-                if (label === "Case Type" && stepIsRemovable) {
-                  return (
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "flex-start",
-                        gap: Spacing.md,
-                      }}
-                    >
-                      <View style={{ flex: 1, minWidth: 120 }}>{field}</View>
-                      {stepField}
-                    </View>
-                  );
-                }
-                return (
-                  <View style={[styles.fieldRow, { alignItems: "flex-start" }]}>
-                    {field}
-                  </View>
-                );
-              };
-              return (
-                <>
-                  {showEdit ? (
-                    <>
-                      <CaseHierarchyQuickPicker
-                        key={caseId}
-                        caseId={caseId}
-                        hierarchy={firstHierarchy}
-                        empty={restorations.length === 0}
-                        mixed={hierarchyIsMixed}
-                        catalog={hierarchyCatalogQuery.data?.data}
-                        arch={savedArch ?? ""}
-                        refresh={refreshClinicalQueries}
-                      />
-                      {stepIsRemovable && stepField}
-                    </>
-                  ) : <>
-                  {hierarchyRow(
-                    "Case Type",
-                    ctLabel,
-                    "hierarchy-casetype-value",
-                    "hierarchy-edit-btn",
-                    "Edit case type",
-                  )}
-                  {hierarchyRow(
-                    "Case Subtype",
-                    stLabel,
-                    "hierarchy-subtype-value",
-                    "hierarchy-edit-subtype-btn",
-                    "Edit subtype",
-                  )}
-                  {hierarchyRow(
-                    "Case Material",
-                    matLabel,
-                    "hierarchy-material-value",
-                    "hierarchy-edit-material-btn",
-                    "Edit case material",
-                  )}
-                  </>}
-                  {displayHierarchy?.caseType && isArchRequired(displayHierarchy.caseType)
-                    ? hierarchyRow(
-                        "Arch",
-                        savedArch ? (savedArch === "both" ? "Upper + Lower" : savedArch === "upper" ? "Upper" : "Lower") : "Required",
-                        "hierarchy-arch-value",
-                        "hierarchy-edit-arch-btn",
-                        "Edit arch",
-                      )
-                    : null}
-                </>
-              );
-            })()}
-            {!editing && c.gingivialShade && c.gingivialShade.trim() ? (
-              <FieldRow
-                label="Gingival shade"
-                value={c.gingivialShade}
-                styles={styles}
-                rushColor={rushColor}
-              />
-            ) : null}
-            {c.bridgeConnectors && c.bridgeConnectors.trim() ? (
-              <FieldRow
-                label="Bridge connectors"
-                value={c.bridgeConnectors}
-                styles={styles}
-                rushColor={rushColor}
-              />
-            ) : null}
-            {!editing ? <View style={styles.fieldRow}>
-              <Text
-                style={[
-                  styles.fieldLabel,
-                  rushColor ? { color: rushColor } : undefined,
-                ]}
-              >
-                Pan Barcode
-              </Text>
+            {!editing ? <CaseDetailField label="Pan Barcode">
               <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
                   gap: Spacing.xs,
                   flexShrink: 1,
-                  justifyContent: "flex-end",
+                    justifyContent: "space-between",
                 }}
               >
                 <Text
                   style={[
-                    styles.fieldValue,
+                    styles.bodyText,
                     { flexShrink: 1 },
                     rushColor ? { color: rushColor } : undefined,
                   ]}
-                  numberOfLines={1}
                 >
                   {c.casePanBarcode && c.casePanBarcode.trim()
                     ? c.casePanBarcode.trim()
@@ -6600,6 +6447,9 @@ function OverviewSection({
                   <Pressable
                     hitSlop={8}
                     testID="scan-barcode-btn"
+                    accessibilityRole="button"
+                    accessibilityLabel="Scan pan barcode"
+                    style={{ minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center" }}
                     onPress={() => {
                       clearAiReaderSession();
                       setAiReaderSession({
@@ -6627,8 +6477,7 @@ function OverviewSection({
                   </Pressable>
                 ) : null}
               </View>
-            </View> : null}
-            </View>
+            </CaseDetailField> : null}
           </View>
       </Card>
 
@@ -7098,9 +6947,15 @@ function OverviewSection({
                         <Pressable
                           key={opt.value}
                           testID={`step-option-${opt.value}`}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Step: ${opt.label}`}
+                          accessibilityState={{ selected: activeOpt, disabled: stepSaving }}
+                          aria-pressed={activeOpt}
                           disabled={stepSaving}
                           onPress={() => void saveStep(opt.value)}
                           style={{
+                            minHeight: 48,
+                            justifyContent: "center",
                             padding: 12,
                             borderRadius: 8,
                             borderWidth: 1,
@@ -7124,9 +6979,15 @@ function OverviewSection({
                     {/* Unset the step entirely (desktop's blank "—" option). */}
                     <Pressable
                       testID="step-option-none"
+                      accessibilityRole="button"
+                      accessibilityLabel="Step: No step"
+                      accessibilityState={{ selected: !c.step, disabled: stepSaving }}
+                      aria-pressed={!c.step}
                       disabled={stepSaving}
                       onPress={() => void saveStep(null)}
                       style={{
+                        minHeight: 48,
+                        justifyContent: "center",
                         padding: 12,
                         borderRadius: 8,
                         borderWidth: 1,
@@ -7146,8 +7007,11 @@ function OverviewSection({
                   </View>
                   <Pressable
                     testID="step-picker-cancel"
+                    accessibilityRole="button"
                     onPress={() => setStepPickerOpen(false)}
                     style={{
+                      minHeight: 48,
+                      justifyContent: "center",
                       marginTop: Spacing.md,
                       padding: 12,
                       borderRadius: 8,
@@ -7208,255 +7072,24 @@ function OverviewSection({
                       marginBottom: Spacing.md,
                     }}
                   >
-                    Edit Case Type
+                    Edit Restoration Details
                   </Text>
 
-                  {/* Case Type */}
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      fontWeight: "600",
-                      color: colors.textSecondary,
-                      textTransform: "uppercase",
-                      letterSpacing: 0.5,
-                      marginBottom: Spacing.xs,
+                  {hierarchyEditOpen ? <CaseHierarchyDialogFields
+                    type={draftCt} subtype={draftSt} material={draftMat} arch={draftArch}
+                    catalog={hierarchyCatalogQuery.data?.data} disabled={hierarchySaving}
+                    savedValues={{
+                      restorationType: draftCt === firstHierarchy?.caseType &&
+                        draftSt === (firstHierarchy?.subtype ?? (firstHierarchy?.customSubtypeId ? `custom:${firstHierarchy.customSubtypeId}` : null))
+                        ? firstRestoration?.restorationType : null,
+                      material: draftMat === (firstHierarchy?.materialSubtype ?? (firstHierarchy?.customMaterialSubtypeId ? `custom:${firstHierarchy.customMaterialSubtypeId}` : null))
+                        ? firstRestoration?.material : null,
                     }}
-                  >
-                    Case Type
-                  </Text>
-                  <View style={{ gap: 6, marginBottom: Spacing.md }}>
-                    {CASE_TYPES.map((ct) => {
-                      const active = draftCt === ct;
-                      return (
-                        <Pressable
-                          key={ct}
-                          testID={`hierarchy-ct-${ct}`}
-                          onPress={() => {
-                            setDraftCt(ct);
-                            setDraftSt(null);
-                            setDraftMat(null);
-                          }}
-                          style={{
-                            padding: 12,
-                            borderRadius: 8,
-                            borderWidth: 1,
-                            borderColor: active ? colors.tint : colors.border,
-                            backgroundColor: active
-                              ? ((colors as any).tintLight ?? colors.surfaceAlt)
-                              : colors.surfaceAlt,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              color: active ? colors.tint : colors.text,
-                              fontWeight: active ? "600" : "400",
-                            }}
-                          >
-                            {CASE_TAXONOMY[ct].label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-
-                  {draftCt && isArchRequired(draftCt) ? (
-                    <>
-                      <Text
-                        style={{
-                          fontSize: 11,
-                          fontWeight: "600",
-                          color: colors.textSecondary,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
-                          marginBottom: Spacing.xs,
-                        }}
-                      >
-                        Arch *
-                      </Text>
-                      <View style={{ gap: 6, marginBottom: Spacing.md }}>
-                        {ARCH_OPTIONS.map((option) => {
-                          const active = draftArch === option.value;
-                          return (
-                            <Pressable
-                              key={option.value}
-                              testID={`hierarchy-arch-${option.value}`}
-                              onPress={() => setDraftArch(option.value)}
-                              style={{
-                                padding: 12,
-                                borderRadius: 8,
-                                borderWidth: 1,
-                                borderColor: active ? colors.tint : colors.border,
-                                backgroundColor: active
-                                  ? ((colors as any).tintLight ?? colors.surfaceAlt)
-                                  : colors.surfaceAlt,
-                              }}
-                            >
-                              <Text style={{ color: active ? colors.tint : colors.text, fontWeight: active ? "600" : "400" }}>
-                                {option.label}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </>
-                  ) : null}
-
-                  {/* Sub Type — shown once a case type is selected */}
-                  {(() => {
-                    if (!draftCt) return null;
-                    const catalogCaseTypes =
-                      hierarchyCatalogQuery.data?.data?.caseTypes ?? [];
-                    const ctNode = catalogCaseTypes.find(
-                      (n) => n.key === draftCt,
-                    );
-                    const subtypes = ctNode?.subtypes ?? [];
-                    if (subtypes.length === 0) return null;
-                    return (
-                      <>
-                        <Text
-                          style={{
-                            fontSize: 11,
-                            fontWeight: "600",
-                            color: colors.textSecondary,
-                            textTransform: "uppercase",
-                            letterSpacing: 0.5,
-                            marginBottom: Spacing.xs,
-                          }}
-                        >
-                          Sub Type
-                        </Text>
-                        <View style={{ gap: 6, marginBottom: Spacing.md }}>
-                          {subtypes.map((st) => {
-                            const active = draftSt === st.key;
-                            return (
-                              <Pressable
-                                key={st.key}
-                                testID={`hierarchy-st-${st.key}`}
-                                onPress={() => {
-                                  setDraftSt(st.key);
-                                  setDraftMat(null);
-                                }}
-                                style={{
-                                  padding: 12,
-                                  borderRadius: 8,
-                                  borderWidth: 1,
-                                  borderColor: active
-                                    ? colors.tint
-                                    : colors.border,
-                                  backgroundColor: active
-                                    ? ((colors as any).tintLight ??
-                                      colors.surfaceAlt)
-                                    : colors.surfaceAlt,
-                                }}
-                              >
-                                <Text
-                                  style={{
-                                    color: active ? colors.tint : colors.text,
-                                    fontWeight: active ? "600" : "400",
-                                  }}
-                                >
-                                  {st.label}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      </>
-                    );
-                  })()}
-
-                  {/* Material — shown when selected subtype has materials */}
-                  {(() => {
-                    if (!draftCt || !draftSt) return null;
-                    const catalogCaseTypes =
-                      hierarchyCatalogQuery.data?.data?.caseTypes ?? [];
-                    const ctNode = catalogCaseTypes.find(
-                      (n) => n.key === draftCt,
-                    );
-                    const stNode = ctNode?.subtypes.find(
-                      (n) => n.key === draftSt,
-                    );
-                    const materials = stNode?.materials ?? [];
-                    if (materials.length === 0) return null;
-                    return (
-                      <>
-                        <Text
-                          style={{
-                            fontSize: 11,
-                            fontWeight: "600",
-                            color: colors.textSecondary,
-                            textTransform: "uppercase",
-                            letterSpacing: 0.5,
-                            marginBottom: Spacing.xs,
-                          }}
-                        >
-                          Material
-                        </Text>
-                        <View style={{ gap: 6, marginBottom: Spacing.md }}>
-                          <Pressable
-                            testID="hierarchy-mat-none"
-                            onPress={() => setDraftMat(null)}
-                            style={{
-                              padding: 12,
-                              borderRadius: 8,
-                              borderWidth: 1,
-                              borderColor:
-                                draftMat === null ? colors.tint : colors.border,
-                              backgroundColor:
-                                draftMat === null
-                                  ? ((colors as any).tintLight ??
-                                    colors.surfaceAlt)
-                                  : colors.surfaceAlt,
-                            }}
-                          >
-                            <Text
-                              style={{
-                                color:
-                                  draftMat === null
-                                    ? colors.tint
-                                    : colors.textSecondary,
-                                fontWeight: draftMat === null ? "600" : "400",
-                                fontStyle: "italic",
-                              }}
-                            >
-                              No material
-                            </Text>
-                          </Pressable>
-                          {materials.map((m) => {
-                            const active = draftMat === m.key;
-                            return (
-                              <Pressable
-                                key={m.key}
-                                testID={`hierarchy-mat-${m.key}`}
-                                onPress={() => setDraftMat(m.key)}
-                                style={{
-                                  padding: 12,
-                                  borderRadius: 8,
-                                  borderWidth: 1,
-                                  borderColor: active
-                                    ? colors.tint
-                                    : colors.border,
-                                  backgroundColor: active
-                                    ? ((colors as any).tintLight ??
-                                      colors.surfaceAlt)
-                                    : colors.surfaceAlt,
-                                }}
-                              >
-                                <Text
-                                  style={{
-                                    color: active ? colors.tint : colors.text,
-                                    fontWeight: active ? "600" : "400",
-                                  }}
-                                >
-                                  {m.label}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      </>
-                    );
-                  })()}
+                    onType={(ct) => { setDraftCt(ct); setDraftSt(null); setDraftMat(null); }}
+                    onSubtype={(st) => { setDraftSt(st); setDraftMat(null); }}
+                    onMaterial={setDraftMat}
+                    onArch={setDraftArch}
+                  /> : null}
 
                   {hierarchyError ? (
                     <Text
@@ -7472,9 +7105,13 @@ function OverviewSection({
 
                   <View style={{ flexDirection: "row", gap: 12, marginTop: 4 }}>
                     <Pressable
+                      testID="hierarchy-cancel-btn"
+                      accessibilityRole="button"
                       onPress={() => setHierarchyEditOpen(false)}
                       disabled={hierarchySaving}
                       style={{
+                        minHeight: 48,
+                        justifyContent: "center",
                         flex: 1,
                         padding: 12,
                         borderRadius: 8,
@@ -7486,11 +7123,14 @@ function OverviewSection({
                       <Text style={{ color: colors.text }}>Cancel</Text>
                     </Pressable>
                     <Pressable
+                      accessibilityRole="button"
                       onPress={() => {
                         void saveHierarchy();
                       }}
                       disabled={hierarchySaving || !draftCt}
                       style={{
+                        minHeight: 48,
+                        justifyContent: "center",
                         flex: 1,
                         padding: 12,
                         borderRadius: 8,
@@ -7888,9 +7528,9 @@ function CustomShadeMetadata({
     </View>
   );
   return (
-    <View style={{ minWidth: 190, flex: 1, gap: Spacing.xs }}>
+    <View style={{ width: "100%", minWidth: 0, gap: Spacing.sm }}>
       <Pressable
-        style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, alignSelf: "flex-start" }}
+        style={{ flexDirection: "row", alignItems: "center", gap: Spacing.sm, minHeight: 44 }}
         onPress={() => {
           if (!canEdit || saving) return;
           const next = !c.isCustomShade;
@@ -7907,22 +7547,24 @@ function CustomShadeMetadata({
         }}
         disabled={!canEdit || saving}
         accessibilityRole="checkbox"
-        accessibilityState={{ checked: !!c.isCustomShade }}
+        accessibilityState={{ checked: !!c.isCustomShade, disabled: !canEdit || saving }}
+        aria-checked={!!c.isCustomShade}
+        accessibilityLabel="Custom Shade"
         testID="custom-shade-toggle"
       >
         {checkbox(!!c.isCustomShade)}
-        <Text style={[styles.fieldLabel, { fontSize: 12 }]}>Custom Shade</Text>
+        <Text style={[caseDetailFieldStyles.heading, { color: colors.text, flexShrink: 1 }]}>Custom Shade</Text>
         {saving ? <ActivityIndicator size="small" color={colors.textTertiary} /> : null}
       </Pressable>
       {c.isCustomShade ? (
         <View style={{ paddingLeft: Spacing.md, gap: Spacing.sm, borderLeftWidth: 2, borderLeftColor: colors.border }}>
           <View style={{ gap: 4 }}>
-            <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: "500" }}>
+            <Text style={[caseDetailFieldStyles.heading, { color: colors.text }]}>
               Technician name
             </Text>
             {canEdit ? (
               <TextInput
-                style={styles.input}
+                style={[styles.input, caseDetailFieldStyles.input]}
                 value={techValue}
                 onChangeText={onTechChange}
                 onBlur={onTechCommit}
@@ -7932,6 +7574,7 @@ function CustomShadeMetadata({
                 editable={!saving}
                 returnKeyType="done"
                 testID="custom-shade-technician-input"
+                accessibilityLabel="Custom shade technician name"
               />
             ) : (
               <Text style={styles.bodyText}>{c.customShadeTechnician?.trim() || "—"}</Text>
@@ -7946,17 +7589,19 @@ function CustomShadeMetadata({
             return (
               <Pressable
                 key={kind}
-                style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs }}
+                style={{ flexDirection: "row", alignItems: "center", gap: Spacing.sm, minHeight: 44 }}
                 onPress={() => {
                   if (canEdit && !saving) void onToggle({ [field]: !checked });
                 }}
                 disabled={!canEdit || saving}
                 accessibilityRole="checkbox"
-                accessibilityState={{ checked }}
+                accessibilityState={{ checked, disabled: !canEdit || saving }}
+                aria-checked={checked}
+                accessibilityLabel={isPictures ? "Pictures available" : "Video available"}
                 testID={`custom-shade-${kind}-toggle`}
               >
                 {checkbox(checked)}
-                <Text style={styles.checkboxLabel}>
+                <Text style={[styles.checkboxLabel, { flexShrink: 1 }]}>
                   {isPictures ? "Pictures available" : "Video available"}
                 </Text>
               </Pressable>
@@ -8121,7 +7766,7 @@ function RestorationsSection({
   );
   const effectiveConnectedPairs = connectedPairs;
   const assignmentSummary = toothAssignmentSummary(connectorUnits, bridgeConnectors);
-  const assignmentSummaryText = `${assignmentSummary.units} units · ${assignmentSummary.groups.length} connected groups · ${assignmentSummary.materials.map(({ material, count }) => `${material}: ${count}`).join(", ")} · ${updateCase.isPending || addRestoration.isPending || updateRestoration.isPending || deleteRestoration.isPending ? "Saving assignments…" : "Saved automatically"}`;
+  const assignmentSummaryText = `${[...toothBridgeLabels(connectorUnits, bridgeConnectors), ""].join(" · ")}${assignmentSummary.units} units${assignmentSummary.veneers ? ` (${assignmentSummary.veneers} veneer${assignmentSummary.veneers === 1 ? "" : "s"})` : ""} · ${assignmentSummary.groups.length} connected groups · ${assignmentSummary.materials.map(({ material, count }) => `${material}: ${count}`).join(", ")} · ${updateCase.isPending || addRestoration.isPending || updateRestoration.isPending || deleteRestoration.isPending ? "Saving assignments…" : "Saved automatically"}`;
   const connectorValidation = useMemo(() => validateToothConnectors(bridgeConnectors, connectorUnits), [bridgeConnectors, connectorUnits]);
   const saveConnectorPairs = useCallback(async (nextPairs: Set<string>) => {
     if (updateCase.isPending) return;
@@ -8623,6 +8268,17 @@ function RestorationsSection({
     return set;
   }, [restorations]);
 
+  // Display only: explicit single-tooth Veneer rows.
+  const veneerTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of restorations) {
+      if (!r.toothNumber || !/^veneer$/i.test(r.restorationType ?? "")) continue;
+      const ids = parseToothField(r.toothNumber);
+      if (ids.size === 1) set.add([...ids][0]);
+    }
+    return set;
+  }, [restorations]);
+
   const ponticTeeth = useMemo(() => {
     const set = new Set<string>();
     for (const r of restorations) {
@@ -8698,7 +8354,7 @@ function RestorationsSection({
     }
 
     if (payload.kind === "copy_assignment") {
-      const role = /^crown$/i.test(payload.role ?? "") ? "Crown" : /^pontic$/i.test(payload.role ?? "") ? "Pontic" : null;
+      const role = /^crown$/i.test(payload.role ?? "") ? "Crown" : /^pontic$/i.test(payload.role ?? "") ? "Pontic" : /^veneer$/i.test(payload.role ?? "") ? "Veneer" : null;
       const material = payload.material;
       if (!material || !role) { setSheetError("Confirm a role and catalog material before copying this assignment."); return; }
       setAssignmentBatchBusy(true);
@@ -8789,7 +8445,7 @@ function RestorationsSection({
                 : payload.material;
             return {
               toothNumber: payload.toothId,
-              restorationType: "Crown",
+              restorationType: payload.restorationType === "Veneer" ? "Veneer" : "Crown",
               material: normalizedMaterial,
               ...(payload.restorationSubtype
                 ? { restorationSubtype: payload.restorationSubtype }
@@ -8848,6 +8504,7 @@ function RestorationsSection({
     <ToothChart
       crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
       ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
+      veneerTeeth={veneerTeeth}
       missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
       billedTeeth={billedTeeth}
       highlighted={highlighted}
@@ -8875,6 +8532,7 @@ function RestorationsSection({
     <ReadOnlyToothChart
       crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
       ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
+      veneerTeeth={veneerTeeth}
       missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
       billedTeeth={billedTeeth}
       highlighted={highlighted}
@@ -11706,16 +11364,26 @@ function makeStyles(c: ThemeColors) {
     },
     header: {
       flexDirection: "row",
+      flexWrap: "wrap",
       alignItems: "center",
+      justifyContent: "flex-end",
       paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.sm,
       gap: Spacing.sm,
     },
-    backBtn: { padding: Spacing.xs },
-    headerTitles: { flex: 1 },
+    headerMain: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexGrow: 1,
+      flexShrink: 1,
+      minWidth: 0,
+      gap: Spacing.sm,
+    },
+    backBtn: { padding: Spacing.xs, flexShrink: 0 },
+    headerTitles: { flexGrow: 1, flexShrink: 1, minWidth: 0 },
     headerTitle: { ...Typography.h2, color: c.text },
-    headerSubtitle: { ...Typography.caption, color: c.textSecondary },
-    headerRight: { marginLeft: Spacing.sm },
+    headerSubtitle: { ...Typography.h2, color: c.textSecondary, flexShrink: 1 },
+    headerRight: { marginLeft: Spacing.sm, flexShrink: 0 },
     sharedSaveBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -11762,7 +11430,7 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "center",
       gap: Spacing.xs,
       minHeight: 44,
-      paddingHorizontal: Spacing.sm,
+      paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.xs,
       borderRadius: Radius.sm,
       borderWidth: StyleSheet.hairlineWidth,
@@ -11776,8 +11444,7 @@ function makeStyles(c: ThemeColors) {
       marginBottom: Spacing.xs,
     },
     scheduleSummary: {
-      flexDirection: "row",
-      flexWrap: "wrap",
+      flexDirection: "column",
       alignItems: "stretch",
       gap: Spacing.xs,
       padding: Spacing.sm,
@@ -11788,9 +11455,9 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.surfaceAlt,
     },
     scheduleMetric: {
-      flexGrow: 1,
-      flexBasis: 100,
-      minWidth: 96,
+      flexGrow: 0,
+      flexBasis: "auto",
+      minWidth: 0,
       paddingVertical: Spacing.xs,
       paddingHorizontal: Spacing.xs,
     },
@@ -11814,10 +11481,20 @@ function makeStyles(c: ThemeColors) {
       alignItems: "flex-start",
       gap: Spacing.md,
     },
+    patientProviderGridLargeText: {
+      flexDirection: "column",
+      alignItems: "stretch",
+    },
     patientProviderField: {
       flexGrow: 1,
       flexBasis: 120,
       minWidth: 112,
+    },
+    patientProviderFieldLargeText: {
+      alignSelf: "stretch",
+      flexGrow: 0,
+      flexBasis: "auto",
+      minWidth: 0,
     },
     practiceProviderField: {
       flexGrow: 2,
@@ -11825,16 +11502,32 @@ function makeStyles(c: ThemeColors) {
       minWidth: 130,
     },
     restorationDetailsPanel: {
-      gap: Spacing.xs,
+      width: "100%",
+      minWidth: 0,
+      gap: Spacing.lg,
       padding: Spacing.md,
+      marginBottom: Spacing.md,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: c.border,
       borderRadius: Radius.md,
       backgroundColor: c.surfaceAlt,
     },
+    restorationFieldStack: {
+      width: "100%",
+      minWidth: 0,
+      flexDirection: "column",
+      alignItems: "stretch",
+      gap: Spacing.lg,
+    },
     infoFieldLabel: {
       ...Typography.captionSemibold,
       color: c.textSecondary,
+    },
+    patientNameValue: {
+      ...Typography.h2,
+      color: c.text,
+      width: "100%",
+      flexShrink: 1,
     },
     bodyText: { ...Typography.body, color: c.text },
     fieldRow: {
@@ -11941,6 +11634,8 @@ function makeStyles(c: ThemeColors) {
       width: "31%",
       backgroundColor: c.surfaceAlt,
       borderRadius: Radius.md,
+      borderWidth: BorderWidth.section,
+      borderColor: c.sectionBorder,
       paddingBottom: Spacing.xs,
     },
     thumbImage: { width: "100%", height: "100%" },
@@ -11951,8 +11646,8 @@ function makeStyles(c: ThemeColors) {
       overflow: "hidden",
       marginTop: Spacing.xs,
       backgroundColor: c.surfaceAlt,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: c.border,
+      borderWidth: BorderWidth.section,
+      borderColor: c.sectionBorder,
     },
     historyAttachRow: {
       flexDirection: "row",

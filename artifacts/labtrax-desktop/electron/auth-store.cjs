@@ -30,8 +30,8 @@ function ensurePaths() {
  *   - "keychain-unavailable" — a blob exists but the OS keychain can't decrypt
  *                              it on this machine (e.g. fresh Linux session
  *                              with no gnome-keyring/kwallet)
- *   - "decrypt-failed"       — the blob is corrupt / unreadable; we delete
- *                              it so a fresh sign-in starts clean
+ *   - "decrypt-failed"       — the blob is corrupt / unreadable; we attempt
+ *                              to delete it so a fresh sign-in starts clean
  *   - "ok"                   — `tokens` populated
  */
 function getTokensWithStatus() {
@@ -52,6 +52,11 @@ function getTokensWithStatus() {
   try {
     blob = fs.readFileSync(tokensPath);
   } catch {
+    try {
+      fs.unlinkSync(tokensPath);
+    } catch {
+      /* ignore */
+    }
     return { status: "decrypt-failed" };
   }
   let json;
