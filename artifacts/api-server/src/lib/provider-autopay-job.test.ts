@@ -479,7 +479,7 @@ maybe("provider auto-pay scheduler (db integration)", () => {
       savePaymentMethod: false,
       status: "succeeded",
       stripePaymentIntentId: "pi_already_settled",
-      settledAt: new Date(),
+      settledAt: new Date("2026-09-07T11:00:00.000Z"),
     }).returning();
     const [attempt] = await db.insert(tables.providerAutoPayAttempts).values({
       providerOrganizationId,
@@ -488,10 +488,12 @@ maybe("provider auto-pay scheduler (db integration)", () => {
       scheduledFor: new Date("2026-09-06T00:00:00.000Z"),
       amount: "40.00",
       status: "processing",
+      // Explicitly precede the stale cutoff; wall clocks can differ from PostgreSQL.
+      updatedAt: new Date("2026-09-07T11:00:00.000Z"),
     }).returning();
     const { reconcileStaleProviderAutoPayAttempts } = await import("./billing-jobs.js");
 
-    await reconcileStaleProviderAutoPayAttempts(new Date(), 0);
+    await reconcileStaleProviderAutoPayAttempts(new Date("2026-09-07T12:00:00.000Z"));
 
     const [recovered] = await db.select().from(tables.providerAutoPayAttempts)
       .where(eq(tables.providerAutoPayAttempts.id, attempt.id));
