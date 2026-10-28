@@ -124,7 +124,7 @@ jobs:
       - name: Install PostgreSQL 16 server tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16 postgresql-client-16
+          sudo apt-get install -y postgresql-16 postgresql-client-16 poppler-utils
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Start isolated PostgreSQL with verified TLS
@@ -387,7 +387,7 @@ jobs:
 
   test-labtrax-desktop:
     name: Desktop client tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -500,7 +500,7 @@ jobs:
 
   test-labtrax-mobile:
     name: Mobile client tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4

@@ -21,6 +21,8 @@ function fixture() {
   copyFileSync(resolve(import.meta.dirname, "../../eas-ios-submit-only.sh"), join(root, "scripts/eas-ios-submit-only.sh"));
   const app = join(root, "artifacts/labtrax/app.json");
   writeFileSync(app, JSON.stringify({ expo: { ios: { buildNumber: "333" }, name: "original", extra: { eas: { projectId } } } }) + "\n");
+  // Runtime receipts and fake provider logs are not source inputs.
+  writeFileSync(join(root, ".gitignore"), ".local/\ncalls\n");
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "add", "."]);
   execFileSync("git", ["-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"]);
