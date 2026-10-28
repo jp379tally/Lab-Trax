@@ -10,6 +10,11 @@ const ACCEPTED_SOURCE_PATCH = {
   regressionName: "node-forge rejects extra DigestAlgorithm elements and invalid NULL parameters",
 };
 
+const ACCEPTED_DEEPMERGE_PATCH = {
+  advisoryId: "GHSA-gcqx-w48m-w2h4", packageName: "deepmerge", packageVersion: "4.3.1",
+  regressionName: "deepmerge preserves own data keys without poisoning result prototypes",
+};
+
 function evaluateAuditReport(report, evidence) {
   const advisories = Object.values(report?.advisories ?? {});
   if (advisories.length === 0) return { ok: true, accepted: [], rejected: [] };
@@ -18,21 +23,21 @@ function evaluateAuditReport(report, evidence) {
   const rejected = [];
   for (const advisory of advisories) {
     const findings = advisory.findings ?? [];
+    const policy = advisory.github_advisory_id === ACCEPTED_DEEPMERGE_PATCH.advisoryId
+      ? ACCEPTED_DEEPMERGE_PATCH : ACCEPTED_SOURCE_PATCH;
+    const isForge = policy === ACCEPTED_SOURCE_PATCH;
+    const patch = isForge ? evidence.patch : evidence.deepmergePatch;
     const isVerifiedSourcePatch =
-      advisory.github_advisory_id === ACCEPTED_SOURCE_PATCH.advisoryId &&
-      advisory.module_name === ACCEPTED_SOURCE_PATCH.packageName &&
-      advisory.severity === "high" &&
-      advisory.vulnerable_versions === "<=1.4.0" &&
-      // Require a review again as soon as the registry advertises a fixed release.
-      advisory.patched_versions === "<0.0.0" &&
-      findings.length > 0 &&
-      findings.every((finding) => finding.version === ACCEPTED_SOURCE_PATCH.packageVersion) &&
-      evidence.workspace.includes(
-        `${ACCEPTED_SOURCE_PATCH.packageName}@${ACCEPTED_SOURCE_PATCH.packageVersion}: patches/${ACCEPTED_SOURCE_PATCH.packageName}@${ACCEPTED_SOURCE_PATCH.packageVersion}.patch`,
-      ) &&
-      evidence.lockfile.includes(`${ACCEPTED_SOURCE_PATCH.packageName}@${ACCEPTED_SOURCE_PATCH.packageVersion}(patch_hash=`) &&
-      evidence.patch.trim().length > 0 &&
-      evidence.regressions.includes(ACCEPTED_SOURCE_PATCH.regressionName);
+      advisory.github_advisory_id === policy.advisoryId &&
+      advisory.module_name === policy.packageName &&
+      advisory.severity === (isForge ? "high" : "low") &&
+      advisory.vulnerable_versions === (isForge ? "<=1.4.0" : ">=4.2.0 <=4.3.1") &&
+      advisory.patched_versions === "<0.0.0" && findings.length > 0 &&
+      findings.every(finding => finding.version === policy.packageVersion) &&
+      evidence.workspace.includes(`${policy.packageName}@${policy.packageVersion}: patches/${policy.packageName}@${policy.packageVersion}.patch`) &&
+      evidence.lockfile.includes(`${policy.packageName}@${policy.packageVersion}(patch_hash=`) &&
+      typeof patch === "string" && patch.trim().length > 0 &&
+      evidence.regressions.includes(policy.regressionName);
 
     if (isVerifiedSourcePatch) accepted.push(advisory);
     else rejected.push(advisory);
@@ -90,11 +95,12 @@ function main() {
       "utf8",
     ),
   };
+  evidence.deepmergePatch = readFileSync(path.join(ROOT, "patches/deepmerge@4.3.1.patch"), "utf8");
   const decision = evaluateAuditReport(report, evidence);
 
   for (const advisory of decision.accepted) {
     console.warn(
-      `SOURCE-PATCHED ADVISORY (not an upstream fixed release): ${advisory.github_advisory_id} ${advisory.module_name}@${ACCEPTED_SOURCE_PATCH.packageVersion}. ` +
+      `SOURCE-PATCHED ADVISORY (not an upstream fixed release): ${advisory.github_advisory_id} ${advisory.module_name}@${advisory.findings[0].version}. ` +
       "The locked source patch and its dependency-security regression are required; the audit finding remains visible here.",
     );
   }
@@ -115,7 +121,7 @@ function main() {
   console.log(
     decision.accepted.length === 0
       ? "Dependency audit passed with no advisories."
-      : "Dependency audit passed with only the explicitly evidenced source-patched advisory above.",
+      : "Dependency audit passed with only the explicitly evidenced source-patched advisories above.",
   );
 }
 

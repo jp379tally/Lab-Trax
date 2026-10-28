@@ -212,8 +212,9 @@ describe("bounded full-media archive producer", () => {
     expect(results.map(result => result.concurrency)).toEqual([1, 3, 6]);
     expect(results.every(result => result.elapsedMs > 0 && result.endToEndBytesPerSecond > 0 &&
       result.phaseThroughputBytesPerSecond > 0)).toBe(true);
-    expect(results[1]!.elapsedMs).toBeLessThan(results[0]!.elapsedMs);
-    expect(results[2]!.elapsedMs).toBeLessThan(results[1]!.elapsedMs);
+    // Wall-clock throughput is diagnostic: runner contention can reverse it.
+    // Gate the actual overlap, bounds, byte integrity, and completion evidence.
+    expect(results.map(result => result.peak)).toEqual([1, 3, 6]);
     console.info("Synthetic case-media transfer phase measurements", results);
   }, 30_000);
 

@@ -936,3 +936,35 @@ test("node-forge rejects extra DigestAlgorithm elements and invalid NULL paramet
     }
   }
 });
+
+
+test("deepmerge preserves own data keys without poisoning result prototypes", () => {
+  const merge = requireHoistedDependency("deepmerge");
+  const dangerous = JSON.parse('{"__proto__":{"injected":true},"nested":{"value":1}}');
+  for (const result of [merge(dangerous, {}), merge(Object.create(null), dangerous),
+    merge({ child: dangerous }, {}).child, merge({ list: [dangerous] }, {}).list[0]]) {
+    assert.equal(Object.getPrototypeOf(result), Object.prototype);
+    assert.equal(result.injected, undefined);
+    // Existing source-key guards may omit the dangerous key while cloning.
+    // If retained, it must be an own data property, never the result prototype.
+    if (Object.hasOwn(result, "__proto__")) assert.equal(result.__proto__.injected, true);
+    assert.equal(result.nested.value, 1);
+  }
+  assert.equal({}.injected, undefined);
+  assert.deepEqual(merge({ a: { x: 1 }, list: [1] }, { a: { y: 2 }, list: [2] }),
+    { a: { x: 1, y: 2 }, list: [1, 2] });
+});
+
+test("deepmerge advisory requires its own locked patch and regression evidence", () => {
+  const advisory = { github_advisory_id: "GHSA-gcqx-w48m-w2h4", module_name: "deepmerge",
+    severity: "low", vulnerable_versions: ">=4.2.0 <=4.3.1", patched_versions: "<0.0.0",
+    findings: [{ version: "4.3.1" }] };
+  const evidence = { workspace: "deepmerge@4.3.1: patches/deepmerge@4.3.1.patch",
+    lockfile: "deepmerge@4.3.1(patch_hash=abc)", deepmergePatch: "synthetic patch",
+    regressions: "deepmerge preserves own data keys without poisoning result prototypes" };
+  assert.equal(evaluateAuditReport({ advisories: { advisory } }, evidence).ok, true);
+  for (const key of Object.keys(evidence)) {
+    assert.equal(evaluateAuditReport({ advisories: { advisory } }, { ...evidence, [key]: "" }).ok, false);
+  }
+  assert.equal(evaluateAuditReport({ advisories: { advisory: { ...advisory, patched_versions: ">=4.3.2" } } }, evidence).ok, false);
+});

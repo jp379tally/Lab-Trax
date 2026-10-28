@@ -13,7 +13,7 @@
  */
 
 import { _electron as electron } from "playwright-core";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -42,10 +42,10 @@ function assert(condition, message) {
   if (!condition) fail(message);
 }
 
-function assertIsolatedPath(candidate) {
+async function assertIsolatedPath(candidate) {
   const relative = path.relative(
-    path.resolve(appDataRoot),
-    path.resolve(candidate),
+    await realpath(appDataRoot),
+    await realpath(candidate),
   );
   assert(
     relative !== ".." &&
@@ -68,12 +68,17 @@ function run(command, args, options = {}) {
     fail(`${command} exited with status ${result.status ?? "unknown"}.`);
 }
 
-function packagedExecutable() {
+async function packagedExecutable() {
   if (process.platform === "win32") {
     return path.join(distRoot, "win-unpacked", "LabTrax.exe");
   }
   if (process.platform === "linux") {
-    return path.join(distRoot, "linux-unpacked", "labtrax");
+    const directory = path.join(distRoot, "linux-unpacked");
+    // electron-builder derives Linux names from the scoped package name.
+    const candidates = (await readdir(directory, { withFileTypes: true }))
+      .filter(entry => entry.isFile() && /labtrax/i.test(entry.name));
+    assert(candidates.length === 1, "Expected exactly one packaged LabTrax executable.");
+    return path.join(directory, candidates[0].name);
   }
   if (process.platform === "darwin") {
     const arch = process.arch === "arm64" ? "arm64" : "x64";
@@ -97,22 +102,14 @@ function isolatedProfileEnvironment() {
     NODE_ENV: "production",
     VITE_API_BASE_URL: "https://example.invalid",
   };
-  // Electron derives its userData path from these OS profile roots. Isolating
-  // them prevents the smoke run from reading or changing a developer profile.
-  if (process.platform === "win32") {
-    env.APPDATA = path.join(appDataRoot, "roaming");
-    env.LOCALAPPDATA = path.join(appDataRoot, "local");
-  } else {
-    env.HOME = appDataRoot;
-    env.XDG_CONFIG_HOME = path.join(appDataRoot, ".config");
-    env.XDG_DATA_HOME = path.join(appDataRoot, ".local", "share");
-  }
+  // Keep the OS login/keychain environment intact. The app receives an explicit
+  // disposable user-data directory before it reads any persisted credentials.
   return env;
 }
 
 async function launchPackagedApp(executable, env) {
-  const args =
-    process.platform === "linux" ? ["--no-sandbox", "--disable-gpu"] : [];
+  const args = [`--user-data-dir=${path.join(appDataRoot, "profile")}`];
+  if (process.platform === "linux") args.push("--no-sandbox", "--disable-gpu");
   if (
     process.platform === "linux" &&
     process.env.LABTRAX_AUTH_SMOKE_FORCE_LIBSECRET === "1"
@@ -254,13 +251,13 @@ async function main() {
       { env: buildEnv },
     );
 
-    const executable = packagedExecutable();
+    const executable = await packagedExecutable();
     const appEnv = isolatedProfileEnvironment();
     let { app, window } = await launchPackagedApp(executable, appEnv);
     const userDataPath = await app.evaluate(({ app: electronApp }) =>
       electronApp.getPath("userData"),
     );
-    assertIsolatedPath(userDataPath);
+    await assertIsolatedPath(userDataPath);
     const initial = await readKeychainState(window);
 
     if (!initial.available) {

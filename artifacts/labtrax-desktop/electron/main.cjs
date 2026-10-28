@@ -28,6 +28,15 @@ const { downloadBackupToFolder } = require("./backup-download.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
+// Honor an explicit Chromium profile directory before any persisted state is read.
+// Packaged verification uses this to avoid the OS user's actual app profile.
+const requestedUserData = app.commandLine?.getSwitchValue("user-data-dir");
+if (requestedUserData) {
+  if (!path.isAbsolute(requestedUserData)) throw new Error("user-data-dir must be absolute");
+  fs.mkdirSync(requestedUserData, { recursive: true });
+  app.setPath("userData", requestedUserData);
+}
+
 // --------------------------------------------------------------------------
 // Authenticated media bridge origin allowlist
 //

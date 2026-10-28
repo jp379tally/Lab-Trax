@@ -17,6 +17,8 @@ const localRequire = createRequire(__filename);
 
 export type ElectronMock = {
   app: {
+    commandLine?: { getSwitchValue: (name: string) => string };
+    setPath?: (name: string, value: string) => void;
     getPath: (name: string) => string;
     whenReady: () => Promise<void>;
     on: (event: string, fn: (...args: unknown[]) => void) => void;
@@ -72,6 +74,8 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const mock: ElectronMock = {
     app: {
+      commandLine: { getSwitchValue: () => "" },
+      setPath: () => {},
       getPath: () => "/tmp",
       whenReady: () => Promise.resolve(),
       on: () => {},

@@ -2,7 +2,7 @@
  * Integration tests for PIN-only verification used by the admin-settings gate.
  * Skipped when the API test database is not configured.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import request from "supertest";
 
@@ -70,6 +70,9 @@ maybeDescribe("POST /api/admin/pin/verify", () => {
         role: "user",
       },
     ]);
+  });
+
+  beforeEach(async () => {
     adminAccess = await makeSession(adminId);
     staffAccess = await makeSession(staffId);
   });

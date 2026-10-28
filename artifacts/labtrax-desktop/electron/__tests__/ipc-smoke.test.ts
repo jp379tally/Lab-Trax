@@ -64,6 +64,7 @@ const EXPECTED_CHANNELS = [
 
 let electronMock: ElectronMock;
 const handleCalls: string[] = [];
+const profileEvents: string[] = [];
 
 function injectModule(name: string, exports: unknown) {
   const filename = path.join(tmpDir, `__virt_${name.replace(/[^a-z0-9]/gi, "_")}.cjs`);
@@ -92,8 +93,14 @@ beforeAll(async () => {
   const handlers = new Map<string, (...a: unknown[]) => unknown>();
   electronMock = installElectronMock({
     app: {
+      commandLine: { getSwitchValue: name => name === "user-data-dir" ? tmpDir : "" },
+      setPath: (name, value) => {
+        expect(name).toBe("userData");
+        expect(value).toBe(tmpDir);
+        profileEvents.push("profile");
+      },
       getPath: () => tmpDir,
-      whenReady: () => Promise.resolve(),
+      whenReady: () => { profileEvents.push("ready"); return Promise.resolve(); },
       on: () => {},
       quit: () => {},
       getVersion: () => "0.0.0-smoke",
@@ -147,6 +154,10 @@ afterAll(() => {
 });
 
 describe("Electron main-process IPC startup", () => {
+  it("selects the explicit isolated profile before application startup", () => {
+    expect(profileEvents[0]).toBe("profile");
+    expect(profileEvents.indexOf("ready")).toBeGreaterThan(0);
+  });
   it.each([
     ["setLocalBackupScheduleActive", "backup:set-local-schedule-active", true],
     ["setLocalBackupScheduleActive", "backup:set-local-schedule-active", false],

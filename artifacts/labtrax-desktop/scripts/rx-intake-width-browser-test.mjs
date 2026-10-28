@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 import { mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { findChromium } from "./find-chromium.mjs";
@@ -8,11 +11,30 @@ import { makeTwoPagePdf } from "./lib/synthetic-two-page-pdf.mjs";
 // fixture. No live sign-in, API writes, model calls, cases or billing.
 const output = new URL("../../../generated-artifacts/rx-intake-width/", import.meta.url).pathname;
 mkdirSync(output, { recursive: true });
-const browser = await chromium.launch({
+const listener = createServer();
+await new Promise(resolve => listener.listen(0, "127.0.0.1", resolve));
+const port = listener.address().port;
+await new Promise(resolve => listener.close(resolve));
+const fixtureUrl = `http://127.0.0.1:${port}/desktop/browser-tests/dashboard-reference.html?rx-review`;
+const vite = spawn("pnpm", ["exec", "vite", "--config", "vite.config.ts", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+  cwd: fileURLToPath(new URL("..", import.meta.url)),
+  env: { ...process.env, BASE_PATH: "/desktop/" }, stdio: ["ignore", "pipe", "pipe"],
+});
+let serverOutput = "";
+vite.stdout.on("data", chunk => { serverOutput += chunk; });
+vite.stderr.on("data", chunk => { serverOutput += chunk; });
+let browser;
+try {
+  const deadline = Date.now() + 60_000;
+  while (true) {
+    assert(vite.exitCode === null && Date.now() < deadline, `Vite failed to start: ${serverOutput}`);
+    try { if ((await fetch(fixtureUrl)).ok) break; } catch { /* starting */ }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  browser = await chromium.launch({
   executablePath: findChromium(), headless: true,
   args: ["--no-sandbox", "--disable-gpu"],
 });
-try {
   const page = await browser.newPage();
   const errors = [];
   const pdfWorkerUrls = [];
@@ -47,7 +69,7 @@ try {
   await page.addInitScript(() => localStorage.setItem("labtrax_sidebar_width_v1", "320"));
   for (const width of [1690, 1440, 1024, 390]) {
     await page.setViewportSize({ width, height: 887 });
-    await page.goto("http://localhost/desktop/browser-tests/dashboard-reference.html?rx-review");
+    await page.goto(fixtureUrl);
     await page.getByTestId("summary-count-past-due").filter({ hasText: "7" }).waitFor();
     await page.locator('input[type="file"]').first().setInputFiles({
       name: "synthetic-layout.png", mimeType: "image/png",
@@ -88,7 +110,7 @@ try {
   // Exercise the real PDF.js worker, rasterization, and analysis handoff in a
   // Chromium page. The fixture's fetch implementation returns a local response.
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("http://localhost/desktop/browser-tests/dashboard-reference.html?rx-review");
+  await page.goto(fixtureUrl);
   await page.getByTestId("summary-count-past-due").filter({ hasText: "7" }).waitFor();
   await page.locator('input[type="file"]').first().setInputFiles({
     name: "synthetic-two-page-prescription.pdf",
@@ -158,5 +180,6 @@ try {
     `${pdfWorkerResponses.length} worker response(s)).`,
   );
 } finally {
-  await browser.close();
+  await browser?.close();
+  vite.kill("SIGTERM");
 }
