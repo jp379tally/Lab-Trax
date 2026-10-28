@@ -1,3 +1,5 @@
+export { followManualBackup } from "./manual-backup-job";
+export type { ManualBackupStatus, ManualBackupResult } from "./manual-backup-job";
 export * from "./generated/api";
 export * from "./generated/api.schemas";
 export * from "./provider-signup-plans";

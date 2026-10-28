@@ -1,8 +1,22 @@
 import React, { useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
-import Svg, { Path, Circle, Text as SvgText, G } from "react-native-svg";
+import Svg, { Path, Circle, Ellipse, Image as SvgImage, Text as SvgText, G } from "react-native-svg";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import type { ToothId } from "@/lib/rx-summary";
+import {
+  ATLAS,
+  CHART,
+  atlasCell,
+  atlasDrawSize,
+  CONNECTOR_HIT_RADIUS,
+  CONNECTOR_RADIUS,
+  ROLE_STYLE,
+  SELECT_COLOR,
+  adjacentPairs,
+  adultToothGeometry,
+  connectorGeometry,
+  type ToothRole,
+} from "@/lib/tooth-geometry";
 
 /**
  * Mobile mirror of the desktop ToothChart — anatomical arch layout.
@@ -26,76 +40,29 @@ import type { ToothId } from "@/lib/rx-summary";
  * SVG. Semantic web controls live below the SVG instead.
  */
 
-// ── Arch Geometry (matches desktop ToothChart.tsx) ────────────────────────────
-// Both arches share a center and follow the perimeter of one upright oval.
-// Universal numbering runs 1→16 across the upper arch and 17→32 along the
-// lower arch; on screen, 1/32 are viewer-left and 16/17 viewer-right.
-
-const DEG = Math.PI / 180;
-const UPPER_CX = 260, UPPER_CY = 260;
-const LOWER_CX = 260, LOWER_CY = 260;
-const ADULT_RX = 188, ADULT_RY = 208;
-const FILL_RX = 158, FILL_RY = 176;
-// Larger transparent hit area so taps near a tooth register on touch screens.
-const HIT_R = 19;
-
-const COLOR_CROWN = "#3B82F6";
-const COLOR_PONTIC = "#A855F7";
-
-type ToothType = "crown" | "pontic" | "missing" | "highlighted";
-type ToothForm = "incisor" | "canine" | "premolar" | "molar";
-
-const toothPaths: Record<ToothForm, string> = {
-  incisor: "M9 8 C12 4 18 3 24 4 C30 3 36 5 39 9 C41 12 40 20 38 27 L36 43 C35 49 31 52 24 53 C17 52 13 49 12 43 L10 27 C8 19 7 12 9 8 Z",
-  canine: "M9 9 C12 5 18 4 24 5 C30 4 36 5 39 10 C42 15 38 25 35 34 C32 43 29 49 24 54 C19 49 16 43 13 34 C10 25 6 15 9 9 Z",
-  premolar: "M8 10 C12 5 18 5 22 7 C26 5 33 5 38 10 C42 15 39 21 36 27 C34 34 34 45 29 50 C26 53 22 52 19 50 C14 47 14 37 11 29 C8 22 5 15 8 10 Z",
-  molar: "M7 12 C10 6 16 5 21 7 C25 4 31 5 35 8 C41 8 43 14 41 20 C40 26 37 30 37 37 C37 47 33 52 28 51 C25 51 24 48 21 48 C18 48 16 52 12 50 C6 48 7 40 8 34 C8 28 5 22 6 17 C6 15 6 13 7 12 Z",
-};
-
-function toothForm(id: string): ToothForm {
-  const n = Number(id);
-  const position = ((n - 1) % 16) + 1;
-  if (position === 6 || position === 11) return "canine";
-  if ([4, 5, 12, 13].includes(position)) return "premolar";
-  if (position >= 7 && position <= 10) return "incisor";
-  return "molar";
-}
+// ── Arch Geometry ────────────────────────────────────────────────────────────
+// Shared with desktop via lib/tooth-geometry (portrait oval, per-form widths).
 
 export function getAdultToothRotation(n: number): number {
-  const angle = n <= 16 ? upperAngleDeg(n) : lowerAngleDeg(n);
-  return (angle + 270) % 360;
-}
-
-function upperAngleDeg(n: number): number {
-  return 170 + (n - 1) * (200 / 15);
-}
-function lowerAngleDeg(n: number): number {
-  return 350 + (n - 17) * (200 / 15);
-}
-function ptOnEllipse(cx: number, cy: number, rx: number, ry: number, angleDeg: number) {
-  const a = angleDeg * DEG;
-  return { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) };
+  return adultToothGeometry(n).rotation;
 }
 export function getAdultToothPosition(n: number) {
-  const rx = ADULT_RX;
-  const ry = ADULT_RY;
-  if (n <= 16) return ptOnEllipse(UPPER_CX, UPPER_CY, rx, ry, upperAngleDeg(n));
-  return ptOnEllipse(LOWER_CX, LOWER_CY, rx, ry, lowerAngleDeg(n));
+  const g = adultToothGeometry(n);
+  return { x: g.x, y: g.y };
 }
 
-function archStrokePath(isUpper: boolean): string {
-  const cx = isUpper ? UPPER_CX : LOWER_CX;
-  const cy = isUpper ? UPPER_CY : LOWER_CY;
-  if (isUpper) {
-    const p1 = ptOnEllipse(cx, cy, FILL_RX, FILL_RY, upperAngleDeg(1));
-    const p2 = ptOnEllipse(cx, cy, FILL_RX, FILL_RY, upperAngleDeg(16));
-    return `M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${FILL_RX} ${FILL_RY} 0 1 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  } else {
-    const p1 = ptOnEllipse(cx, cy, FILL_RX, FILL_RY, lowerAngleDeg(17));
-    const p2 = ptOnEllipse(cx, cy, FILL_RX, FILL_RY, lowerAngleDeg(32));
-    return `M ${p1.x.toFixed(1)} ${p1.y.toFixed(1)} A ${FILL_RX} ${FILL_RY} 0 1 1 ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-}
+// Reference-derived atlas; see assets/images/tooth-atlas.provenance.md
+const TOOTH_ATLAS: Record<string, number> = {
+  unassigned: require("../assets/images/tooth-atlas-unassigned.png"),
+  crown: require("../assets/images/tooth-atlas-crown.png"),
+  pontic: require("../assets/images/tooth-atlas-pontic.png"),
+  veneer: require("../assets/images/tooth-atlas-veneer.png"),
+  missing: require("../assets/images/tooth-atlas-missing.png"),
+};
+const COLOR_CROWN = ROLE_STYLE.crown.fill;
+const COLOR_PONTIC = ROLE_STYLE.pontic.fill;
+
+type ToothType = "crown" | "pontic" | "veneer" | "missing" | "highlighted";
 
 function resolveToothType(
   id: string,
@@ -118,7 +85,9 @@ interface Props {
   ponticTeeth?: Set<ToothId>;
   /** Teeth marked as missing — rendered with ✕ glyph. */
   missingTeeth?: Set<ToothId>;
-  /** Teeth already billed on this case, shown with a green dashed halo. */
+  /** Teeth with a veneer — teal with a V badge. */
+  veneerTeeth?: Set<ToothId>;
+  /** Teeth already billed on this case, shown with a small green status marker. */
   billedTeeth?: Set<ToothId>;
   /** Legacy fallback: all highlighted teeth rendered in the brand tint. */
   highlighted?: Set<ToothId>;
@@ -142,6 +111,7 @@ export function ToothChart({
   crownTeeth,
   ponticTeeth,
   missingTeeth,
+  veneerTeeth,
   billedTeeth,
   highlighted,
   readOnly = true,
@@ -160,28 +130,22 @@ export function ToothChart({
   const interactive = !readOnly && !!onToothClick;
   const showConnectors = interactive && !!onConnectedPairsChange;
 
-  const adultPositions = useMemo(() => {
-    const map = new Map<number, { x: number; y: number }>();
-    for (let n = 1; n <= 32; n++) map.set(n, getAdultToothPosition(n));
-    return map;
-  }, []);
-
-  const upperPath = useMemo(() => archStrokePath(true), []);
-  const lowerPath = useMemo(() => archStrokePath(false), []);
 
   const crownCount = crownTeeth?.size ?? 0;
   const ponticCount = ponticTeeth?.size ?? 0;
+  const veneerCount = veneerTeeth?.size ?? 0;
   const missingCount = missingTeeth?.size ?? 0;
   const hasCrown = crownCount > 0;
   const hasPontic = ponticCount > 0;
   const hasMissing = missingCount > 0;
   const hasHighlighted = (highlighted?.size ?? 0) > 0;
-  const hasTyped = hasCrown || hasPontic || hasMissing;
+  const hasTyped = hasCrown || hasPontic || hasMissing || veneerCount > 0;
   const hasBridgeState = !!onConnectedPairsChange || (connectedPairs?.size ?? 0) > 0;
 
   const counts: { key: string; label: string }[] = [];
   if (hasCrown) counts.push({ key: "crown", label: `${crownCount} ${crownCount === 1 ? "crown" : "crowns"}` });
   if (hasPontic) counts.push({ key: "pontic", label: `${ponticCount} ${ponticCount === 1 ? "pontic" : "pontics"}` });
+  if (veneerCount) counts.push({ key: "veneer", label: `${veneerCount} ${veneerCount === 1 ? "veneer" : "veneers"}` });
   if (hasMissing) counts.push({ key: "missing", label: `${missingCount} missing` });
 
   return (
@@ -195,6 +159,8 @@ export function ToothChart({
           <Text style={styles.legendText}>Crown</Text>
           <View style={[styles.legendSwatchPontic]} />
           <Text style={styles.legendText}>Pontic</Text>
+          <View style={[styles.legendSwatch, { backgroundColor: "#0F766E" }]} />
+          <Text style={styles.legendText}>Veneer</Text>
           <View style={styles.legendSwatchMissing}><Text style={styles.legendMissingMark}>×</Text></View>
           <Text style={styles.legendText}>Missing</Text>
           <View style={styles.legendSwatchBilled} />
@@ -221,165 +187,37 @@ export function ToothChart({
       )}
 
       <Svg
-        viewBox="0 0 520 520"
+        viewBox="0 -14 400 514"
         preserveAspectRatio="xMidYMid meet"
         width="100%"
         style={styles.svg}
       >
-        {/* Arch background strokes */}
-        <Path
-          d={upperPath}
-          fill="none"
-          stroke="rgba(0,0,0,0.07)"
-          strokeWidth={32}
-          strokeLinecap="round"
-        />
-        <Path
-          d={lowerPath}
-          fill="none"
-          stroke="rgba(0,0,0,0.07)"
-          strokeWidth={32}
-          strokeLinecap="round"
-        />
 
-        {/* Active bridge spans sit behind the tooth shapes on read-only charts. */}
-        {connectedPairs && Array.from(connectedPairs).map((pair) => {
-          const [a, b] = pair.split("-").map(Number);
-          if (!Number.isInteger(a) || b !== a + 1 || !(a < 16 || (a >= 17 && a < 32))) return null;
-          const start = adultPositions.get(a);
-          const end = adultPositions.get(b);
-          if (!start || !end) return null;
-          return (
-            <Path
-              key={`bridge-span-${pair}`}
-              testID={`bridge-span-${pair}`}
-              d={`M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`}
-              fill="none"
-              stroke={connectorSuggestions?.has(pair) ? colors.warningStrong : colors.success}
-              strokeWidth={4}
-              strokeLinecap="round"
-              opacity={0.78}
-            />
-          );
-        })}
+        <SvgText x={CHART.cx} y={150} textAnchor="middle" fontSize={11} fontWeight="700" fill="#6B6556">UPPER</SvgText>
+        <SvgText x={CHART.cx} y={385} textAnchor="middle" fontSize={11} fontWeight="700" fill="#6B6556">LOWER</SvgText>
+        {counts.map((c, i) => (
+          <SvgText key={`hud-${c.key}`} x={CHART.cx} y={240 + i * 14} textAnchor="middle" fontSize={10.5} fontWeight="700" fill="#374151">{c.label}</SvgText>
+        ))}
+        <SvgText x={8} y={16} textAnchor="start" fontSize={10} fontWeight="700" fill="#6B6556">PATIENT RIGHT</SvgText>
+        <SvgText x={392} y={16} textAnchor="end" fontSize={10} fontWeight="700" fill="#6B6556">PATIENT LEFT</SvgText>
 
-        {/* Arch labels */}
-        <SvgText
-          x={UPPER_CX}
-          y={UPPER_CY - 9}
-          textAnchor="middle"
-          fontSize={9}
-          fill="rgba(0,0,0,0.3)"
-          fontFamily="system-ui"
-        >
-          UPPER
-        </SvgText>
-        <SvgText
-          x={LOWER_CX}
-          y={LOWER_CY + 14}
-          textAnchor="middle"
-          fontSize={9}
-          fill="rgba(0,0,0,0.3)"
-          fontFamily="system-ui"
-        >
-          LOWER
-        </SvgText>
-        <SvgText x={12} y={264} textAnchor="start" fontSize={8} fill={colors.textTertiary} fontFamily="system-ui">
-          PATIENT RIGHT
-        </SvgText>
-        <SvgText x={508} y={264} textAnchor="end" fontSize={8} fill={colors.textTertiary} fontFamily="system-ui">
-          PATIENT LEFT
-        </SvgText>
-
-        {/* Connector links are only editable between adjacent assigned units. */}
-        {Array.from({ length: 32 }, (_, i) => i + 1)
-          .filter((n) => n < 16 || (n >= 17 && n < 32))
-          .map((n) => {
-            const key = `${n}-${n + 1}`;
-            const leftId = String(n);
-            const rightId = String(n + 1);
-            const active = connectedPairs?.has(key) ?? false;
-            const assigned =
-              (crownTeeth?.has(leftId) || ponticTeeth?.has(leftId)) &&
-              (crownTeeth?.has(rightId) || ponticTeeth?.has(rightId));
-            if (!active && !assigned) return null;
-            const a = adultPositions.get(n)!;
-            const b = adultPositions.get(n + 1)!;
-            const x = (a.x + b.x) / 2;
-            const y = (a.y + b.y) / 2;
-            return (
-              <G
-                key={`connector-${key}`}
-                accessible={Platform.OS !== "web" && (showConnectors || active)}
-                accessibilityRole={Platform.OS === "web" ? undefined : showConnectors ? "button" : "image"}
-                accessibilityLabel={
-                  active
-                    ? `${connectorSuggestions?.has(key) ? "Suggested" : "Connected"} teeth ${n} and ${n + 1}`
-                    : `Connect assigned teeth ${n} and ${n + 1}`
-                }
-                accessibilityState={Platform.OS !== "web" && showConnectors ? { checked: active, disabled: !assigned && !active } : undefined}
-                onPress={
-                  showConnectors && (assigned || active)
-                    ? () => {
-                        const next = new Set(connectedPairs ?? []);
-                        if (next.has(key)) next.delete(key);
-                        else next.add(key);
-                        onConnectedPairsChange?.(next);
-                      }
-                    : undefined
-                }
-              >
-                {showConnectors && (
-                  <Circle cx={x} cy={y} r={10} fill="transparent" />
-                )}
-                <Circle
-                  cx={x}
-                  cy={y}
-                  r={active ? 4 : 3}
-                  fill={active ? (connectorSuggestions?.has(key) ? colors.warningStrong : colors.success) : "transparent"}
-                  stroke={connectorSuggestions?.has(key) ? colors.warningStrong : active ? colors.success : "rgba(107,114,128,0.45)"}
-                  strokeWidth={1.4}
-                />
-              </G>
-            );
-          })}
-
-        {/* Adult teeth badges */}
+        {/* Adult teeth */}
         {Array.from({ length: 32 }, (_, i) => i + 1).map((n) => {
-          const { x, y } = adultPositions.get(n)!;
+          const g = adultToothGeometry(n);
+          const spriteSize = atlasDrawSize(n);
           const id = String(n);
           const isSelected = selected?.has(id) ?? false;
           const isBilled = billedTeeth?.has(id) ?? false;
-          const toothType = resolveToothType(
-            id,
-            crownTeeth,
-            ponticTeeth,
-            missingTeeth,
-            highlighted,
-          );
-
-          let fill: string;
-          let stroke: string;
-          if (toothType === "crown") {
-            fill = "#DBEAFE";
-            stroke = COLOR_CROWN;
-          } else if (toothType === "pontic") {
-            fill = "#F3E8FF";
-            stroke = COLOR_PONTIC;
-          } else if (toothType === "missing") {
-            fill = "rgba(0,0,0,0.08)";
-            stroke = "rgba(0,0,0,0.25)";
-          } else if (toothType === "highlighted") {
-            fill = "#DBEAFE";
-            stroke = colors.tint;
-          } else {
-            fill = "rgba(255,255,255,0.88)";
-            stroke = "rgba(0,0,0,0.25)";
-          }
-
-          const form = toothForm(id);
-          const roleMarker = toothType === "crown" ? "C" : toothType === "pontic" ? "P" : "";
-
+          const resolved = resolveToothType(id, crownTeeth, ponticTeeth, missingTeeth, highlighted);
+          const toothType: ToothType | undefined = !resolved && veneerTeeth?.has(id) ? "veneer" : resolved;
+          const role: ToothRole = toothType === "highlighted" || !toothType ? "unassigned" : toothType;
+          const style = ROLE_STYLE[role];
+          const highlightedOnly = toothType === "highlighted";
+                    const stroke = highlightedOnly ? colors.tint : style.stroke;
+          const badge = style.badge;
+          const half = CHART.toothHeight / 2;
+          const bx = g.x + g.nx * (half + 1);
+          const by = g.y + g.ny * (half + 1);
           return (
             <G
               key={n}
@@ -390,69 +228,91 @@ export function ToothChart({
               accessibilityState={Platform.OS !== "web" && interactive ? { selected: isSelected } : undefined}
               onPress={interactive ? () => onToothClick!(id) : undefined}
             >
-              {/* Transparent, larger hit target for reliable touch */}
-              {interactive && (
-                <Circle cx={x} cy={y} r={HIT_R} fill="transparent" />
-              )}
-              <G testID={`tooth-body-${id}`} transform={`translate(${x} ${y}) rotate(${getAdultToothRotation(n)}) scale(0.72) translate(-24 -29)`}>
-                {isBilled && (
-                  <Path
-                    d={toothPaths[form]}
-                    transform="translate(24 29) scale(1.18) translate(-24 -29)"
-                    fill="none"
-                    stroke={colors.successStrong}
-                    strokeWidth={2}
-                    strokeDasharray="3 2"
-                  />
-                )}
-                {isSelected && (
-                  <Path
-                    d={toothPaths[form]}
-                    transform="translate(24 29) scale(1.11) translate(-24 -29)"
-                    fill="none"
-                    stroke={colors.tint}
-                    strokeWidth={2.5}
-                  />
-                )}
-                {toothType === "pontic" && (
-                  <Path
-                    d={toothPaths[form]}
-                    transform="translate(24 29) scale(1.07) translate(-24 -29)"
-                    fill="none"
-                    stroke={COLOR_PONTIC}
-                    strokeWidth={1.7}
-                    strokeDasharray="3 2"
-                  />
-                )}
-                <Path
-                  d={toothPaths[form]}
-                  fill={fill}
-                  stroke={stroke}
-                  strokeWidth={1.7}
-                  strokeLinejoin="round"
-                  strokeDasharray={toothType === "missing" ? "3 2" : undefined}
-                />
-                {toothType !== "missing" && (
-                  <Path
-                    d="M12 12 C16 9 21 10 24 14 C27 10 32 9 36 12 M18 21 C20 25 21 29 24 33 C27 29 28 25 30 21"
-                    fill="none"
-                    stroke={stroke}
-                    strokeWidth={1.4}
-                  />
-                )}
+              {interactive && <Circle cx={g.x} cy={g.y} r={half} fill="transparent" />}
+              <G testID={`tooth-body-${id}`} opacity={role === "missing" ? 0.7 : 1}>
+                {isSelected && <Ellipse testID={`tooth-selection-${id}`} cx={g.x} cy={g.y} rx={half + 3} ry={half + 3} fill="none" stroke={SELECT_COLOR} strokeWidth={3} />}
+                <Svg x={g.x - spriteSize / 2} y={g.y - spriteSize / 2} width={spriteSize} height={spriteSize}
+                  viewBox={`${atlasCell(id).col * ATLAS.cell} ${atlasCell(id).row * ATLAS.cell} ${ATLAS.cell} ${ATLAS.cell}`}>
+                  <SvgImage href={TOOTH_ATLAS[role] ?? TOOTH_ATLAS.unassigned} x={0} y={0} width={ATLAS.cols * ATLAS.cell} height={ATLAS.rows * ATLAS.cell} preserveAspectRatio="none" />
+                </Svg>
+                {isBilled && <Circle testID={`tooth-billed-${id}`} cx={g.x + 15} cy={g.y + 15} r={3} fill={colors.successStrong} stroke="#fff" strokeWidth={1} />}
+                {highlightedOnly && <Ellipse cx={g.x} cy={g.y} rx={half} ry={half} fill="none" stroke={colors.tint} strokeWidth={2.5} />}
+                {role === "pontic" && <Ellipse cx={g.x} cy={g.y} rx={half + 1} ry={half - 1} fill="none" stroke={stroke} strokeWidth={1.6} strokeDasharray="3 2" />}
               </G>
-              {toothType === "missing" && (
-                <Path d={`M${x - 4} ${y - 7} L${x + 4} ${y + 1} M${x + 4} ${y - 7} L${x - 4} ${y + 1}`} stroke={colors.textTertiary} strokeWidth={1.5} />
+              {role === "missing" && (
+                <Path d={`M${g.x - 7} ${g.y - 16} L${g.x + 7} ${g.y - 6} M${g.x + 7} ${g.y - 16} L${g.x - 7} ${g.y - 6}`} stroke="#6B7280" strokeWidth={2} strokeLinecap="round" />
               )}
-              <SvgText x={x} y={y + (toothType === "missing" ? 9 : 3)} textAnchor="middle" alignmentBaseline="central" fontSize={14} fontWeight="700" fill="#0F172A" fontFamily="Courier New">
+              <SvgText x={g.x} y={g.y + (role === "missing" ? 6 : 1)} textAnchor="middle" alignmentBaseline="central" fontSize={15} fontWeight="800" stroke={role === "unassigned" || role === "missing" ? "rgba(255,255,255,.9)" : "rgba(20,10,40,.75)"} strokeWidth={2.6} fill={highlightedOnly || role === "unassigned" || role === "missing" ? "#1F1A12" : "#FFFFFF"}>
                 {id}
               </SvgText>
-              {!!roleMarker && (
+              {!!badge && (
                 <G>
-                  <Circle cx={x + 12} cy={y - 12} r={6} fill={toothType === "crown" ? COLOR_CROWN : COLOR_PONTIC} />
-                  <SvgText x={x + 12} y={y - 12} textAnchor="middle" alignmentBaseline="central" fontSize={7} fontWeight="700" fill="#fff">{roleMarker}</SvgText>
+                  <Circle cx={bx} cy={by} r={7.5} fill={style.stroke} stroke="#fff" strokeWidth={1.2} />
+                  <SvgText x={bx} y={by + 0.5} textAnchor="middle" alignmentBaseline="central" fontSize={9.5} fontWeight="800" fill="#fff">{badge}</SvgText>
                 </G>
               )}
+            </G>
+          );
+        })}
+
+        {/* Active bridge spans sit behind the tooth shapes. */}
+        {Array.from(connectedPairs ?? []).map((pair) => {
+          const [a, b] = pair.split("-").map(Number);
+          if (!Number.isInteger(a) || b !== a + 1 || a === 16 || a < 1 || b > 32) return null;
+          const c = connectorGeometry(a, b);
+          if (b === 16 || b === 32 || !connectedPairs?.has(`${b}-${b + 1}`)) return null;
+          const next = connectorGeometry(b, b + 1);
+          return (
+            <Path
+              key={`bridge-span-${pair}`}
+              testID={`bridge-span-${pair}`}
+              d={`M ${c.x} ${c.y} L ${next.x} ${next.y}`}
+              fill="none"
+              stroke={connectorSuggestions?.has(pair) ? colors.warningStrong : colors.success}
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              opacity={0.95}
+            />
+          );
+        })}
+
+        {/* Connectors: outside the teeth, last, with 30-unit hit targets */}
+        {adjacentPairs().map(([n, m]) => {
+          const key = `${n}-${m}`;
+          const active = connectedPairs?.has(key) ?? false;
+          const assigned =
+            (crownTeeth?.has(String(n)) || ponticTeeth?.has(String(n))) &&
+            (crownTeeth?.has(String(m)) || ponticTeeth?.has(String(m)));
+          if (!active && !assigned) return null;
+          const c = connectorGeometry(n, m);
+          const suggested = connectorSuggestions?.has(key);
+          const color = active ? colors.success : "#64748B";
+          return (
+            <G
+              key={`connector-${key}`}
+              accessible={Platform.OS !== "web" && (showConnectors || active)}
+              accessibilityRole={Platform.OS === "web" ? undefined : showConnectors ? "button" : "image"}
+              accessibilityLabel={
+                active
+                  ? `${suggested ? "Suggested" : "Connected"} teeth ${n} and ${m}`
+                  : `Connect assigned teeth ${n} and ${m}`
+              }
+              accessibilityState={Platform.OS !== "web" && showConnectors ? { checked: active, disabled: !assigned && !active } : undefined}
+              onPress={
+                showConnectors && (assigned || active)
+                  ? () => {
+                      const next = new Set(connectedPairs ?? []);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      onConnectedPairsChange?.(next);
+                    }
+                  : undefined
+              }
+            >
+              {showConnectors && <Circle cx={c.x} cy={c.y} r={CONNECTOR_HIT_RADIUS} fill="transparent" />}
+              <Circle cx={c.x} cy={c.y} r={CONNECTOR_RADIUS + 1.5} fill="#fff" />
+              <Circle testID={`connector-marker-${key}`} cx={c.x} cy={c.y} r={CONNECTOR_RADIUS} fill={active ? color : "#fff"} stroke={color} strokeWidth={2} />
+              <Path d={active ? `M${c.x - 3} ${c.y} L${c.x + 3} ${c.y}` : `M${c.x - 3} ${c.y} L${c.x + 3} ${c.y} M${c.x} ${c.y - 3} L${c.x} ${c.y + 3}`} stroke={active ? "#fff" : color} strokeWidth={1.8} strokeLinecap="round" />
             </G>
           );
         })}

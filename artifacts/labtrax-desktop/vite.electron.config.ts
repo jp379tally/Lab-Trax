@@ -18,5 +18,15 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/electron-app"),
     emptyOutDir: true,
+    // Never ship synthetic auth / analysis stubs in release builds. CI opts
+    // in so the smoke runs compiled intake code through the real app protocol.
+    ...(process.env.LABTRAX_RENDERER_SMOKE === "1" ? {
+      rollupOptions: {
+        input: {
+          app: path.resolve(import.meta.dirname, "index.html"),
+          intakeSmoke: path.resolve(import.meta.dirname, "browser-tests/dashboard-reference.html"),
+        },
+      },
+    } : {}),
   },
 });

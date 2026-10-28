@@ -10,21 +10,31 @@ import {
 const runContext = new AsyncLocalStorage<string>();
 type Metrics = Record<string, number>;
 
-export type BackupLiveRunState = "running" | "awaiting_verification" | "completed" | "failed" | "stale";
+export type BackupLiveRunState = "running" | "awaiting_verification" | "finalizing" | "completed" | "failed" | "cancelled" | "stale";
+export interface BackupDeliveryStatus {
+  fileName: string;
+  size: number;
+  archiveKind: "complete-production" | "complete-non-production" | "partial-production" | "partial-non-production" | "database-only";
+  sourceEnvironment: "production" | "non-production";
+  expiresAt: string;
+}
 export interface BackupLiveStatus {
   runId: string;
   state: BackupLiveRunState;
   phase: string;
+  overallProgress?: number;
   startedAt: string;
   updatedAt: string;
   elapsedMs: number;
   metrics: Metrics;
   archiveEvidence?: {
-    archiveKind: "complete-production" | "complete-non-production";
+    archiveKind: "complete-production" | "complete-non-production" | "partial-production" | "partial-non-production" | "database-only";
     coverageVersion: number;
     mediaFileCount: number;
     attachmentRowCount: number;
+    missingFileCount?: number;
   };
+  delivery?: BackupDeliveryStatus;
 }
 
 const LIVE_STATUS_TTL_MS = 30 * 60_000;
@@ -37,6 +47,7 @@ const statusWriteInFlight = new Map<string, Promise<void>>();
 const STATUS_WRITE_COALESCE_MS = 200;
 const SAFE_PHASES = new Set([
   "starting backup",
+  "recovery capture",
   "database dump",
   "database manifest counts",
   "case-media inventory and reference validation",
@@ -56,6 +67,7 @@ const SAFE_PHASES = new Set([
   "desktop verification",
   "backup complete",
   "backup failed",
+  "backup cancelled",
 ]);
 const SAFE_METRICS = new Set([
   "dumpBytes",
@@ -72,6 +84,9 @@ const SAFE_METRICS = new Set([
   "tablesCompleted",
   "tableCount",
   "rowsScanned",
+  "rowsPerSecond",
+  "mediaBytesPerSecond",
+  "throughputBytesPerSecond",
   "transferredBytes",
   "transferTotalBytes",
 ]);
@@ -87,9 +102,13 @@ function pruneLiveRuns(now = Date.now()): void {
         updatedAt: new Date(now).toISOString(),
       });
     } else if (status.state !== "running" && status.state !== "awaiting_verification" &&
+      status.state !== "finalizing" &&
       now - updatedAt > LIVE_STATUS_TTL_MS) {
       liveRuns.delete(runId);
-    } else if (status.state === "awaiting_verification" && now - updatedAt > STALE_RUN_MS) {
+    } else if ((status.state === "awaiting_verification" || status.state === "finalizing") &&
+      now - updatedAt > STALE_RUN_MS &&
+      !(status.state === "awaiting_verification" &&
+        status.delivery && Date.parse(status.delivery.expiresAt) > now)) {
       liveRuns.set(runId, {
         ...status,
         state: "stale",
@@ -121,6 +140,64 @@ function safeMetrics(metrics: Metrics): Metrics {
 
 function cloneStatus(status: BackupLiveStatus): BackupLiveStatus {
   return { ...status, metrics: { ...status.metrics } };
+}
+
+/**
+ * A whole-run estimate, not a phase percentage. Each phase starts only after
+ * its predecessors have completed. Measurable phases interpolate within their
+ * reserved range; final verification remains below 100 until the run is
+ * explicitly marked completed.
+ */
+export function overallBackupProgress(
+  status: Pick<BackupLiveStatus, "state" | "phase" | "metrics">,
+): number {
+  if (status.state === "completed") return 100;
+  const metrics = status.metrics;
+  const ratio = (done: number | undefined, total: number | undefined) =>
+    Number.isFinite(done) && Number.isFinite(total) && total! > 0
+      ? Math.max(0, Math.min(1, done! / total!))
+      : 0;
+  let value: number;
+  switch (status.phase) {
+    case "starting backup": value = 2; break;
+    case "recovery capture": value = 3; break;
+    case "database dump": value = 5; break;
+    case "database manifest counts": value = 10; break;
+    case "case-media storage inventory": value = 15; break;
+    case "case-media inventory and reference validation":
+      value = 18 + 7 * ratio(metrics.tablesCompleted, metrics.tableCount);
+      break;
+    case "private cloud staging setup": value = 27; break;
+    case "case-media transfer into archive":
+      value = 30 + 43 * ratio(metrics.completedBytes, metrics.totalBytes);
+      break;
+    case "archive assembly/encryption": value = 74; break;
+    case "archive assembly/encryption and local transfer":
+      value = 75 + 20 * ratio(metrics.transferredBytes, metrics.transferTotalBytes);
+      break;
+    case "local download":
+      value = 80 + 15 * ratio(metrics.transferredBytes, metrics.transferTotalBytes);
+      break;
+    case "OneDrive transfer":
+    case "Google Drive transfer":
+    case "SFTP transfer":
+      value = 75 + 20 * ratio(metrics.uploadedBytes ?? metrics.transferredBytes,
+        metrics.uploadTotalBytes ?? metrics.transferTotalBytes);
+      break;
+    case "OneDrive verification":
+    case "Google Drive verification":
+    case "SFTP verification":
+    case "local file verification":
+    case "desktop verification":
+      value = 97;
+      break;
+    case "backup complete":
+      value = 99;
+      break;
+    default:
+      value = 1;
+  }
+  return Math.min(99, Math.max(0, Math.floor(value)));
 }
 
 function scheduleStatusWrite(status: BackupLiveStatus): void {
@@ -169,6 +246,8 @@ function updateLocalLiveStatus(
   pruneLiveRuns();
   const existing = liveRuns.get(runId);
   if (!existing) return undefined;
+  if (existing.state === "completed" || existing.state === "failed" ||
+      existing.state === "cancelled" || existing.state === "stale") return existing;
   const updated = {
     ...existing,
     ...update,
@@ -177,6 +256,7 @@ function updateLocalLiveStatus(
       ? replaceMetrics ? safeMetrics(update.metrics) : { ...existing.metrics, ...safeMetrics(update.metrics) }
       : existing.metrics,
   };
+  updated.overallProgress = overallBackupProgress(updated);
   liveRuns.set(runId, updated);
   scheduleStatusWrite(updated);
   return updated;
@@ -210,6 +290,7 @@ function beginLiveRun(runId: string): void {
     runId,
     state: "running",
     phase: "starting backup",
+    overallProgress: 2,
     startedAt: now,
     updatedAt: now,
     elapsedMs: 0,
@@ -235,6 +316,7 @@ export async function getBackupLiveStatus(runId: string): Promise<BackupLiveStat
       phase: safePhase(sharedStatus.phase),
       metrics: safeMetrics(sharedStatus.metrics),
     };
+    status.overallProgress = overallBackupProgress(status);
     liveRuns.set(runId, status);
     return cloneStatus(status);
   } catch (error) {
@@ -274,16 +356,31 @@ export function markBackupLiveAwaitingVerification(runId: string | undefined): P
   return updateLiveStatus(runId, { state: "awaiting_verification", phase: "desktop verification" });
 }
 
+export function markBackupLiveFinalizing(runId: string | undefined): Promise<void> {
+  return updateLiveStatus(runId, { state: "finalizing", phase: "desktop verification" });
+}
+
+export function setBackupLiveDelivery(delivery: BackupDeliveryStatus): void {
+  updateLocalLiveStatus(runContext.getStore(), { delivery: { ...delivery } });
+}
+
 export function finishBackupLiveRun(
   runId: string | undefined,
-  state: "completed" | "failed",
+  state: "completed" | "failed" | "cancelled",
 ): Promise<void> {
   const status = runId ? liveRuns.get(runId) : undefined;
   return updateLiveStatus(runId, {
     state,
-    phase: state === "completed" ? "backup complete" : "backup failed",
+    phase: state === "completed" ? "backup complete" : state === "cancelled" ? "backup cancelled" : "backup failed",
     elapsedMs: status ? Math.max(0, Date.now() - Date.parse(status.startedAt)) : 0,
   });
+}
+
+export class BackupCancelledError extends Error {
+  constructor(message = "Backup cancelled by the user.") {
+    super(message);
+    this.name = "BackupCancelledError";
+  }
 }
 
 /** Keep transport URLs (including signed URLs) and credentials out of history/logs. */
@@ -310,7 +407,7 @@ export async function withBackupRun<T>(work: () => Promise<T>, requestedRunId?: 
       if (status?.state === "running") await finishBackupLiveRun(runId, "completed");
       return result;
     } catch (error) {
-      await finishBackupLiveRun(runId, "failed");
+      await finishBackupLiveRun(runId, error instanceof BackupCancelledError ? "cancelled" : "failed");
       throw error;
     }
   });
@@ -327,30 +424,48 @@ export async function measureBackupPhase<T>(
   resultMetrics: (result: T) => Metrics = () => ({}),
 ): Promise<T> {
   const startedAt = Date.now();
+  const observedMetrics = (measured: Metrics, elapsedMs: number): Metrics => {
+    const result = { ...measured };
+    const byteCount = result.uploadedBytes ?? result.transferredBytes ??
+      result.completedBytes ?? result.archiveBytes ?? result.dumpBytes;
+    if (!Number.isFinite(result.throughputBytesPerSecond) &&
+        Number.isFinite(byteCount) && elapsedMs > 0) {
+      result.throughputBytesPerSecond = Math.round((byteCount! * 1000) / elapsedMs);
+    }
+    if (!Number.isFinite(result.rowsPerSecond) &&
+        Number.isFinite(result.rowsScanned) && elapsedMs > 0) {
+      result.rowsPerSecond = Math.round((result.rowsScanned! * 1000) / elapsedMs);
+    }
+    return result;
+  };
   const context = () => ({
     runId: runContext.getStore(),
     phase,
     elapsedMs: Date.now() - startedAt,
-    ...metrics(),
+    ...observedMetrics(metrics(), Date.now() - startedAt),
   });
-  setBackupLivePhase(phase, metrics());
+  setBackupLivePhase(phase, observedMetrics(metrics(), Date.now() - startedAt));
   const runId = runContext.getStore();
   if (runId) await flushStatusWrites(runId);
   logger.info(context(), "[backup] phase started");
   const timer = setInterval(() => {
-    setBackupLivePhase(phase, metrics());
+    setBackupLivePhase(phase, observedMetrics(metrics(), Date.now() - startedAt));
     if (runId) void flushStatusWrites(runId);
     logger.info(context(), "[backup] phase still running");
   }, 30_000);
   timer.unref?.();
   try {
     const result = await work();
-    setBackupLivePhase(phase, { ...metrics(), ...resultMetrics(result) });
+    const completedMetrics = observedMetrics(
+      { ...metrics(), ...resultMetrics(result) },
+      Date.now() - startedAt,
+    );
+    setBackupLivePhase(phase, completedMetrics);
     if (runId) await flushStatusWrites(runId);
-    logger.info({ ...context(), ...resultMetrics(result) }, "[backup] phase completed");
+    logger.info({ ...context(), ...completedMetrics }, "[backup] phase completed");
     return result;
   } catch (error) {
-    setBackupLivePhase(phase, metrics());
+    setBackupLivePhase(phase, observedMetrics(metrics(), Date.now() - startedAt));
     if (runId) await flushStatusWrites(runId);
     const detail = safeBackupError(error);
     const message = `Backup failed during ${phase} after ${((Date.now() - startedAt) / 1000).toFixed(1)}s: ${detail}`;

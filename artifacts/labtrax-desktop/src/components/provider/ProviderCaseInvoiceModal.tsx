@@ -24,6 +24,7 @@ interface ProviderCaseInvoiceDetail {
   invoiceId?: string | null;
   invoiceNumber?: string | null;
   invoiceLines?: InvoiceLine[];
+  invoiceNotes?: string | null;
   invoiceTotal?: string | null;
   invoiceBalanceDue?: string | null;
   invoiceStatus?: string | null;
@@ -188,59 +189,74 @@ export function ProviderCaseInvoiceModal({
                     No active invoice found for this case.
                   </div>
                 ) : (
-                  <div className="rounded-md border border-border overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted/50 text-xs uppercase text-muted-foreground text-left">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">Description</th>
-                          <th className="px-3 py-2 font-medium text-center w-14">
-                            Qty
-                          </th>
-                          <th className="px-3 py-2 font-medium text-right w-24">
-                            Unit
-                          </th>
-                          <th className="px-3 py-2 font-medium text-right w-24">
-                            Total
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(detail.invoiceLines ?? []).length === 0 ? (
+                  <>
+                    <div className="rounded-md border border-border overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/50 text-xs uppercase text-muted-foreground text-left">
                           <tr>
-                            <td
-                              colSpan={4}
-                              className="px-3 py-3 text-muted-foreground text-center"
-                            >
-                              No line items on this invoice.
-                            </td>
+                            <th className="px-3 py-2 font-medium">Description</th>
+                            <th className="px-3 py-2 font-medium text-center w-14">
+                              Qty
+                            </th>
+                            <th className="px-3 py-2 font-medium text-right w-24">
+                              Unit
+                            </th>
+                            <th className="px-3 py-2 font-medium text-right w-24">
+                              Total
+                            </th>
                           </tr>
-                        ) : (
-                          detail.invoiceLines!.map((line, idx) => (
-                            <tr key={idx} className="border-t border-border">
-                              <td className="px-3 py-2">{line.description}</td>
-                              <td className="px-3 py-2 text-center">
-                                {line.quantity}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums">
-                                {formatCurrency(line.unitPrice)}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums font-medium">
-                                {formatCurrency(line.totalPrice)}
+                        </thead>
+                        <tbody>
+                          {(detail.invoiceLines ?? []).length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={4}
+                                className="px-3 py-3 text-muted-foreground text-center"
+                              >
+                                No line items on this invoice.
                               </td>
                             </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                    <div className="px-3 py-2 border-t border-border bg-muted/20 text-xs text-muted-foreground flex justify-between items-center">
-                      <span>
-                        Total billed: {formatCurrency(detail.invoiceTotal)}
-                      </span>
-                      <span className="font-medium text-foreground">
-                        Balance due: {formatCurrency(balanceDue)}
-                      </span>
+                          ) : (
+                            detail.invoiceLines!.map((line, idx) => (
+                              <tr key={idx} className="border-t border-border">
+                                <td className="px-3 py-2">{line.description}</td>
+                                <td className="px-3 py-2 text-center">
+                                  {line.quantity}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums">
+                                  {formatCurrency(line.unitPrice)}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums font-medium">
+                                  {formatCurrency(line.totalPrice)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                      <div className="px-3 py-2 border-t border-border bg-muted/20 text-xs text-muted-foreground flex justify-between items-center">
+                        <span>
+                          Total billed: {formatCurrency(detail.invoiceTotal)}
+                        </span>
+                        <span className="font-medium text-foreground">
+                          Balance due: {formatCurrency(balanceDue)}
+                        </span>
+                      </div>
                     </div>
-                  </div>
+                    {detail.invoiceNotes ? (
+                      <section
+                        aria-label="Invoice notes"
+                        className="rounded-md border border-border bg-muted/20 px-3 py-2"
+                      >
+                        <h3 className="text-xs font-medium text-muted-foreground">
+                          Invoice notes
+                        </h3>
+                        <p className="mt-1 text-sm whitespace-pre-wrap">
+                          {detail.invoiceNotes}
+                        </p>
+                      </section>
+                    ) : null}
+                  </>
                 )}
               </>
             ) : null}

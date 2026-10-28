@@ -27,6 +27,14 @@ export function metaOf(inv: CanonicalInvoice): Record<string, unknown> {
   return m && typeof m === "object" ? (m as Record<string, unknown>) : {};
 }
 
+export function isHistoricalInvoiceHeld(inv: CanonicalInvoice): boolean {
+  const recoveryBilling = metaOf(inv).recoveryBilling;
+  const state = recoveryBilling && typeof recoveryBilling === "object"
+    ? (recoveryBilling as { state?: unknown }).state
+    : undefined;
+  return String(inv.status) === "recovery_draft" || state === "held";
+}
+
 export function patientOf(inv: CanonicalInvoice, c?: LinkedCaseLike): string {
   const fromMeta = str(metaOf(inv).patientName);
   if (fromMeta) return fromMeta;

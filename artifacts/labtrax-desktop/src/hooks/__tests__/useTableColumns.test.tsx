@@ -151,3 +151,19 @@ describe("useTableColumns.fitColumn", () => {
     expect(result.current.getWidth("date")).toBe(90);
   });
 });
+
+describe("useTableColumns persisted preferences", () => {
+  it("restores a hidden column after the hook is remounted", () => {
+    const firstLaunch = renderHook(() => useTableColumns(defs, STORAGE_KEY));
+
+    act(() => { firstLaunch.result.current.toggleColumn("status"); });
+    act(() => { vi.advanceTimersByTime(200); });
+    firstLaunch.unmount();
+
+    const nextLaunch = renderHook(() => useTableColumns(defs, STORAGE_KEY));
+
+    expect(nextLaunch.result.current.state.hidden).toContain("status");
+    expect(nextLaunch.result.current.visible.map((column) => column.id))
+      .not.toContain("status");
+  });
+});

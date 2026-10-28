@@ -11,7 +11,7 @@
 // components/ReturnedCaseWizard.tsx.
 
 /** Statuses that mean "the lab was finished with this case". */
-export const RETURN_COMPLETE_STATUSES = new Set(["complete", "delivered", "done"]);
+export const RETURN_COMPLETE_STATUSES = new Set(["complete", "completed", "delivered", "done"]);
 /** Statuses that mean "the case is back at the front of the workflow". */
 export const RETURN_INTAKE_STATUSES = new Set(["received", "intake", "new", "pending"]);
 

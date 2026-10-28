@@ -147,11 +147,11 @@ jobs:
             >playwright-service-logs/desktop.log 2>&1 &
           echo "$!" > playwright-service-logs/desktop.pid
 
-          for attempt in {1..90}; do
+          for _attempt in {1..90}; do
             api_ready=false
             desktop_ready=false
-            curl --fail --silent --output /dev/null http://127.0.0.1:4174/api/healthz && api_ready=true || true
-            curl --fail --silent --output /dev/null http://127.0.0.1:4173/desktop/ && desktop_ready=true || true
+            if curl --fail --silent --output /dev/null http://127.0.0.1:4174/api/healthz; then api_ready=true; fi
+            if curl --fail --silent --output /dev/null http://127.0.0.1:4173/desktop/; then desktop_ready=true; fi
             if [[ "$api_ready" == true && "$desktop_ready" == true ]]; then
               exit 0
             fi
@@ -523,6 +523,9 @@ jobs:
         run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
           VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          UPDATE_FEED_URL: ${{ secrets.PUBLISH_API_BASE_URL }}/downloads/
+          ELECTRON_PUBLISH: never
+          ELECTRON_UPDATE_CHANNEL: installer
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
@@ -706,7 +709,7 @@ jobs:
             echo ""
             echo "Required secrets:"
             echo "  MACOS_CERTIFICATE             — base64-encoded .p12 Developer ID Application certificate"
-            echo "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
+            printf '%s\n' "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
             echo "  MACOS_CERTIFICATE_PASSWORD    — password protecting the .p12 file"
             echo "  APPLE_ID                      — Apple ID email (App Store Connect account)"
             echo "  APPLE_APP_SPECIFIC_PASSWORD   — app-specific password for the Apple ID"
@@ -743,6 +746,9 @@ jobs:
         run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
           VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          UPDATE_FEED_URL: ${{ secrets.PUBLISH_API_BASE_URL }}/downloads/
+          ELECTRON_PUBLISH: never
+          ELECTRON_UPDATE_CHANNEL: installer
           ELECTRON_PLATFORM: mac
           CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -849,11 +855,10 @@ jobs:
   # Runs only after both platform builds succeed. Downloads all release assets
   # from both platform build jobs and attaches them to a single GitHub Release.
   #
-  # Auto-update manifest files (latest.yml, latest-mac.yml) are produced by
-  # electron-builder locally during each platform build (GH_TOKEN is intentionally
-  # omitted from those steps to prevent premature partial releases). The manifests
-  # are captured via upload-artifact and attached here so that electron-updater
-  # in existing installs can discover the new version on next launch.
+  # Auto-update manifests (latest.yml, latest-mac.yml) and payloads are produced
+  # locally by electron-builder. They are attached to this draft for review;
+  # the Publish Draft Release workflow later copies verified manifests/payloads
+  # into the API generic feed consumed by installed clients.
   #
   # Required files for each platform's auto-updater:
   #   Windows  — latest.yml, *.exe, *.exe.blockmap

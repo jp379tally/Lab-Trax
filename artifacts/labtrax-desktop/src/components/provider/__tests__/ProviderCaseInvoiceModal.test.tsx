@@ -45,6 +45,7 @@ const CASE_WITH_OPEN_INVOICE = {
   invoiceLines: [
     { description: "Zirconia Crown", quantity: 1, unitPrice: "150.00", totalPrice: "150.00" },
   ],
+  invoiceNotes: "Please confirm the shade before fabrication.",
   invoiceTotal: "150.00",
   invoiceBalanceDue: "150.00",
   invoiceStatus: "open",
@@ -84,6 +85,24 @@ describe("ProviderCaseInvoiceModal", () => {
     expect(screen.getByText("INV-1001")).toBeInTheDocument();
     expect(screen.getByText("Zirconia Crown")).toBeInTheDocument();
     expect(screen.getAllByText(/Balance due: \$150\.00/).length).toBeGreaterThan(0);
+  });
+
+  it("shows invoice notes when the provider response includes shared notes", async () => {
+    renderModal();
+    await screen.findByText("Please confirm the shade before fabrication.");
+  });
+
+  it("does not show invoice notes when the provider response omits them", async () => {
+    apiFetchMock.mockResolvedValue({
+      ...CASE_WITH_OPEN_INVOICE,
+      invoiceNotes: null,
+    });
+    renderModal();
+    await screen.findByText("Case #1001 — Invoice");
+
+    expect(
+      screen.queryByText("Please confirm the shade before fabrication."),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a Pay button when the invoice has a positive balance and a payable status", async () => {

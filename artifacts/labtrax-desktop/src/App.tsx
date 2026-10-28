@@ -43,7 +43,6 @@ const DownloadPage = lazy(() => import("@/pages/download"));
 const BillingPage = lazy(() => import("@/pages/billing"));
 const CreatorPage = lazy(() => import("@/pages/creator/CreatorPage"));
 const OwnerPage = lazy(() => import("@/pages/owner/OwnerPage"));
-const RecoveryBillingPage = lazy(() => import("@/pages/recovery-billing"));
 const MessagesPage = lazy(() => import("@/pages/messages"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AcceptInvitePage = lazy(() => import("@/pages/accept-invite"));
@@ -121,7 +120,6 @@ function AppLayoutWithUploads() {
           <Route path="/admin/subscriptions" component={CreatorPage} />
           <Route path="/admin/provider-subscriptions" component={CreatorPage} />
           <Route path="/owner">{() => <CreatorGate><OwnerPage /></CreatorGate>}</Route>
-          <Route path="/recovery-billing" component={RecoveryBillingPage} />
           <Route path="/messages" component={MessagesPage} />
           <Route component={NotFound} />
         </Switch>

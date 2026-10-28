@@ -137,6 +137,7 @@ vi.mock("@workspace/db", () => {
     // Core
     db,
     pool: {},
+    buildOwningOrganizationGuardSql: () => "",
     // Users / sessions
     users: T,
     userSessions: T,

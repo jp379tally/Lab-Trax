@@ -6,15 +6,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FORBIDDEN_BACKOFF_MS,
+  FAILED_RUN_RETRY_MS,
   LOCAL_BACKUP_LAST_RUN_KEY,
+  LOCAL_BACKUP_RETRY_AFTER_KEY,
   TICK_MS,
   intervalToMs,
   startLocalBackupScheduler,
   type LocalBackupSchedulerDeps,
 } from "../local-backup-scheduler";
+import { BACKUP_HISTORY_UNCONFIRMED_MESSAGE, DESKTOP_BACKUP_HISTORY_REPORT_TIMEOUT_MS } from "../local-backup-execution";
 import type { LocalBackupLiveStatus } from "../local-backup-execution";
 
 interface ScheduleShape {
+  sourceEnvironment?: "development" | "production";
   interval: number | null;
   unit: "minutes" | "hours" | null;
   destination: string | null;
@@ -78,6 +82,7 @@ function makeDeps(overrides: Partial<LocalBackupSchedulerDeps> & { schedule?: Sc
     apiFetch: apiFetch as LocalBackupSchedulerDeps["apiFetch"],
     apiFetchArrayBuffer,
     saveBackupToFolder,
+    isFolderAvailable: vi.fn(async () => true),
     storage,
     ...overrides,
   };
@@ -95,6 +100,10 @@ describe("intervalToMs", () => {
     expect(intervalToMs(2, "hours")).toBe(2 * 60 * 60_000);
   });
 
+  it.each([48, 72])("supports the %i-hour development backup cadence", (hours) => {
+    expect(intervalToMs(hours, "hours")).toBe(hours * 60 * 60_000);
+  });
+
   it("returns null for missing or invalid values", () => {
     expect(intervalToMs(null, "minutes")).toBeNull();
     expect(intervalToMs(1, null)).toBeNull();
@@ -103,6 +112,15 @@ describe("intervalToMs", () => {
 });
 
 describe("startLocalBackupScheduler", () => {
+  it("does not launch a production media job from a legacy local schedule", async () => {
+    const { deps, apiFetch, saveBackupToFolder } = makeDeps({
+      schedule: { ...LOCAL_SCHEDULE, sourceEnvironment: "production" },
+    });
+    startLocalBackupScheduler(deps);
+    await vi.advanceTimersByTimeAsync(TICK_MS);
+    expect(saveBackupToFolder).not.toHaveBeenCalled();
+    expect(apiFetch).not.toHaveBeenCalledWith("/admin/backup/generate", expect.anything());
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-11T12:00:00Z"));
@@ -286,19 +304,157 @@ describe("startLocalBackupScheduler", () => {
     stop();
   });
 
-  it("advances the watermark in the catch block on failure (no per-tick retry storm)", async () => {
-    // A *caught* failure (network error, folder write error) still writes the
-    // watermark — from the catch block — so the next tick does not immediately
-    // re-fire (retry storm prevention).  Only a hard crash before the catch
-    // block's setItem would leave the key unset, which is intentional.
+  it("advances the watermark after a timed-out report only when history confirms that exact run", async () => {
+    const runId = "0ad043e2-854a-4507-bec4-f99750738096";
+    const completedAt = "2026-10-13T18:00:00.000Z";
+    const pendingReport = new Promise<{ completedAt: string }>(() => {});
+    const { deps, storage, reports } = makeDeps({
+      apiFetch: vi.fn(async (endpoint: string, init?: { method?: string; body?: string }) => {
+        if (endpoint === "/admin/backup/schedule") return LOCAL_SCHEDULE;
+        if (endpoint === "/admin/backup/desktop-run-report") {
+          reports.push(JSON.parse(init?.body ?? "{}"));
+          return pendingReport;
+        }
+        if (endpoint === `/admin/backup/history/by-download-run/${runId}`) {
+          return { ok: true, run: { downloadRunId: runId, status: "success", completedAt } };
+        }
+        throw new Error(`unexpected apiFetch: ${endpoint}`);
+      }) as LocalBackupSchedulerDeps["apiFetch"],
+      apiFetchArrayBuffer: vi.fn(async () => ({
+        buffer: makeVerifiedArchive(),
+        headers: new Headers({
+          "Content-Disposition": 'attachment; filename="labtrax-backup-test.zip"',
+          "Content-Length": "44",
+          "X-Backup-Run-Id": runId,
+          "X-Backup-Archive-Kind": "complete-non-production",
+          "X-Backup-Coverage-Version": "1",
+          "X-Backup-Media-File-Count": "2",
+          "X-Backup-Attachment-Row-Count": "2",
+        }),
+      })),
+    });
+    const stop = startLocalBackupScheduler(deps);
+    await flush();
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBeNull();
+    expect(reports).toEqual([expect.objectContaining({ status: "success", downloadRunId: runId })]);
+
+    await vi.advanceTimersByTimeAsync(DESKTOP_BACKUP_HISTORY_REPORT_TIMEOUT_MS);
+    await flush();
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBe(String(Date.now()));
+    expect(storage.getItem(LOCAL_BACKUP_RETRY_AFTER_KEY)).toBe("0");
+    expect(reports).toHaveLength(1);
+    stop();
+  });
+
+  it("ends progress on a stalled history report without overlapping or sending a duplicate report", async () => {
+    let resolveReport!: (value: { completedAt: string }) => void;
+    let schedulerTick: (() => void) | undefined;
+    const pendingReport = new Promise<{ completedAt: string }>((resolve) => {
+      resolveReport = resolve;
+    });
+    const onProgress = vi.fn();
+    const onError = vi.fn();
+    const { deps, apiFetchArrayBuffer, storage, reports } = makeDeps({
+      apiFetch: vi.fn(async (endpoint: string, init?: { method?: string; body?: string }) => {
+        if (endpoint === "/admin/backup/schedule") return LOCAL_SCHEDULE;
+        if (endpoint === "/admin/backup/desktop-run-report") {
+          const body = JSON.parse(init?.body ?? "{}");
+          reports.push(body);
+          return pendingReport;
+        }
+        throw new Error(`unexpected apiFetch: ${endpoint}`);
+      }) as LocalBackupSchedulerDeps["apiFetch"],
+      onProgress,
+      onError,
+      setInterval: vi.fn((callback: () => void) => {
+        schedulerTick = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as unknown as typeof globalThis.setInterval,
+      clearInterval: vi.fn(),
+    });
+    const stop = startLocalBackupScheduler(deps);
+    await flush();
+    expect(apiFetchArrayBuffer).toHaveBeenCalledTimes(1);
+    expect(reports).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(onProgress).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: "Recording the verified local backup",
+    }));
+
+    // A scheduler tick during the still-pending report must remain single-flight.
+    schedulerTick?.();
+    await flush();
+    expect(apiFetchArrayBuffer).toHaveBeenCalledTimes(1);
+    expect(reports).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(DESKTOP_BACKUP_HISTORY_REPORT_TIMEOUT_MS);
+    expect(onProgress).toHaveBeenLastCalledWith(null);
+    expect(onError).toHaveBeenCalledWith(BACKUP_HISTORY_UNCONFIRMED_MESSAGE);
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBeNull();
+    expect(storage.getItem(LOCAL_BACKUP_RETRY_AFTER_KEY)).toBe(
+      String(Date.now() + FAILED_RUN_RETRY_MS),
+    );
+    expect(apiFetchArrayBuffer).toHaveBeenCalledTimes(1);
+    expect(reports).toEqual([expect.objectContaining({ status: "success" })]);
+
+    // Completing the timed-out request late cannot write the watermark.
+    resolveReport({ completedAt: "2026-10-13T18:00:00Z" });
+    await flush();
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBeNull();
+    expect(reports).toHaveLength(1);
+    stop();
+  });
+
+  it("keeps failures out of the successful-run watermark and retries after a bounded delay", async () => {
     const { deps, apiFetchArrayBuffer, storage } = makeDeps();
     apiFetchArrayBuffer.mockRejectedValue(new Error("network down"));
     const stop = startLocalBackupScheduler(deps);
     await flush();
-    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBe(String(Date.now()));
-    await vi.advanceTimersByTimeAsync(TICK_MS * 5);
-    // One attempt only — the failure is not retried every minute.
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBeNull();
+    expect(storage.getItem(LOCAL_BACKUP_RETRY_AFTER_KEY)).toBe(
+      String(Date.now() + FAILED_RUN_RETRY_MS),
+    );
+    await vi.advanceTimersByTimeAsync(FAILED_RUN_RETRY_MS - TICK_MS);
     expect(apiFetchArrayBuffer).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(TICK_MS);
+    expect(apiFetchArrayBuffer).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("enables background mode only for a configured local schedule and clears it on stop", async () => {
+    const stateChanges: boolean[] = [];
+    const { deps } = makeDeps({ onScheduleActive: (active) => stateChanges.push(active) });
+    const stop = startLocalBackupScheduler(deps);
+    await flush();
+    expect(stateChanges).toEqual([true]);
+    stop();
+    expect(stateChanges).toEqual([true, false]);
+  });
+
+  it("reports background mode as inactive for disabled or cloud schedules", async () => {
+    const stateChanges: boolean[] = [];
+    const { deps } = makeDeps({
+      schedule: { ...LOCAL_SCHEDULE, destination: "onedrive" },
+      onScheduleActive: (active) => stateChanges.push(active),
+    });
+    const stop = startLocalBackupScheduler(deps);
+    await flush();
+    expect(stateChanges).toEqual([false]);
+    stop();
+  });
+
+  it("pauses before generating an archive when a removable destination is unavailable", async () => {
+    const logs: string[] = [];
+    const { deps, apiFetchArrayBuffer, reports, storage } = makeDeps({
+      isFolderAvailable: vi.fn(async () => false),
+      log: (message) => logs.push(message),
+    });
+    const stop = startLocalBackupScheduler(deps);
+    await flush();
+
+    expect(apiFetchArrayBuffer).not.toHaveBeenCalled();
+    expect(reports).toEqual([]);
+    expect(storage.getItem(LOCAL_BACKUP_LAST_RUN_KEY)).toBeNull();
+    expect(logs).toContain("[local-backup] destination is unavailable; waiting for it to reconnect");
     stop();
   });
 

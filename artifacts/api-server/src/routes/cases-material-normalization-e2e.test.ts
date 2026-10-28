@@ -36,7 +36,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-material-norm");
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-material-norm", "case-media");
 
 const {
   mockChatCreate,
@@ -66,6 +66,25 @@ vi.mock("openai", () => {
   return { default: FakeOpenAI, toFile: vi.fn() };
 });
 
+vi.mock("../middlewares/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../middlewares/auth")>();
+  return {
+    ...actual,
+    requireAuth: (req: any, res: any, next: any) => {
+      const authorization = req.headers.authorization;
+      const token = typeof authorization === "string" && authorization.startsWith("Bearer ")
+        ? authorization.slice(7)
+        : "";
+      if (token.startsWith("material-norm-test-")) {
+        req.user = { id: token };
+        req.auth = { userId: token, sessionId: "test-session" };
+        return next();
+      }
+      return actual.requireAuth(req, res, next);
+    },
+  };
+});
+
 vi.mock("../lib/pdf-to-images.js", () => ({
   convertPdfBufferToImageDataUrls: mockConvertPdf,
 }));
@@ -77,7 +96,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-material-norm"),
+  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-material-norm", "case-media"),
   extractMediaFileName: () => null,
 }));
 vi.mock("../lib/case-media-object-storage.js", () => ({
@@ -377,6 +396,11 @@ maybe("material normalization on iTero ingest paths (db integration)", () => {
 // ─────────────────────────────────────────────────────────────────────────
 describe("material normalization on POST /api/analyze-prescription", () => {
   let appMod: { default: import("express").Express };
+  let testUserId = 0;
+  const postAsTestUser = () =>
+    request(appMod.default)
+      .post("/api/analyze-prescription")
+      .set("Authorization", `Bearer material-norm-test-${++testUserId}`);
   let savedKey: string | undefined;
   let savedBaseUrl: string | undefined;
 
@@ -418,8 +442,7 @@ describe("material normalization on POST /api/analyze-prescription", () => {
       aiJson({ patientName: "Jane Doe", caseType: "Crown", material: raw, confidence: 0.9 })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsTestUser()
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);
@@ -433,8 +456,7 @@ describe("material normalization on POST /api/analyze-prescription", () => {
       aiJson({ patientName: "Jane Doe", caseType: "Crown", material: "Gold", confidence: 0.9 })
     );
 
-    const r = await request(appMod.default)
-      .post("/api/analyze-prescription")
+    const r = await postAsTestUser()
       .send({ imageBase64: VALID_IMAGE });
 
     expect(r.status).toBe(200);

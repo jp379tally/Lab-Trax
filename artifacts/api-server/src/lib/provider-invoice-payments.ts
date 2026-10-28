@@ -1,4 +1,4 @@
-import { assertRecoveryReleased } from "./recovery-billing-hold";
+import { assertHistoricalInvoiceNotHeld } from "./historical-invoice-hold";
 import { and, eq, inArray, isNull, sum, sql } from "drizzle-orm";
 import {
   caseEvents,
@@ -300,7 +300,7 @@ export async function settleProviderPaymentCheckoutInTransaction(
       if (!invoice) {
         throw new HttpError(409, "An allocated invoice is no longer available.");
       }
-      assertRecoveryReleased(invoice);
+      assertHistoricalInvoiceNotHeld(invoice);
       if (!PAYABLE_INVOICE_STATUSES.has(invoice.status)) {
         throw new HttpError(409, "An allocated invoice can no longer accept payment.");
       }
@@ -459,7 +459,7 @@ export async function chargeProviderAutoPayCheckout(
           "An allocated invoice balance changed before the card charge.",
         );
       }
-      assertRecoveryReleased(invoice);
+      assertHistoricalInvoiceNotHeld(invoice);
     }
 
     const paymentIntent = await createProviderAutoPayIntent(stripe, {

@@ -295,4 +295,71 @@ maybe("Editable Rx preview pricing (db integration)", () => {
     expect(Number(r.unitPrice)).toBe(OVERRIDE);
     expect(r.priceSource).toBe("manual");
   }, 20000);
+
+  it("persists reviewed intake dates, source identity, provider snapshot, invoice notes, and exact invoice lines", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases, invoices, invoiceLineItems } = dbMod;
+    const snapshot = {
+      doctorName: "Dr. Preview",
+      providerOrganizationId: providerOrgId,
+      practiceName: "Reviewed Practice",
+      primaryAddress: "5 Review Street, Suite 2, Springfield, IL 62701",
+      billingAddress: "PO Box 12, Springfield, IL 62702",
+      phone: "555-0188",
+      primaryEmail: "office@example.test",
+      billingEmail: "billing@example.test",
+    };
+    const caseId = await createCase(access, {
+      casePanBarcode: "00004567",
+      externalPatientId: "3shape-order-789",
+      receivedAt: "2026-07-25",
+      scanDate: "2026-07-24",
+      prescriptionDueDate: "2026-08-03",
+      providerContactSnapshot: snapshot,
+      invoiceNotes: "Please call when ready.",
+      invoiceOverrideLines: [
+        {
+          description: "Reviewed zirconia crown",
+          quantity: 2,
+          unitPrice: 85,
+          subItems: [{ description: "Custom shade", quantity: 1, unitPrice: 12 }],
+        },
+      ],
+    });
+
+    const savedCase = await db.query.cases.findFirst({ where: eq(cases.id, caseId) });
+    expect(savedCase).toMatchObject({
+      casePanBarcode: "00004567",
+      externalPatientId: "3shape-order-789",
+      receivedAt: "2026-07-25",
+      scanDate: "2026-07-24",
+      prescriptionDueDate: "2026-08-03",
+      providerContactSnapshot: snapshot,
+    });
+
+    const savedInvoice = await db.query.invoices.findFirst({ where: eq(invoices.caseId, caseId) });
+    expect(savedInvoice?.notes).toContain("Please call when ready.");
+    const savedLines: Array<typeof import("@workspace/db").invoiceLineItems.$inferSelect> = await db.select().from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, savedInvoice!.id));
+    // Children are persisted as linked rows, not JSON on the parent. Their
+    // prices contribute to the total under the existing grouped-line contract.
+    expect(savedLines).toHaveLength(2);
+    const parents = savedLines.filter((line) => !line.parentLineItemId);
+    expect(parents).toHaveLength(1);
+    expect(parents[0]).toMatchObject({
+      description: "Reviewed zirconia crown",
+      quantity: 2,
+      unitPrice: "85.00",
+      lineTotal: "170.00",
+    });
+    const children = savedLines.filter((line) => line.parentLineItemId === parents[0].id);
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({
+      description: "Custom shade",
+      quantity: 1,
+      unitPrice: "12.00",
+      lineTotal: "12.00",
+    });
+    expect(Number(savedInvoice?.total)).toBe(182);
+  }, 20000);
 });

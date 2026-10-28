@@ -64,19 +64,21 @@ export interface InvoiceSyncResult {
   action: InvoiceSyncAction;
   invoiceId: string | null;
 }
+export type InvoiceSyncExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 async function createCaseInvoiceForClinicalEdit(
   caseRow: typeof cases.$inferSelect,
   actorUserId: string,
+  executor: InvoiceSyncExecutor = db,
 ): Promise<string | null> {
-  const restorations = await db.query.caseRestorations.findMany({
+  const restorations = await executor.query.caseRestorations.findMany({
     where: eq(caseRestorations.caseId, caseRow.id),
   });
   const billable = restorations.filter((row) => row.restorationType !== "missing");
   if (billable.length === 0) return null;
 
   const provider = caseRow.providerOrganizationId
-    ? await db.query.organizations.findFirst({
+    ? await executor.query.organizations.findFirst({
         where: eq(organizations.id, caseRow.providerOrganizationId),
       })
     : null;
@@ -90,7 +92,7 @@ async function createCaseInvoiceForClinicalEdit(
     credits: 0,
   };
 
-  const invoice = await db.transaction(async (tx) => {
+  const invoice = await executor.transaction(async (tx) => {
     const doctorIdentity = await ensureDoctorProfileIdentity(tx, {
       labOrganizationId: caseRow.labOrganizationId,
       providerOrganizationId: caseRow.providerOrganizationId ?? null,
@@ -125,15 +127,17 @@ export async function syncInvoiceFromRestorationsDetailed(args: {
   caseId: string;
   actorUserId: string | null;
   createIfMissing?: boolean;
+  executor?: InvoiceSyncExecutor;
 }): Promise<InvoiceSyncResult> {
   const { caseId, actorUserId, createIfMissing = false } = args;
+  const executor = args.executor ?? db;
 
-  const caseRow = await db.query.cases.findFirst({
+  const caseRow = await executor.query.cases.findFirst({
     where: eq(cases.id, caseId),
   });
   if (!caseRow) return { action: "skipped", invoiceId: null };
 
-  let invoice = await db.query.invoices.findFirst({
+  let invoice = await executor.query.invoices.findFirst({
     // Copies are invoice-owned snapshots, not the case's generated bill.
     where: and(eq(invoices.caseId, caseId), isNull(invoices.sourceInvoiceId)),
   });
@@ -141,13 +145,13 @@ export async function syncInvoiceFromRestorationsDetailed(args: {
     if (!createIfMissing || !actorUserId) {
       return { action: "skipped", invoiceId: null };
     }
-    const invoiceId = await createCaseInvoiceForClinicalEdit(caseRow, actorUserId);
+    const invoiceId = await createCaseInvoiceForClinicalEdit(caseRow, actorUserId, executor);
     if (!invoiceId) return { action: "skipped", invoiceId: null };
-    invoice = await db.query.invoices.findFirst({
+    invoice = await executor.query.invoices.findFirst({
       where: eq(invoices.id, invoiceId),
     });
     if (!invoice) throw new Error("The new case invoice could not be reloaded.");
-    const synced = await syncInvoiceFromRestorationsDetailed({ caseId, actorUserId });
+    const synced = await syncInvoiceFromRestorationsDetailed({ caseId, actorUserId, executor });
     return {
       action: synced.action === "updated" ? "created" : synced.action,
       invoiceId,
@@ -166,7 +170,7 @@ export async function syncInvoiceFromRestorationsDetailed(args: {
   // we never leave the invoice with new line items but a stale total
   // (or vice versa). Read restorations inside the transaction so we
   // see a consistent snapshot under concurrent restoration writes.
-  const action = await db.transaction(async (tx): Promise<InvoiceSyncAction> => {
+  const action = await executor.transaction(async (tx): Promise<InvoiceSyncAction> => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${invoice.id}))`);
     const [lockedInvoice] = await tx
       .select()

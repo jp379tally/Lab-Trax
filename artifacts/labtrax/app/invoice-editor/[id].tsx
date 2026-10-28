@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   StyleSheet,
   ScrollView,
   TextInput,
+  Switch,
   Alert,
   Modal,
   KeyboardAvoidingView,
@@ -14,14 +15,17 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
+import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import {
+  FINANCE_INVOICES_QUERY_KEY,
   useInvoice,
   useUpdateInvoice,
   type UpdateInvoiceInput,
   type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
-import { queryClient, resilientFetch } from "@/lib/query-client";
+import { resilientFetch } from "@/lib/query-client";
 import { refreshCaseFinanceQueries } from "@/lib/refresh-case-finance";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useMe, canAdminAnyLab } from "@/lib/auth-me";
@@ -32,6 +36,12 @@ import {
   useDismissKeyboardOnTap,
 } from "@/components/ui/DismissKeyboardView";
 import { filterItemsByName } from "@workspace/item-name-match";
+import {
+  invoiceDateInputHasChanged,
+  invoiceDateInputToTimestamp,
+  invoiceTimestampToDateInput,
+  isLikelyLegacyShiftedInvoiceDate,
+} from "@/lib/invoice-date";
 
 // useLocalSearchParams values are `string | string[]` — coerce to a single value.
 function firstParam(value: string | string[] | undefined): string | undefined {
@@ -99,6 +109,10 @@ type InvoiceRecord = {
   id?: string;
   invoiceNumber?: string | null;
   status?: string | null;
+  aiGenerated?: boolean | null;
+  aiReviewedAt?: string | null;
+  aiReviewedByName?: string | null;
+  aiPricingWarning?: string | null;
   tax?: number | string | null;
   discount?: number | string | null;
   total?: number | string | null;
@@ -111,6 +125,10 @@ type InvoiceRecord = {
   caseId?: string | null;
   linkedCaseIsDeleted?: boolean | null;
   linkedCaseNumber?: string | null;
+  issuedAt?: string | null;
+  dueAt?: string | null;
+  dueDate?: string | null;
+  createdAt?: string | null;
   items?: RawLineItem[] | null;
   lineItems?: RawLineItem[] | null;
   displayMetadata?: Record<string, unknown> | null;
@@ -156,8 +174,52 @@ function fmtDate(iso: string | null | undefined): string {
   return `${mm}/${dd}/${d.getFullYear()}`;
 }
 
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${fmtDate(iso)}, ${d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
+function serializeInvoiceDraft(draft: {
+  invoiceNumber: string;
+  status: string;
+  patientName: string;
+  teeth: string;
+  shade: string;
+  billTo: string;
+  notes: string;
+  shareNotesWithProvider: boolean;
+  tax: string;
+  discount: string;
+  issuedAt: string;
+  dueAt: string;
+  lines: DraftLine[];
+}): string {
+  return JSON.stringify([
+    draft.invoiceNumber,
+    draft.status,
+    draft.patientName,
+    draft.teeth,
+    draft.shade,
+    draft.billTo,
+    draft.notes,
+    draft.shareNotesWithProvider,
+    draft.tax,
+    draft.discount,
+    draft.issuedAt,
+    draft.dueAt,
+    draft.lines,
+  ]);
+}
+
 export default function InvoiceEditorScreen() {
+  const queryClient = useQueryClient();
   const { colors } = useTheme();
+  const navigation = useNavigation();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const invoiceId = firstParam(params.id) ?? null;
   const me = useMe().data;
@@ -166,18 +228,27 @@ export default function InvoiceEditorScreen() {
   const invoiceQuery = useInvoice(invoiceId);
   const invoice = (invoiceQuery.data ?? null) as InvoiceRecord | null;
   const updateInvoice = useUpdateInvoice();
+  const meta = readMeta(invoice);
 
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [status, setStatus] = useState<NonNullable<UpdateInvoiceInput["status"]>>("open");
+  const [patientName, setPatientName] = useState("");
   const [teeth, setTeeth] = useState("");
   const [shade, setShade] = useState("");
   const [billTo, setBillTo] = useState("");
   const [notes, setNotes] = useState("");
+  const [shareNotesWithProvider, setShareNotesWithProvider] = useState(false);
   const [tax, setTax] = useState("0");
   const [discount, setDiscount] = useState("0");
+  const [issuedAt, setIssuedAt] = useState("");
+  const [dueAt, setDueAt] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [aiReviewedLocal, setAiReviewedLocal] = useState(false);
+  const [aiReviewSaving, setAiReviewSaving] = useState(false);
+  const initialDraftSnapshot = useRef<string | null>(null);
+  const skipNextPreventRemove = useRef(false);
 
   // Billable items fetched from the lab's items list (vendorType=item).
   const [billableItems, setBillableItems] = useState<BillableItem[]>([]);
@@ -209,45 +280,74 @@ export default function InvoiceEditorScreen() {
       ? (meta.lineItems as Array<{ item?: string; subItems?: Array<{ item?: string }> }>)
       : [];
     const raw = (invoice.items ?? invoice.lineItems ?? []) as RawLineItem[];
+    const nextInvoiceNumber = invoice.invoiceNumber ?? "";
+    const nextStatus =
+      STATUS_OPTIONS.find((o) => o.value === invoice.status)?.value ?? "open";
+    const nextPatientName = typeof meta.patientName === "string" ? meta.patientName : "";
+    const nextTeeth = typeof meta.teeth === "string" ? meta.teeth : "";
+    const nextShade = typeof meta.shade === "string" ? meta.shade : "";
+    const nextBillTo = typeof meta.billTo === "string" ? meta.billTo : "";
+    const nextNotes = invoice.notes ?? "";
+    const nextShareNotesWithProvider = meta.shareNotesWithProvider === true;
+    const nextTax = String(num(invoice.tax));
+    const nextDiscount = String(num(invoice.discount));
+    const nextIssuedAt = invoiceTimestampToDateInput(invoice.issuedAt);
+    const nextDueAt = invoiceTimestampToDateInput(invoice.dueAt ?? invoice.dueDate);
+    const nextLines: DraftLine[] = raw.map((it, idx) => {
+      const subItems = Array.isArray(it.subItems) ? it.subItems : [];
+      const metaSub = Array.isArray(metaItems[idx]?.subItems)
+        ? (metaItems[idx]!.subItems as Array<{ item?: string }>)
+        : [];
+      return {
+        id: it.id ?? null,
+        description: it.description ?? "",
+        quantity: String(Math.max(0, Math.round(num(it.quantity, 1)))),
+        unitPrice: String(
+          it.isDiscount ? Math.abs(num(it.unitPrice, 0)) : num(it.unitPrice, 0),
+        ),
+        isDiscount: !!it.isDiscount,
+        tooth:
+          it.toothLabel != null && it.toothLabel !== ""
+            ? it.toothLabel
+            : it.toothNumber != null
+              ? String(it.toothNumber)
+              : "",
+        subItems,
+        metaLabel: typeof metaItems[idx]?.item === "string" ? metaItems[idx]!.item! : "",
+        metaSubLabels: subItems.map((_, sidx) =>
+          typeof metaSub[sidx]?.item === "string" ? metaSub[sidx]!.item! : "",
+        ),
+      };
+    });
 
-    setInvoiceNumber(invoice.invoiceNumber ?? "");
-    setStatus(
-      (STATUS_OPTIONS.find((o) => o.value === invoice.status)?.value ?? "open"),
-    );
-    setTeeth(typeof meta.teeth === "string" ? meta.teeth : "");
-    setShade(typeof meta.shade === "string" ? meta.shade : "");
-    setBillTo(typeof meta.billTo === "string" ? meta.billTo : "");
-    setNotes(invoice.notes ?? "");
-    setTax(String(num(invoice.tax)));
-    setDiscount(String(num(invoice.discount)));
-    setLines(
-      raw.map((it, idx) => {
-        const subItems = Array.isArray(it.subItems) ? it.subItems : [];
-        const metaSub = Array.isArray(metaItems[idx]?.subItems)
-          ? (metaItems[idx]!.subItems as Array<{ item?: string }>)
-          : [];
-        return {
-          id: it.id ?? null,
-          description: it.description ?? "",
-          quantity: String(Math.max(0, Math.round(num(it.quantity, 1)))),
-          unitPrice: String(
-            it.isDiscount ? Math.abs(num(it.unitPrice, 0)) : num(it.unitPrice, 0),
-          ),
-          isDiscount: !!it.isDiscount,
-          tooth:
-            it.toothLabel != null && it.toothLabel !== ""
-              ? it.toothLabel
-              : it.toothNumber != null
-                ? String(it.toothNumber)
-                : "",
-          subItems,
-          metaLabel: typeof metaItems[idx]?.item === "string" ? metaItems[idx]!.item! : "",
-          metaSubLabels: subItems.map((_, sidx) =>
-            typeof metaSub[sidx]?.item === "string" ? metaSub[sidx]!.item! : "",
-          ),
-        };
-      }),
-    );
+    setInvoiceNumber(nextInvoiceNumber);
+    setStatus(nextStatus);
+    setPatientName(nextPatientName);
+    setTeeth(nextTeeth);
+    setShade(nextShade);
+    setBillTo(nextBillTo);
+    setNotes(nextNotes);
+    setShareNotesWithProvider(nextShareNotesWithProvider);
+    setTax(nextTax);
+    setDiscount(nextDiscount);
+    setIssuedAt(nextIssuedAt);
+    setDueAt(nextDueAt);
+    setLines(nextLines);
+    initialDraftSnapshot.current = serializeInvoiceDraft({
+      invoiceNumber: nextInvoiceNumber,
+      status: nextStatus,
+      patientName: nextPatientName,
+      teeth: nextTeeth,
+      shade: nextShade,
+      billTo: nextBillTo,
+      notes: nextNotes,
+      shareNotesWithProvider: nextShareNotesWithProvider,
+      tax: nextTax,
+      discount: nextDiscount,
+      issuedAt: nextIssuedAt,
+      dueAt: nextDueAt,
+      lines: nextLines,
+    });
     setHydrated(true);
   }, [invoice, hydrated]);
 
@@ -468,6 +568,64 @@ export default function InvoiceEditorScreen() {
       ? num(invoice.total, 0) - num(invoice.balanceDue, 0)
       : 0;
   const displayedAmountDue = displayedTotal - paidAmount;
+  const currentDraftSnapshot = serializeInvoiceDraft({
+    invoiceNumber,
+    status,
+    patientName,
+    teeth,
+    shade,
+    billTo,
+    notes,
+    shareNotesWithProvider,
+    tax,
+    discount,
+    issuedAt,
+    dueAt,
+    lines,
+  });
+  const hasUnsavedChanges =
+    hydrated &&
+    initialDraftSnapshot.current !== null &&
+    initialDraftSnapshot.current !== currentDraftSnapshot;
+  const issuedDateNeedsReview = isLikelyLegacyShiftedInvoiceDate(
+    invoice?.issuedAt,
+    invoice?.createdAt,
+  );
+  const dueDateNeedsReview = isLikelyLegacyShiftedInvoiceDate(
+    invoice?.dueAt ?? invoice?.dueDate,
+    invoice?.createdAt,
+  );
+
+  function showDiscardConfirmation(onDiscard: () => void) {
+    Alert.alert(
+      "Discard changes?",
+      "Your invoice edits haven't been saved.",
+      [
+        { text: "Keep editing", style: "cancel" },
+        { text: "Discard", style: "destructive", onPress: onDiscard },
+      ],
+    );
+  }
+
+  function handleBack() {
+    if (!hasUnsavedChanges) {
+      router.back();
+      return;
+    }
+    showDiscardConfirmation(() => {
+      skipNextPreventRemove.current = true;
+      router.back();
+    });
+  }
+
+  usePreventRemove(hasUnsavedChanges, ({ data }) => {
+    if (skipNextPreventRemove.current) {
+      skipNextPreventRemove.current = false;
+      navigation.dispatch(data.action);
+      return;
+    }
+    showDiscardConfirmation(() => navigation.dispatch(data.action));
+  });
 
   async function handleSave() {
     // Legacy mobile-created invoices surface with a `mobile:`-prefixed id and no
@@ -502,6 +660,16 @@ export default function InvoiceEditorScreen() {
       Alert.alert("Valid amount required", "Tax and discount must be valid, non-negative amounts.");
       return;
     }
+    if (
+      (issuedAt && invoiceDateInputToTimestamp(issuedAt) === null) ||
+      (dueAt && invoiceDateInputToTimestamp(dueAt) === null)
+    ) {
+      Alert.alert(
+        "Valid date required",
+        "Enter dates in YYYY-MM-DD format using a real calendar date.",
+      );
+      return;
+    }
 
     // (D) Spread the existing displayMetadata so credits / patientName /
     // caseNotes survive — the server derives the invoice total from meta.credits.
@@ -509,11 +677,12 @@ export default function InvoiceEditorScreen() {
     const existingMeta = readMeta(invoice);
     const displayMetadata: Record<string, unknown> = {
       ...existingMeta,
-      ...(existingMeta.legacyChargesNeedsReview === true ? {
+      ...(existingMeta.legacyChargesNeedsReview === true || existingMeta.reviewedChargesNeedsReview === true ? {
         legacyChargesNeedsReview: false,
         reviewedCharges: true,
         reviewedChargesNeedsReview: false,
       } : {}),
+      patientName: patientName.trim(),
       teeth: teeth.trim(),
       shade: shade.trim(),
       billTo: billTo.trim(),
@@ -526,6 +695,7 @@ export default function InvoiceEditorScreen() {
           description: (sub.description ?? "").trim(),
         })),
       })),
+      shareNotesWithProvider,
     };
 
     const items: UpdateInvoiceInputItemsItem[] = lines.map((l, idx) => ({
@@ -550,17 +720,31 @@ export default function InvoiceEditorScreen() {
 
     setSaving(true);
     try {
+      const data: UpdateInvoiceInput = {
+        invoiceNumber: invoiceNumber.trim(),
+        status,
+        notes: notes.trim() || null,
+        shareNotesWithProvider,
+        tax: Number(tax),
+        discount: Number(discount),
+        displayMetadata,
+        items,
+      };
+      if (
+        invoiceDateInputHasChanged(issuedAt, invoice?.issuedAt) &&
+        !issuedDateNeedsReview
+      ) {
+        data.issuedAt = invoiceDateInputToTimestamp(issuedAt);
+      }
+      if (
+        invoiceDateInputHasChanged(dueAt, invoice?.dueAt ?? invoice?.dueDate) &&
+        !dueDateNeedsReview
+      ) {
+        data.dueAt = invoiceDateInputToTimestamp(dueAt);
+      }
       await updateInvoice.mutateAsync({
         invoiceId: saveId,
-        data: {
-          invoiceNumber: invoiceNumber.trim(),
-          status,
-          notes: notes.trim() || null,
-          tax: Number(tax),
-          discount: Number(discount),
-          displayMetadata,
-          items,
-        },
+        data,
       });
     } catch (e) {
       Alert.alert(
@@ -576,11 +760,30 @@ export default function InvoiceEditorScreen() {
     void refreshCaseFinanceQueries(queryClient).catch(() => {
       Alert.alert("Invoice saved", "Some totals could not refresh. Reopen the report to retry.");
     });
+    initialDraftSnapshot.current = currentDraftSnapshot;
+    skipNextPreventRemove.current = true;
     router.back();
   }
 
   const styles = makeStyles(colors);
   const loading = invoiceQuery.isLoading && !invoice;
+  const needsChargeReview =
+    meta.legacyChargesNeedsReview === true ||
+    meta.reviewedChargesNeedsReview === true;
+  const needsAiReview =
+    !!invoice?.aiGenerated && !invoice.aiReviewedAt && !aiReviewedLocal;
+  const caseNumber = invoice?.linkedCaseNumber ||
+    (typeof meta.caseNumber === "string" ? meta.caseNumber : "");
+  const prescriptionType =
+    (typeof meta.caseType === "string" && meta.caseType) ||
+    (typeof meta.caseSubtype === "string" && meta.caseSubtype) ||
+    "";
+  const prescriptionMaterial =
+    (typeof meta.material === "string" && meta.material) || "";
+  const prescriptionDoctor =
+    (typeof meta.doctorName === "string" && meta.doctorName) || billTo;
+  const prescriptionNotes =
+    (typeof meta.caseNotes === "string" && meta.caseNotes) || "";
   // Legacy mobile-created invoices carry a `mobile:`-prefixed id. When the server
   // can't resolve one to a canonical, editable invoice, show a tailored message
   // instead of the generic "couldn't be loaded" copy.
@@ -591,7 +794,7 @@ export default function InvoiceEditorScreen() {
       <DismissKeyboardView style={styles.flex} testID="invoice-editor-keyboard-dismiss">
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={handleBack}
           hitSlop={12}
           style={styles.headerButton}
           accessibilityRole="button"
@@ -603,28 +806,6 @@ export default function InvoiceEditorScreen() {
         <Text style={styles.headerTitle} numberOfLines={1}>
           Edit Invoice
         </Text>
-        <Pressable
-          onPress={handleSave}
-          hitSlop={12}
-          style={styles.headerButton}
-          disabled={saving || loading || !invoice || !!invoice.frozen}
-          accessibilityRole="button"
-          accessibilityLabel="Save invoice"
-          testID="invoice-editor-save"
-        >
-          {saving ? (
-            <ActivityIndicator color={colors.tint} size="small" />
-          ) : (
-            <Text
-              style={[
-                styles.saveText,
-                (loading || !invoice) && { color: colors.textTertiary },
-              ]}
-            >
-              Save
-            </Text>
-          )}
-        </Pressable>
       </View>
 
       {loading ? (
@@ -659,10 +840,98 @@ export default function InvoiceEditorScreen() {
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={scrollKeyboardDismissMode}
           >
-            {readMeta(invoice).legacyChargesNeedsReview === true && (
+            {needsChargeReview && (
               <View style={styles.frozenBanner} testID="invoice-editor-legacy-review-warning">
                 <Text accessibilityRole="alert" style={styles.frozenBannerText}>
-                  Legacy charges need review. Some charges have missing ownership information. Charges and totals have been left unchanged. Check each charge against the case, remove any obsolete charges, then save to confirm your review.
+                  {meta.legacyChargesNeedsReview === true
+                    ? "Legacy charges need review. Some charges have missing ownership information. Charges and totals have been left unchanged. Check each charge against the case, remove any obsolete charges, then save to confirm your review."
+                    : "The case changed after these invoice charges were reviewed. Check the lines against the case before saving; new case charges are not added automatically."}
+                </Text>
+              </View>
+            )}
+            {needsAiReview && (
+              <View style={styles.aiReviewBanner} testID="invoice-editor-ai-review-warning">
+                <View style={styles.aiReviewCopy}>
+                  <Text style={styles.aiReviewTitle}>AI-imported invoice — please review</Text>
+                  {!!invoice?.aiPricingWarning && (
+                    <Text style={styles.aiReviewText}>{invoice.aiPricingWarning}</Text>
+                  )}
+                </View>
+                <Pressable
+                  onPress={async () => {
+                    if (!invoice?.id || aiReviewSaving) return;
+                    setAiReviewSaving(true);
+                    try {
+                      const response = await resilientFetch(
+                        `/api/invoices/${encodeURIComponent(invoice.id)}/ai-review`,
+                        {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ acknowledged: true }),
+                        },
+                      );
+                      if (!response.ok) {
+                        throw new Error(
+                          "Could not confirm this invoice was marked reviewed. Please try again.",
+                        );
+                      }
+                      const payload = await response.json().catch(() => null);
+                      const reviewedInvoice = payload?.data;
+                      // A successful HTTP response alone is not a persisted
+                      // acknowledgment. Never hide the retry notice on an
+                      // empty, malformed or different-invoice response.
+                      if (
+                        reviewedInvoice?.id !== invoice.id ||
+                        typeof reviewedInvoice.aiReviewedAt !== "string" ||
+                        !Number.isFinite(Date.parse(reviewedInvoice.aiReviewedAt))
+                      ) {
+                        throw new Error(
+                          "Could not confirm this invoice was marked reviewed. Please try again.",
+                        );
+                      }
+                      const currentInvoice = invoice;
+                      if (
+                        currentInvoice?.id &&
+                        reviewedInvoice &&
+                        typeof reviewedInvoice === "object"
+                      ) {
+                        queryClient.setQueryData(
+                          [...FINANCE_INVOICES_QUERY_KEY, currentInvoice.id],
+                          (current: InvoiceRecord | null | undefined) => ({
+                            ...(current ?? currentInvoice),
+                            ...reviewedInvoice,
+                          }),
+                        );
+                      }
+                      setAiReviewedLocal(true);
+                      void queryClient
+                        .invalidateQueries({ queryKey: FINANCE_INVOICES_QUERY_KEY })
+                        .catch(() => {});
+                    } catch (error) {
+                      Alert.alert(
+                        "Could not mark reviewed",
+                        `${error instanceof Error ? error.message : "Please try again."} You can retry from the review notice.`,
+                      );
+                    } finally {
+                      setAiReviewSaving(false);
+                    }
+                  }}
+                  style={styles.aiReviewButton}
+                  disabled={aiReviewSaving}
+                  accessibilityRole="button"
+                  testID="invoice-editor-mark-ai-reviewed"
+                >
+                  <Text style={styles.aiReviewButtonText}>
+                    {aiReviewSaving ? "Marking…" : "Mark reviewed"}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+            {!!invoice?.aiGenerated && !!invoice.aiReviewedAt && (
+              <View style={styles.aiReviewRecord} testID="invoice-ai-review-record">
+                <Text style={styles.aiReviewRecordText}>
+                  Reviewed by {invoice.aiReviewedByName || "Reviewer unavailable"} ·{" "}
+                  {fmtDateTime(invoice.aiReviewedAt)}
                 </Text>
               </View>
             )}
@@ -700,7 +969,7 @@ export default function InvoiceEditorScreen() {
             )}
             {/* ── Details ── */}
             <View style={styles.card}>
-              <Text style={styles.cardHeading}>Details</Text>
+              <Text style={styles.cardHeading}>Invoice details</Text>
               <Field label="Invoice number">
                 <TextInput
                   value={invoiceNumber}
@@ -712,6 +981,39 @@ export default function InvoiceEditorScreen() {
                   testID="invoice-editor-number"
                 />
               </Field>
+              <Field label="Issue date">
+                <TextInput
+                  value={issuedAt}
+                  onChangeText={setIssuedAt}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.textTertiary}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  editable={!saving && !invoice.frozen && !issuedDateNeedsReview}
+                  accessibilityLabel="Issue date"
+                  testID="invoice-editor-issued-at"
+                />
+              </Field>
+              <Field label="Due date (optional)">
+                <TextInput
+                  value={dueAt}
+                  onChangeText={setDueAt}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.textTertiary}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  editable={!saving && !invoice.frozen && !dueDateNeedsReview}
+                  accessibilityLabel="Due date"
+                  testID="invoice-editor-due-at"
+                />
+              </Field>
+              {(issuedDateNeedsReview || dueDateNeedsReview) && (
+                <Text style={styles.dateReviewHint} accessibilityRole="alert">
+                  A legacy invoice date needs review. Use the desktop date repair action before changing it here.
+                </Text>
+              )}
               <Field label="Status">
                 <View style={styles.statusRow}>
                   {STATUS_OPTIONS.map((opt) => {
@@ -736,26 +1038,20 @@ export default function InvoiceEditorScreen() {
                   })}
                 </View>
               </Field>
-              <Field label="Teeth">
+            </View>
+
+            {/* ── Patient and billing ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Patient &amp; billing</Text>
+              <Field label="Patient name">
                 <TextInput
-                  value={teeth}
-                  onChangeText={setTeeth}
+                  value={patientName}
+                  onChangeText={setPatientName}
                   style={styles.input}
-                  placeholder="e.g. 8-10"
+                  placeholder="Patient name"
                   placeholderTextColor={colors.textTertiary}
-                  autoCapitalize="none"
-                  testID="invoice-editor-teeth"
-                />
-              </Field>
-              <Field label="Shade">
-                <TextInput
-                  value={shade}
-                  onChangeText={setShade}
-                  style={styles.input}
-                  placeholder="e.g. A2"
-                  placeholderTextColor={colors.textTertiary}
-                  autoCapitalize="characters"
-                  testID="invoice-editor-shade"
+                  autoCapitalize="words"
+                  testID="invoice-editor-patient-name"
                 />
               </Field>
               <Field label="Bill to">
@@ -769,25 +1065,40 @@ export default function InvoiceEditorScreen() {
                   testID="invoice-editor-bill-to"
                 />
               </Field>
-            </View>
-
-            {/* ── Notes ── */}
-            <View style={styles.card}>
-              <Text style={styles.cardHeading}>Invoice notes</Text>
-              <TextInput
-                value={notes}
-                onChangeText={setNotes}
-                style={[styles.input, styles.notesInput]}
-                placeholder="Optional notes visible on the invoice"
-                placeholderTextColor={colors.textTertiary}
-                multiline
-                numberOfLines={4}
-                autoCorrect={true}
-                spellCheck={true}
-                autoCapitalize="sentences"
-                textAlignVertical="top"
-                testID="invoice-editor-notes"
-              />
+              <View style={styles.patientFieldRow}>
+                <View style={styles.patientField}>
+                  <Field label="Teeth">
+                    <TextInput
+                      value={teeth}
+                      onChangeText={setTeeth}
+                      style={styles.input}
+                      placeholder="e.g. 8-10"
+                      placeholderTextColor={colors.textTertiary}
+                      autoCapitalize="none"
+                      testID="invoice-editor-teeth"
+                    />
+                  </Field>
+                </View>
+                <View style={styles.patientField}>
+                  <Field label="Shade">
+                    <TextInput
+                      value={shade}
+                      onChangeText={setShade}
+                      style={styles.input}
+                      placeholder="e.g. A2"
+                      placeholderTextColor={colors.textTertiary}
+                      autoCapitalize="characters"
+                      testID="invoice-editor-shade"
+                    />
+                  </Field>
+                </View>
+              </View>
+              {!!prescriptionMaterial && (
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Material</Text>
+                  <Text style={styles.referenceValue}>{prescriptionMaterial}</Text>
+                </View>
+              )}
             </View>
 
             {/* ── Line items ── */}
@@ -814,7 +1125,6 @@ export default function InvoiceEditorScreen() {
                   </Pressable>
                 </View>
               </View>
-
               {lines.length === 0 ? (
                 <Text style={styles.emptyHint}>No line items yet.</Text>
               ) : (
@@ -827,6 +1137,7 @@ export default function InvoiceEditorScreen() {
                       <Pressable
                         onPress={() => removeLine(idx)}
                         hitSlop={8}
+                        style={styles.lineRemoveButton}
                         testID={`invoice-editor-remove-line-${idx}`}
                       >
                         <Ionicons name="trash-outline" size={18} color={colors.error} />
@@ -940,7 +1251,50 @@ export default function InvoiceEditorScreen() {
                   </View>
                 ))
               )}
+            </View>
 
+            {/* ── Notes ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Invoice notes</Text>
+              <TextInput
+                value={notes}
+                onChangeText={setNotes}
+                style={[styles.input, styles.notesInput]}
+                placeholder="Add notes for this invoice"
+                placeholderTextColor={colors.textTertiary}
+                multiline
+                numberOfLines={4}
+                autoCorrect={true}
+                spellCheck={true}
+                autoCapitalize="sentences"
+                textAlignVertical="top"
+                testID="invoice-editor-notes"
+              />
+              <View style={styles.shareNotesRow}>
+                <View style={styles.shareNotesCopy}>
+                  <Text style={styles.shareNotesTitle}>Share with Provider</Text>
+                  <Text style={styles.shareNotesHint}>
+                    {shareNotesWithProvider
+                      ? "These notes appear on provider-facing invoices."
+                      : "Private by default; only lab staff can see these notes."}
+                  </Text>
+                </View>
+                <Switch
+                  value={shareNotesWithProvider}
+                  onValueChange={setShareNotesWithProvider}
+                  accessibilityRole="switch"
+                  accessibilityLabel="Share with Provider"
+                  accessibilityState={{ checked: shareNotesWithProvider }}
+                  testID="invoice-editor-share-notes"
+                  trackColor={{ false: colors.border, true: colors.tint }}
+                  thumbColor={colors.surface}
+                />
+              </View>
+            </View>
+
+            {/* ── Invoice totals ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Invoice totals</Text>
               <View style={styles.subtotalRow}>
                 <Text style={styles.subtotalLabel}>Subtotal</Text>
                 <Text style={styles.subtotalValue} testID="invoice-editor-subtotal">
@@ -969,12 +1323,10 @@ export default function InvoiceEditorScreen() {
                   onChangeText={setDiscount}
                 />
               </View>
-              {credits > 0 && (
-                <View style={styles.amountRow}>
-                  <Text style={styles.subtotalLabel}>Credits applied</Text>
-                  <Text style={styles.subtotalValue}>{`−${formatMoney(credits)}`}</Text>
-                </View>
-              )}
+              <View style={styles.amountRow}>
+                <Text style={styles.subtotalLabel}>Credits applied</Text>
+                <Text style={styles.subtotalValue}>{`−${formatMoney(credits)}`}</Text>
+              </View>
               <View style={styles.subtotalRow}>
                 <Text style={styles.subtotalLabel}>Total</Text>
                 <Text style={styles.subtotalValue} testID="invoice-editor-total">
@@ -988,7 +1340,72 @@ export default function InvoiceEditorScreen() {
                 </Text>
               </View>
             </View>
+            <View style={styles.card} testID="invoice-editor-prescription-reference">
+              <Text style={styles.cardHeading}>Prescription reference</Text>
+              <View style={styles.referenceGrid}>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Patient</Text>
+                  <Text style={styles.referenceValue}>{patientName || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Doctor</Text>
+                  <Text style={styles.referenceValue}>{prescriptionDoctor || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Case #</Text>
+                  <Text style={styles.referenceValue}>{caseNumber || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Restoration type</Text>
+                  <Text style={styles.referenceValue}>{prescriptionType || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Material</Text>
+                  <Text style={styles.referenceValue}>{prescriptionMaterial || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Shade</Text>
+                  <Text style={styles.referenceValue}>{shade || "—"}</Text>
+                </View>
+                <View style={styles.referenceRow}>
+                  <Text style={styles.miniLabel}>Teeth</Text>
+                  <Text style={styles.referenceValue}>{teeth || "—"}</Text>
+                </View>
+                {!!prescriptionNotes && (
+                  <View style={styles.referenceRow}>
+                    <Text style={styles.miniLabel}>Case notes</Text>
+                    <Text style={styles.referenceValue}>{prescriptionNotes}</Text>
+                  </View>
+                )}
+              </View>
+            </View>
           </ScrollView>
+
+          <View style={styles.saveDock} testID="invoice-editor-save-dock">
+            <View style={styles.dockBalance}>
+              <Text style={styles.dockBalanceLabel}>Balance due</Text>
+              <Text style={styles.dockBalanceValue} testID="invoice-editor-dock-balance">
+                {formatMoney(displayedAmountDue)}
+              </Text>
+            </View>
+            <Pressable
+              onPress={handleSave}
+              style={[
+                styles.dockSaveButton,
+                (saving || loading || !invoice || !!invoice.frozen) && styles.dockSaveDisabled,
+              ]}
+              disabled={saving || loading || !invoice || !!invoice.frozen}
+              accessibilityRole="button"
+              accessibilityLabel="Save invoice"
+              testID="invoice-editor-save"
+            >
+              {saving ? (
+                <ActivityIndicator color={colors.surface} size="small" />
+              ) : (
+                <Text style={styles.dockSaveText}>Save changes</Text>
+              )}
+            </Pressable>
+          </View>
 
           <ItemPickerSheet
             visible={pickerVisible}
@@ -1227,10 +1644,12 @@ function makeStyles(colors: ThemeColors) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.border,
       backgroundColor: colors.surface,
+      elevation: 3,
+      zIndex: 2,
     },
     headerButton: {
       minWidth: 56,
-      height: 40,
+      height: 44,
       alignItems: "center",
       justifyContent: "center",
     },
@@ -1242,16 +1661,41 @@ function makeStyles(colors: ThemeColors) {
       color: colors.text,
       marginHorizontal: 8,
     },
-    saveText: { fontSize: 16, fontWeight: "600", color: colors.tint },
     body: { flex: 1 },
-    bodyContent: { padding: 16, gap: 16, paddingBottom: 48 },
+    bodyContent: { padding: 12, gap: 12, paddingBottom: 20 },
+    saveDock: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+      backgroundColor: colors.surface,
+      elevation: 8,
+      zIndex: 4,
+    },
+    dockBalance: { flex: 1, minWidth: 0 },
+    dockBalanceLabel: { fontSize: 11, color: colors.textSecondary },
+    dockBalanceValue: { fontSize: 17, fontWeight: "700", color: colors.text },
+    dockSaveButton: {
+      minHeight: 46,
+      minWidth: 142,
+      paddingHorizontal: 18,
+      borderRadius: 10,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.tint,
+    },
+    dockSaveDisabled: { opacity: 0.55 },
+    dockSaveText: { color: colors.surface, fontSize: 15, fontWeight: "700" },
     card: {
       backgroundColor: colors.surface,
-      borderRadius: 14,
+      borderRadius: 10,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
-      padding: 16,
-      gap: 12,
+      padding: 12,
+      gap: 10,
     },
     cardHeaderRow: {
       flexDirection: "row",
@@ -1260,6 +1704,21 @@ function makeStyles(colors: ThemeColors) {
     },
     cardHeaderActions: { flexDirection: "row", alignItems: "center", gap: 14 },
     cardHeading: { fontSize: 15, fontWeight: "700", color: colors.text },
+    patientFieldRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+    patientField: { flex: 1, flexBasis: 132, minWidth: 132 },
+    referenceGrid: { gap: 10 },
+    referenceRow: { gap: 2 },
+    dateReviewHint: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+    referenceValue: {
+      color: colors.text,
+      fontSize: 13,
+      lineHeight: 18,
+      flexShrink: 1,
+    },
     field: { gap: 6 },
     fieldLabel: { fontSize: 13, fontWeight: "600", color: colors.textSecondary },
     miniLabel: { fontSize: 11, fontWeight: "600", color: colors.textTertiary, marginBottom: 4 },
@@ -1277,6 +1736,16 @@ function makeStyles(colors: ThemeColors) {
       minHeight: 96,
       paddingTop: 10,
     },
+    shareNotesRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      minHeight: 48,
+    },
+    shareNotesCopy: { flex: 1, minWidth: 0, gap: 3 },
+    shareNotesTitle: { fontSize: 14, fontWeight: "600", color: colors.text },
+    shareNotesHint: { fontSize: 12, lineHeight: 17, color: colors.textSecondary },
     // Unit price field: inline "$" prefix sharing the same input border.
     priceInputWrap: {
       flexDirection: "row",
@@ -1298,17 +1767,26 @@ function makeStyles(colors: ThemeColors) {
     },
     statusRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
     statusChip: {
+      minHeight: 44,
       paddingHorizontal: 14,
       paddingVertical: 8,
       borderRadius: 999,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       backgroundColor: colors.backgroundSolid,
+      justifyContent: "center",
     },
     statusChipActive: { backgroundColor: colors.tint, borderColor: colors.tint },
     statusChipText: { fontSize: 13, fontWeight: "600", color: colors.textSecondary },
     statusChipTextActive: { color: colors.textInverse },
-    addBtn: { flexDirection: "row", alignItems: "center", gap: 2 },
+    addBtn: {
+      minHeight: 44,
+      paddingHorizontal: 4,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 2,
+    },
     addBtnText: { fontSize: 14, fontWeight: "600", color: colors.tint },
     // Description field shown as a tappable picker trigger when billable items exist.
     descPickerTrigger: {
@@ -1331,6 +1809,12 @@ function makeStyles(colors: ThemeColors) {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+    },
+    lineRemoveButton: {
+      width: 44,
+      height: 44,
+      alignItems: "center",
+      justifyContent: "center",
     },
     lineIndex: { fontSize: 13, fontWeight: "700", color: colors.textSecondary },
     discountBadge: {
@@ -1404,6 +1888,37 @@ function makeStyles(colors: ThemeColors) {
       textDecorationLine: "underline",
     },
     frozenBannerSubtext: { fontSize: 13, color: "#92400e", lineHeight: 18 },
+    aiReviewBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      padding: 12,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: "#f59e0b",
+      backgroundColor: "#fffbeb",
+    },
+    aiReviewCopy: { flex: 1, gap: 3 },
+    aiReviewTitle: { fontSize: 13, fontWeight: "700", color: "#92400e" },
+    aiReviewText: { fontSize: 12, color: "#92400e", lineHeight: 17 },
+    aiReviewRecord: {
+      borderLeftWidth: 2,
+      borderLeftColor: colors.border,
+      paddingLeft: 10,
+      paddingVertical: 2,
+    },
+    aiReviewRecordText: { fontSize: 12, color: colors.textSecondary },
+    aiReviewButton: {
+      minHeight: 44,
+      paddingHorizontal: 10,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: "#d97706",
+      borderRadius: 6,
+      backgroundColor: "#fff",
+    },
+    aiReviewButtonText: { color: "#92400e", fontSize: 12, fontWeight: "700" },
   });
 }
 

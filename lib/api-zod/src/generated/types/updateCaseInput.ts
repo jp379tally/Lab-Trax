@@ -14,6 +14,8 @@ import type { UpdateCaseInputStatus } from './updateCaseInputStatus';
 export interface UpdateCaseInput {
   status?: UpdateCaseInputStatus;
   priority?: UpdateCaseInputPriority;
+  /** Lab station where the case is physically located. Null clears the stored station without changing the case status. */
+  labLocationId?: string | null;
   /**
      * Calendar date the case was received. Updating this field also updates the Issued date of every invoice linked to the case.
      * @pattern ^\d{4}-\d{2}-\d{2}$

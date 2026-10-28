@@ -13,6 +13,7 @@ describe("PLY texture pairing", () => {
   });
   it("rejects paths and missing references", () => {
     expect(declaredPlyTexture(ply("../scan.jpg"))).toBeNull();
+    expect(declaredPlyTexture(ply(`${"x".repeat(256)}.jpg`))).toBeNull();
     expect(pairPlyTextures([{ name: "scan.ply", data: ply("missing.jpg"), mimeType: "x" }]).size).toBe(0);
   });
   it("does not pair duplicate image or PLY basenames", () => {

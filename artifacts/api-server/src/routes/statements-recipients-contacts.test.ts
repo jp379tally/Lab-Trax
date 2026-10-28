@@ -4,7 +4,7 @@
  * are stubbed; invoice cutoff and contact isolation execute against the DB.
  */
 import { randomUUID } from "node:crypto";
-import { inflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import express from "express";
 import request from "supertest";
 import AdmZip from "adm-zip";
@@ -43,7 +43,9 @@ vi.mock("../lib/lab-logo-storage", () => ({
 }));
 
 function pdfText(buffer: Buffer): string {
-  return Array.from(buffer.toString("binary").matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g))
+  // PDFKit terminates stream bytes with LF. An optional CR here would consume
+  // a legitimate final compressed byte and randomly break decompression.
+  return Array.from(buffer.toString("binary").matchAll(/stream\r?\n([\s\S]*?)\nendstream/g))
     .flatMap((match) => {
       const bytes = Buffer.from(match[1]!, "binary");
       let content: string;
@@ -53,6 +55,16 @@ function pdfText(buffer: Buffer): string {
         Buffer.from(hex[1]!, "hex").toString("latin1"));
     }).join("");
 }
+
+it("preserves a compressed PDFKit stream ending in a carriage-return byte", () => {
+  const text = "synthetic-invoice-19999";
+  const compressed = deflateSync(Buffer.from(`<${Buffer.from(text).toString("hex")}>`));
+  expect(compressed.at(-1)).toBe(0x0d);
+  const fixture = Buffer.concat([
+    Buffer.from("stream\n"), compressed, Buffer.from("\nendstream"),
+  ]);
+  expect(pdfText(fixture)).toBe(text);
+});
 
 describe("statement recipients and previews with real ORM contacts", () => {
   const prefix = `statement_contacts_${randomUUID()}`;

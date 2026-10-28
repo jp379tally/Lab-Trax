@@ -23,7 +23,7 @@ import { CustomerQueuePicker } from "./CustomerQueuePicker";
 import { InvoiceAllocationTable } from "./InvoiceAllocationTable";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { StripeCapture, type ElementsInstance, type StripeInstance } from "./StripeCapture";
-import { defaultScope, deselectCustomers, scopeFor, type PayableCustomer } from "./model";
+import { defaultScope, deselectCustomers, scopeFor, selectCustomers, type PayableCustomer } from "./model";
 import {
   AUTOMATIC_CARD_ATTEMPT_MESSAGE,
   DEFAULT_BODY,
@@ -142,15 +142,17 @@ export function ReceivingStep({
     setError(null);
   }, [active]);
 
+  const customer = active ? customersById.get(active) ?? null : null;
+  const providerOrganizationId = customer?.account.providerOrganizationId ?? active;
   const statementsQuery = `limit=${PAGE_SIZE}${statementCursor ? `&cursor=${encodeURIComponent(statementCursor)}` : ""}`;
   const statements = useQuery({
-    queryKey: ["billing", "statements", labOrganizationId, active, statementsQuery],
+    queryKey: ["billing", "statements", labOrganizationId, providerOrganizationId, statementsQuery],
     enabled: !!active,
     queryFn: async () => {
       const query = statementsQuery;
       const requestCursor = statementCursor;
       const response = await apiFetch<StatementPage | Statement[]>(
-        `/billing/${labOrganizationId}/accounts/${active}/statements?${query}`,
+        `/billing/${labOrganizationId}/accounts/${providerOrganizationId}/statements?${query}`,
       );
       const result = Array.isArray(response)
         ? { rows: response, total: response.length, limit: response.length, offset: 0, hasMore: false, nextCursor: null }
@@ -158,7 +160,7 @@ export function ReceivingStep({
       return { ...result, query, requestCursor };
     },
   });
-  const statementsBase = `${labOrganizationId}/${active}`;
+  const statementsBase = `${labOrganizationId}/${providerOrganizationId}`;
   const [pagedStatementsBase, setPagedStatementsBase] = useState(statementsBase);
   if (pagedStatementsBase !== statementsBase) {
     setPagedStatementsBase(statementsBase);
@@ -180,9 +182,8 @@ export function ReceivingStep({
   }, [statements.data, statementsQuery, statementsBase]);
   const loadedStatements = loaded.key === statementsBase ? loaded.rows : EMPTY_STATEMENTS;
 
-  const customer = active ? customersById.get(active) ?? null : null;
   const account = customer?.account;
-  const providerName = customer?.name || "Select customer…";
+  const providerName = customer?.practiceName || customer?.account.providerName || customer?.name || "Select customer…";
   const scope = customer ? scopeFor(selection, customer) : null;
   const eligibleActiveStatementId = account?.statementId ?? undefined;
   const availableStatements = loadedStatements.filter(
@@ -218,19 +219,19 @@ export function ReceivingStep({
       : availableStatements;
   const statementTotal = loaded.key === statementsBase ? loaded.total : 0;
   const credits = useQuery({
-    queryKey: ["billing", "customer-credits", labOrganizationId, active],
+    queryKey: ["billing", "customer-credits", labOrganizationId, providerOrganizationId],
     enabled: !!active,
     queryFn: () =>
       apiFetch<{ totalAvailable: string; credits: unknown[] }>(
-        `/billing/${labOrganizationId}/accounts/${active}/customer-credits`,
+        `/billing/${labOrganizationId}/accounts/${providerOrganizationId}/customer-credits`,
       ),
   });
   const savedCard = useQuery({
-    queryKey: ["provider-lab-card", labOrganizationId, active],
+    queryKey: ["provider-lab-card", labOrganizationId, providerOrganizationId],
     enabled: !!active,
     queryFn: () =>
       apiFetch<{ card?: { brand: string; last4: string } | null }>(
-        `/provider/lab-card?labOrganizationId=${encodeURIComponent(labOrganizationId)}&providerOrganizationId=${encodeURIComponent(active)}`,
+        `/provider/lab-card?labOrganizationId=${encodeURIComponent(labOrganizationId)}&providerOrganizationId=${encodeURIComponent(providerOrganizationId)}`,
       ),
   });
   useEffect(() => {
@@ -516,7 +517,7 @@ export function ReceivingStep({
     qc.invalidateQueries({ queryKey: ["billing", "statement"] });
     qc.invalidateQueries({ queryKey: ["billing", "statements"] });
     qc.invalidateQueries({ queryKey: ["billing", "customer-credits"] });
-    qc.invalidateQueries({ queryKey: ["provider-lab-card", labOrganizationId, active] });
+    qc.invalidateQueries({ queryKey: ["provider-lab-card", labOrganizationId, providerOrganizationId] });
     qc.invalidateQueries({ queryKey: ["billing", "eligible-statement-accounts"] });
     qc.invalidateQueries({ queryKey: ["billing", "eligible-invoice-accounts"] });
   };
@@ -580,7 +581,7 @@ export function ReceivingStep({
       }
       const payload = {
         labOrganizationId,
-        providerOrganizationId: active,
+        providerOrganizationId,
         doctorIdentity: draft.doctorIdentity,
         doctorName: draft.doctorName,
         statementId: draft.statementId || null,
@@ -608,7 +609,7 @@ export function ReceivingStep({
         trackInlineCardPaymentStarted("new");
         const inlinePayload = {
           labOrganizationId,
-          providerOrganizationId: active,
+          providerOrganizationId,
           doctorIdentity: draft.doctorIdentity,
           doctorName: draft.doctorName,
           statementId: draft.statementId || null,
@@ -809,11 +810,11 @@ export function ReceivingStep({
     const restored: CustomerScope = kept
       ? { mode: kept.statementId ? "statement" : "invoices", invoiceIds: kept.scopeInvoiceIds ?? null }
       : defaultScope(target);
-    onSelectionChange((current) =>
-      current.ids.includes(target.id)
-        ? current
-        : { ids: [...current.ids, target.id], scopes: { ...current.scopes, [target.id]: restored } },
-    );
+    onSelectionChange((current) => {
+      if (current.ids.includes(target.id)) return current;
+      const next = selectCustomers(current, [target]);
+      return { ...next, scopes: { ...next.scopes, [target.id]: restored } };
+    });
     if (!active) setActive(target.id);
   };
   const back = () => {
@@ -861,7 +862,7 @@ export function ReceivingStep({
             </div>
             {selected.length > 1 && active && (
               <p data-testid="receive-practice-progress" className="pb-2 text-xs font-medium text-muted-foreground">
-                Customer {activeIndex + 1} of {selected.length}: {providerName}
+                Customer {activeIndex + 1} of {selected.length}: {customer?.name || providerName}
               </p>
             )}
           </div>
@@ -966,7 +967,7 @@ export function ReceivingStep({
                       creditApplications: {},
                     });
                   }}
-                  disabled={!active || locked}
+                  disabled={!active || locked || !!customer?.isDoctorAccount}
                   className={fieldClass}
                 >
                   <option value="">Entire practice</option>
@@ -1273,11 +1274,7 @@ export function ReceivingStep({
       {receipt && displayedReceipt && (
         <ReceiptDialog
           receipt={displayedReceipt}
-          scopeLabel={
-            displayedReceipt.doctorDisplayName
-              ? `${displayedReceipt.doctorDisplayName} · ${providerName}`
-              : `Entire practice · ${providerName}`
-          }
+          scopeLabel={scopeSummary}
           fallbackReceived={received}
           fallbackApplied={applied}
           composing={composing}

@@ -18,7 +18,7 @@
  * beforeAll and restored in afterAll. Skipped when DATABASE_URL is not set.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { PassThrough } from "node:stream";
 import * as path from "node:path";
 import request from "supertest";
@@ -135,6 +135,7 @@ maybe("backup destination routes (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let backupMod: typeof import("../lib/backup.js");
+  let authMod: typeof import("../lib/auth.js");
   let mailMod: typeof import("../lib/mail.js");
   let onedriveMod: typeof import("../lib/onedrive.js");
   let eq: typeof import("drizzle-orm").eq;
@@ -164,6 +165,7 @@ maybe("backup destination routes (db integration)", () => {
     gte = drizzle.gte;
     dbMod = await import("@workspace/db");
     backupMod = await import("../lib/backup.js");
+    authMod = await import("../lib/auth.js");
     await (await import("../lib/backup-history-schema.js")).ensureBackupHistorySchema();
     mailMod = await import("../lib/mail.js");
     onedriveMod = await import("../lib/onedrive.js");
@@ -243,6 +245,81 @@ maybe("backup destination routes (db integration)", () => {
     const res = await request(appMod.default).get("/api/admin/backup/onedrive-status");
     // Without the secret header the request falls through to requireAuth → 401.
     expect(res.status).toBe(401);
+  });
+
+  it("overdue-status resolves active offsite alerts only after a fresh archive is matched in OneDrive", async () => {
+    const { db, users, userSessions, notifications, backupRuns } = dbMod as any;
+    const username = rid("offsite_status_admin");
+    const archiveName = `${rid("labtrax-backup")}.zip.enc`;
+    const sessionId = rid("session");
+    const priorEnabled = await readSetting(backupMod.SETTING_BACKUP_OFFSITE_ENABLED);
+    const priorInterval = await readSetting(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES);
+    let userId: string | null = null;
+    let notificationId: string | null = null;
+
+    try {
+      await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_ENABLED, "true");
+      await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES, "15");
+      const [user] = await db.insert(users).values({
+        username,
+        password: "x",
+        email: `${username}@example.test`,
+        role: "admin",
+        userType: "lab",
+      }).returning({ id: users.id });
+      userId = user.id as string;
+      const accessToken = authMod.signAccessToken(userId, sessionId);
+      await db.insert(userSessions).values({
+        id: sessionId,
+        userId,
+        tokenHash: createHash("sha256").update(accessToken).digest("hex"),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      const [alert] = await db.insert(notifications).values({
+        userId,
+        type: "backup_offsite_failure",
+        title: "Off-site backup is not running",
+        body: "Protection is stale.",
+      }).returning({ id: notifications.id });
+      notificationId = alert.id as string;
+
+      plantOffsiteArchives([{ name: archiveName, minutesOld: 3 }]);
+      await db.insert(backupRuns).values({
+        triggeredBy: "scheduler:offsite",
+        destination: "onedrive",
+        fileName: archiveName,
+        archiveKind: "complete-production",
+        remoteItemId: `id-${archiveName}`,
+        sizeBytes: 600_000_000,
+        status: "success",
+        partialFailure: false,
+        completedAt: new Date(Date.now() - 3 * 60_000),
+      });
+
+      const response = await request(appMod.default)
+        .get("/api/admin/backup/overdue-status")
+        .set("Authorization", `Bearer ${accessToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.offsite).toMatchObject({
+        enabled: true,
+        stale: false,
+        source: "onedrive",
+      });
+      const [resolvedAlert] = await db.select().from(notifications)
+        .where(eq(notifications.id, notificationId));
+      expect(resolvedAlert.readAt).toBeInstanceOf(Date);
+    } finally {
+      clearOffsiteArchiveMocks();
+      if (notificationId) {
+        await db.delete(notifications).where(eq(notifications.id, notificationId));
+      }
+      await db.delete(userSessions).where(eq(userSessions.id, sessionId));
+      if (userId) await db.delete(users).where(eq(users.id, userId));
+      await db.delete(backupRuns).where(eq(backupRuns.fileName, archiveName));
+      await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_ENABLED, priorEnabled);
+      await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES, priorInterval);
+    }
   });
 
   it("GET /admin/backup/onedrive-status → disconnected shape when connector infra is unavailable", async () => {
@@ -341,6 +418,20 @@ maybe("backup destination routes (db integration)", () => {
 
   // ── Schedule save: destination rules ──────────────────────────────────────
 
+  it("requires explicit platform-owner approval before database cleanup can be enabled", async () => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "1");
+    try {
+      const res = await withSecret(
+        request(appMod.default).put("/api/admin/backup/database-retention")
+          .set("X-LabTrax-Backup-Source", "production"),
+      ).send({ enabled: true });
+      expect(res.status).toBe(400);
+      expect(String(res.body.error)).toMatch(/explicit owner approval/i);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("PUT /admin/backup/schedule accepts a OneDrive destination without a path", async () => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
       interval: 24,
@@ -355,7 +446,7 @@ maybe("backup destination routes (db integration)", () => {
 
   it("PUT /admin/backup/schedule accepts Google Drive without a local path", async () => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
-      interval: 24,
+      interval: 48,
       unit: "hours",
       destination: "google-drive",
       enabled: true,
@@ -369,6 +460,7 @@ maybe("backup destination routes (db integration)", () => {
   });
 
   it("POST /admin/backup/schedule/run-now dispatches a saved Google Drive destination without a path", async () => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "0");
     vi.stubEnv("REPLIT_CONNECTORS_HOSTNAME", "");
     vi.stubEnv("REPL_IDENTITY", "");
     try {
@@ -385,6 +477,7 @@ maybe("backup destination routes (db integration)", () => {
   });
 
   it("POST /admin/backup/schedule/run-now passes Google Drive to the shared backup runner", async () => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "0");
     await writeSetting(backupMod.SETTING_BACKUP_SCHEDULE_DESTINATION, "google-drive");
     await writeSetting(backupMod.SETTING_BACKUP_SCHEDULE_PATH, null);
     await writeSetting(backupMod.SETTING_BACKUP_SCHEDULE_ENABLED, "true");
@@ -503,20 +596,120 @@ maybe("backup destination routes (db integration)", () => {
     }
   });
 
-  it.each([5, 10])("PUT /admin/backup/schedule accepts the new %i-minute interval", async (interval) => {
+  it.each([48, 72])("PUT /admin/backup/schedule accepts the development %i-hour interval", async (interval) => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
       interval,
-      unit: "minutes",
+      unit: "hours",
       destination: "onedrive",
-      enabled: false,
+      enabled: true,
     });
     expect(res.status).toBe(200);
-    expect(await readSetting(backupMod.SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES)).toBe(String(interval));
+    expect(await readSetting(backupMod.SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES)).toBe(String(interval * 60));
+  });
+
+  it("rejects an active development schedule outside the supported intervals", async () => {
+    const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
+      interval: 17,
+      unit: "minutes",
+      destination: "onedrive",
+      enabled: true,
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/development database must run every/i);
+  });
+
+  it("accepts and reports every requested production interval", async () => {
+    const scheduleKeys = [
+      backupMod.SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
+      backupMod.SETTING_BACKUP_SCHEDULE_DESTINATION,
+      backupMod.SETTING_BACKUP_SCHEDULE_PATH,
+      backupMod.SETTING_BACKUP_SCHEDULE_ENABLED,
+      backupMod.SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT,
+    ];
+    const previous = await Promise.all(scheduleKeys.map((key) => readSetting(key)));
+    const previousEnvironment = process.env["REPLIT_DEPLOYMENT"];
+    try {
+      process.env["REPLIT_DEPLOYMENT"] = "1";
+      const productionHeaders = { "X-LabTrax-Backup-Source": "production" };
+      for (const interval of [5, 15, 20, 30, 60, 360, 1440]) {
+      const accepted = await withSecret(
+        request(appMod.default).put("/api/admin/backup/schedule"),
+      ).set(productionHeaders).send({
+        interval,
+        unit: "minutes",
+        destination: "onedrive",
+        enabled: true,
+      });
+      expect(accepted.status).toBe(200);
+      expect(await readSetting(backupMod.SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES)).toBe(String(interval));
+      }
+
+      const status = await withSecret(
+        request(appMod.default).get("/api/admin/backup/schedule"),
+      ).set(productionHeaders);
+      expect(status.status).toBe(200);
+      expect(status.body.sourceEnvironment).toBe("production");
+      expect(status.body.allowedScheduleIntervalsMinutes).toEqual([5, 15, 20, 30, 60, 360, 1440]);
+
+      const rejected = await withSecret(
+        request(appMod.default).put("/api/admin/backup/schedule"),
+      ).set(productionHeaders).send({
+        interval: 48,
+        unit: "hours",
+        destination: "onedrive",
+        enabled: true,
+      });
+      expect(rejected.status).toBe(400);
+      expect(String(rejected.body.error)).toMatch(/production database must run every/i);
+    } finally {
+      if (previousEnvironment === undefined) delete process.env["REPLIT_DEPLOYMENT"];
+      else process.env["REPLIT_DEPLOYMENT"] = previousEnvironment;
+      for (const [index, key] of scheduleKeys.entries()) {
+        await writeSetting(key, previous[index] ?? null);
+      }
+      backupMod._resetBackupSchedulerForTests();
+    }
+  });
+
+  it("requires a connected Google Drive before atomically changing the production schedule", async () => {
+    const keys = [backupMod.SETTING_BACKUP_SCHEDULE_ROUTING_VERSION, backupMod.SETTING_BACKUP_SCHEDULE_DESTINATION,
+      backupMod.SETTING_BACKUP_SCHEDULE_ENABLED, backupMod.SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
+      backupMod.SETTING_BACKUP_SCHEDULE_PATH, backupMod.SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT];
+    const before = await Promise.all(keys.map(readSetting));
+    vi.stubEnv("REPLIT_DEPLOYMENT", "1");
+    vi.stubEnv("REPLIT_CONNECTORS_HOSTNAME", "");
+    vi.stubEnv("REPL_IDENTITY", "");
+    let provider: ReturnType<typeof installMockGoogleDriveApi> | undefined;
+    try {
+      const headers = { "X-LabTrax-Backup-Source": "production" };
+      const payload = { interval: 20, unit: "minutes", destination: "google-drive", enabled: true };
+      const blocked = await withSecret(request(appMod.default).put("/api/admin/backup/schedule"))
+        .set(headers).send(payload);
+      expect(blocked.status).toBe(409);
+      expect(await Promise.all(keys.map(readSetting))).toEqual(before);
+      vi.stubEnv("REPLIT_CONNECTORS_HOSTNAME", "https://connector-test.invalid");
+      vi.stubEnv("REPL_IDENTITY", "google-drive-test-identity");
+      provider = installMockGoogleDriveApi();
+      const accepted = await withSecret(request(appMod.default).put("/api/admin/backup/schedule"))
+        .set(headers).send(payload);
+      expect(accepted.status).toBe(200);
+      expect(await backupMod.getOffsiteBackupConfig()).toMatchObject({ enabled: true, intervalMinutes: 20, destination: "google-drive" });
+      const status = await withSecret(request(appMod.default).get("/api/admin/backup/schedule")).set(headers);
+      expect(status.status).toBe(200);
+      expect(status.body.destination).toBe("google-drive");
+      expect(status.body.scheduleIntervalMinutes).toBe(20);
+      expect(status.body.lastSuccessfulBackupAt).toBeNull();
+    } finally {
+      provider?.reset();
+      vi.unstubAllEnvs();
+      for (const [index, key] of keys.entries()) await writeSetting(key, before[index] ?? null);
+      backupMod._resetBackupSchedulerForTests();
+    }
   });
 
   it("PUT /admin/backup/schedule accepts a local-folder destination (desktop-executed)", async () => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
-      interval: 24,
+      interval: 48,
       unit: "hours",
       destination: "local",
       path: "D:\\LabTraxBackups",
@@ -530,7 +723,7 @@ maybe("backup destination routes (db integration)", () => {
 
   it("PUT /admin/backup/schedule still rejects UNC/SMB network paths", async () => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
-      interval: 24,
+      interval: 48,
       unit: "hours",
       destination: "network",
       path: "\\\\NAS\\backups",
@@ -542,7 +735,7 @@ maybe("backup destination routes (db integration)", () => {
 
   it("PUT /admin/backup/schedule still requires a path for local destinations", async () => {
     const res = await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
-      interval: 24,
+      interval: 48,
       unit: "hours",
       destination: "local",
       enabled: true,
@@ -554,13 +747,25 @@ maybe("backup destination routes (db integration)", () => {
   // ── Local schedules on the server side ────────────────────────────────────
   // (The "local" schedule saved above is still the active config here.)
 
-  it("POST /admin/backup/schedule/run-now returns a clear error for local schedules", async () => {
-    const res = await withSecret(
-      request(appMod.default).post("/api/admin/backup/schedule/run-now"),
-    );
-    expect(res.status).toBe(500);
-    expect(String(res.body.error)).toMatch(/No new complete recovery point.*Open LabTrax Desktop/i);
-    expect(String(res.body.error)).not.toContain("not from the server");
+  it("POST /admin/backup/schedule/run-now returns a clear error for nonproduction local schedules", async () => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "0");
+    try {
+      const res = await withSecret(request(appMod.default).post("/api/admin/backup/schedule/run-now"));
+      expect(res.status).toBe(500);
+      expect(String(res.body.error)).toMatch(/No new complete recovery point.*Open LabTrax Desktop/i);
+      expect(String(res.body.error)).not.toContain("not from the server");
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it("accepts production schedule Run now without tying database protection to the HTTP request", async () => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "1");
+    const start = vi.spyOn(backupMod, "fireOffsiteBackup").mockResolvedValue(undefined);
+    try {
+      const res = await withSecret(request(appMod.default).post("/api/admin/backup/schedule/run-now"))
+        .set("X-LabTrax-Backup-Source", "production");
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ accepted: true, scope: "production-database-and-media" });
+      expect(start).toHaveBeenCalledWith("interval");
+    } finally { start.mockRestore(); vi.unstubAllEnvs(); }
   });
 
   it("fireScheduledBackup() silently skips local schedules — no error run, no email", async () => {
@@ -597,6 +802,53 @@ maybe("backup destination routes (db integration)", () => {
     ).send({ status: "meh" });
     expect(res.status).toBe(400);
     expect(String(res.body.error)).toMatch(/status/i);
+  });
+
+  it("looks up exactly one desktop history run by download run ID", async () => {
+    const successId = crypto.randomUUID();
+    const failureId = crypto.randomUUID();
+    const successAt = new Date();
+    const rows = await dbMod.db.insert(dbMod.backupRuns).values([
+      { triggeredBy: "manual:history-lookup-test", destination: "local", status: "success", downloadRunId: successId, completedAt: successAt },
+      { triggeredBy: "manual:history-lookup-test", destination: "local", status: "error", downloadRunId: failureId },
+    ]).returning({ id: dbMod.backupRuns.id });
+    try {
+      const success = await withSecret(
+        request(appMod.default).get(`/api/admin/backup/history/by-download-run/${successId}`),
+      );
+      expect(success.status).toBe(200);
+      expect(success.body).toMatchObject({
+        ok: true,
+        run: { downloadRunId: successId, status: "success", completedAt: successAt.toISOString() },
+      });
+
+      const failure = await withSecret(
+        request(appMod.default).get(`/api/admin/backup/history/by-download-run/${failureId}`),
+      );
+      expect(failure.status).toBe(200);
+      expect(failure.body.run).toMatchObject({ downloadRunId: failureId, status: "error" });
+
+      const missingId = crypto.randomUUID();
+      const missing = await withSecret(
+        request(appMod.default).get(`/api/admin/backup/history/by-download-run/${missingId}`),
+      );
+      expect(missing.status).toBe(200);
+      expect(missing.body).toEqual({ ok: true, run: null });
+    } finally {
+      await dbMod.db.delete(dbMod.backupRuns)
+        .where(inArray(dbMod.backupRuns.id, rows.map((row) => row.id)));
+    }
+  });
+
+  it("requires authentication and validates desktop history lookup IDs", async () => {
+    const unauthenticated = await request(appMod.default)
+      .get("/api/admin/backup/history/by-download-run/0ad043e2-854a-4507-bec4-f99750738096");
+    expect(unauthenticated.status).toBe(401);
+
+    const malformed = await withSecret(
+      request(appMod.default).get("/api/admin/backup/history/by-download-run/not-a-uuid"),
+    );
+    expect(malformed.status).toBe(400);
   });
 
   it("GET /admin/backup/status requires authentication and returns only safe live progress", async () => {
@@ -690,7 +942,7 @@ maybe("backup destination routes (db integration)", () => {
     try {
       const response = await withBackupRun(async () => {
         setBackupLiveArchiveEvidence({
-          archiveKind: "complete-production", coverageVersion: 1, mediaFileCount: 1400, attachmentRowCount: 1500,
+          archiveKind: "complete-production", coverageVersion: 2, mediaFileCount: 1400, attachmentRowCount: 1500,
         });
         return withSecret(request(appMod.default).post("/api/admin/backup/desktop-run-report"))
           .send({ status: "success", fileName: "large-backup.ltbackup", sizeBytes: 33_000_000_000, downloadRunId });
@@ -721,7 +973,7 @@ maybe("backup destination routes (db integration)", () => {
 
     const res = await withBackupRun(async () => {
       setBackupLiveArchiveEvidence({
-        archiveKind: "complete-non-production", coverageVersion: 1, mediaFileCount: 12, attachmentRowCount: 15,
+        archiveKind: "complete-non-production", coverageVersion: 2, mediaFileCount: 12, attachmentRowCount: 15,
       });
       return withSecret(request(appMod.default).post("/api/admin/backup/desktop-run-report"))
         .send({ status: "success", fileName, path: "D:\\LabTraxBackups", sizeBytes: 524_288_000.9, downloadRunId });
@@ -752,7 +1004,7 @@ maybe("backup destination routes (db integration)", () => {
     const downloadRunId = crypto.randomUUID();
     const res = await withBackupRun(async () => {
       setBackupLiveArchiveEvidence({
-        archiveKind: "complete-non-production", coverageVersion: 1, mediaFileCount: 0, attachmentRowCount: 0,
+        archiveKind: "complete-non-production", coverageVersion: 2, mediaFileCount: 0, attachmentRowCount: 0,
       });
       return withSecret(request(appMod.default).post("/api/admin/backup/desktop-run-report"))
         .send({ source: "manual", status: "success", fileName, path: "D:\\LabTraxBackups", sizeBytes: 524_288_000, downloadRunId });
@@ -787,7 +1039,8 @@ maybe("backup destination routes (db integration)", () => {
     const original = process.env.BACKUP_RUN_TIMEOUT_MINUTES;
     delete process.env.BACKUP_RUN_TIMEOUT_MINUTES;
     try {
-      expect(await backupMod.getBackupRunTimeoutMs("full")).toBe(60 * 60_000);
+      expect(await backupMod.getBackupRunTimeoutMs("full")).toBe(360 * 60_000);
+      expect(await backupMod.getBackupRunTimeoutMs("complete-production")).toBe(360 * 60_000);
       expect(await backupMod.getBackupRunTimeoutMs("database-only")).toBe(20 * 60_000);
       await writeSetting(backupMod.SETTING_BACKUP_RUN_TIMEOUT_MINUTES, "7");
       expect(await backupMod.getBackupRunTimeoutMs("full")).toBe(7 * 60_000);
@@ -1058,12 +1311,12 @@ maybe("backup destination routes (db integration)", () => {
     expect(config.intervalMinutes).toBe(15);
   });
 
-  it("lets a configured cadence tighten protection but never stretch it past hourly", async () => {
+  it("supports configured offsite cadence from five minutes to twenty-four hours", async () => {
     await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES, "1440");
-    expect((await backupMod.getOffsiteBackupConfig()).intervalMinutes).toBe(60);
+    expect((await backupMod.getOffsiteBackupConfig()).intervalMinutes).toBe(1440);
 
     await writeSetting(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES, "5");
-    expect((await backupMod.getOffsiteBackupConfig()).intervalMinutes).toBe(15);
+    expect((await backupMod.getOffsiteBackupConfig()).intervalMinutes).toBe(5);
 
     await clearSettings(backupMod.SETTING_BACKUP_OFFSITE_INTERVAL_MINUTES);
   });
@@ -1375,26 +1628,28 @@ maybe("backup destination routes (db integration)", () => {
     });
 
     it("clears the stored due time when the interval is changed", async () => {
+      const oldDue = new Date(Date.now() + 40 * 24 * 60 * 60_000);
       await writeSetting(
         backupMod.SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT,
-        new Date(Date.now() + 55 * 60_000).toISOString(),
+        oldDue.toISOString(),
       );
       const res = await withSecret(
         request(appMod.default).put("/api/admin/backup/schedule"),
-      ).send({ interval: 15, unit: "minutes", destination: "onedrive", enabled: true });
+      ).send({ interval: 48, unit: "hours", destination: "onedrive", enabled: true });
       expect(res.status).toBe(200);
 
-      // Honouring an hour-away due time would delay the new 15-minute cadence
-      // by up to a full old interval.
+      // Honouring an hour-away due time would delay the new 48-hour cadence
+      // based on stale state from the previous interval.
       const stored = (await backupMod.getBackupScheduleState()).nextDueAt;
-      expect(stored === null || stored.getTime() - Date.now() <= 15 * 60_000).toBe(true);
+      expect(stored === null || stored.getTime() - Date.now() <= 48 * 60 * 60_000).toBe(true);
+      expect(stored === null || stored.getTime()).not.toBe(oldDue.getTime());
       backupMod._resetBackupSchedulerForTests();
     });
 
     it("exposes the interval the server is really using, not the caller's form state", async () => {
       await withSecret(request(appMod.default).put("/api/admin/backup/schedule")).send({
-        interval: 15,
-        unit: "minutes",
+        interval: 48,
+        unit: "hours",
         destination: "onedrive",
         enabled: true,
       });
@@ -1402,10 +1657,12 @@ maybe("backup destination routes (db integration)", () => {
 
       const res = await withSecret(request(appMod.default).get("/api/admin/backup/schedule"));
       expect(res.status).toBe(200);
-      expect(res.body.effectiveIntervalMinutes).toBe(15);
+      expect(res.body.sourceEnvironment).toBe("development");
+      expect(res.body.allowedScheduleIntervalsMinutes).toEqual([5, 15, 20, 30, 60, 360, 1440, 2880, 4320]);
+      expect(res.body.effectiveIntervalMinutes).toBe(2880);
       expect(res.body.destination).toBe("onedrive");
       expect(res.body.effectiveDestination).toBe("onedrive");
-      expect(res.body.scheduleIntervalMinutes).toBe(15);
+      expect(res.body.scheduleIntervalMinutes).toBe(2880);
       expect(res.body.fullArchiveIntervalMinutes).toBeGreaterThanOrEqual(15);
       // Off-site protection is a separate job on its own timer, so Settings
       // can say which cadence it is reporting instead of presenting this row
@@ -1439,15 +1696,14 @@ maybe("backup destination routes (db integration)", () => {
       expect(full).not.toBe(b);
     });
 
-    it("takes complete database-and-files archives on every cadence, regardless of the last full run", async () => {
+    it("keeps nonproduction legacy archive choices separate from production database protection", async () => {
       await writeSetting(backupMod.SETTING_BACKUP_FULL_ARCHIVE_INTERVAL_MINUTES, "60");
       try {
         // No full archive has ever been taken → one is due immediately.
         await writeSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT, null);
         expect(await backupMod.decideScheduledArchiveKind("onedrive", 15)).toBe("full");
 
-        // A full archive was taken five minutes ago → the fast cadence takes a
-        // database-only archive instead of uploading ~591 MB every 15 minutes.
+        // The nonproduction/manual legacy policy is not the production routine.
         await writeSetting(
           backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT,
           new Date(Date.now() - 5 * 60_000).toISOString(),
@@ -1467,6 +1723,19 @@ maybe("backup destination routes (db integration)", () => {
         expect(await backupMod.decideScheduledArchiveKind("onedrive", 240)).toBe("full");
       } finally {
         await writeSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT, null);
+      }
+    });
+    it("selects production records-and-media protection regardless of previous database-only history", async () => {
+      const previousEnvironment = process.env["REPLIT_DEPLOYMENT"];
+      try {
+        process.env["REPLIT_DEPLOYMENT"] = "1";
+        expect(await backupMod.decideScheduledArchiveKind("onedrive", 15)).toBe("full");
+        expect(await backupMod.decideScheduledArchiveKind("onedrive", 240)).toBe("full");
+        expect(await backupMod.decideScheduledArchiveKind("network", 15)).toBe("full");
+        await expect(backupMod.runScheduledBackupNow()).rejects.toThrow(/asynchronous production records-and-media/);
+      } finally {
+        if (previousEnvironment === undefined) delete process.env["REPLIT_DEPLOYMENT"];
+        else process.env["REPLIT_DEPLOYMENT"] = previousEnvironment;
       }
     });
 

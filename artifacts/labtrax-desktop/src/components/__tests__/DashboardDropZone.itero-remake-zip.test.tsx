@@ -91,6 +91,7 @@ vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
 }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs", () => ({ default: "stub-worker" }));
+vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?worker&url", () => ({ default: "stub-worker" }));
 
 // ─── FileReader + canvas stubs (PDF analyze path) ─────────────────────────────
 

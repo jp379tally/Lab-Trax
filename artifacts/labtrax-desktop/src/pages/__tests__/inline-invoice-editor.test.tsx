@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { InlineInvoiceEditor } from "@/pages/invoices";
 import { CaseDrawer } from "@/pages/cases";
+import { SalesInvoicesPanel } from "@/components/reports/SalesInvoicesPanel";
 import { AiPanelContext } from "@/lib/ai-panel-context";
 import { guardNavigation, registerNavBlocker } from "@/lib/nav-guard";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
@@ -46,11 +47,47 @@ beforeEach(() => {
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     requests.push({ url, method, body });
+    if (url.includes("/invoices/reports/sales-invoices?")) {
+      const params = new URL(url, "http://localhost").searchParams;
+      const issueTime = new Date(confirmed.issuedAt ?? confirmed.createdAt ?? "").getTime();
+      const from = new Date(params.get("dateFrom") ?? "").getTime();
+      const to = new Date(params.get("dateTo") ?? "").getTime();
+      const rows = issueTime >= from && issueTime <= to ? [{
+        id: confirmed.id,
+        invoiceNumber: confirmed.invoiceNumber,
+        issuedAt: confirmed.issuedAt ?? confirmed.createdAt,
+        total: Number(confirmed.total).toFixed(2),
+        status: confirmed.status,
+        practiceName: "Practice One",
+        doctorName: "Dr. Synthetic063",
+      }] : [];
+      return json({
+        data: {
+          rows,
+          total: rows.length,
+          billedTotal: rows.reduce((sum, row) => sum + Number(row.total), 0).toFixed(2),
+          offset: 0,
+          hasMore: false,
+        },
+      });
+    }
     if (url.endsWith(`/invoices/${confirmed.id}`)) {
       if (method === "PATCH") {
         if (holdSave) await new Promise<void>((resolve) => { holdSave = resolve; });
         if (failSave) return json({ error: "Discount lines cannot reduce the total below the amount already paid." }, 409);
+        const subtotal = body.items.reduce((sum: number, line: any) =>
+          sum + Number(line.quantity) * Number(line.unitPrice) +
+          (line.subItems ?? []).reduce((subSum: number, sub: any) =>
+            subSum + Number(sub.quantity) * Number(sub.unitPrice), 0), 0);
+        const total = subtotal + Number(body.tax ?? confirmed.tax ?? 0) -
+          Number(body.discount ?? confirmed.discount ?? 0) -
+          Number(body.displayMetadata?.credits ?? 0);
+        const paid = (confirmed.payments ?? []).reduce(
+          (sum, payment) => sum + Number(payment.amount), 0,
+        );
         confirmed = { ...confirmed, ...body, displayMetadata: body.displayMetadata,
+          subtotal: subtotal.toFixed(2), total: total.toFixed(2),
+          balanceDue: (body.status === "void" ? 0 : total - paid).toFixed(2),
           items: body.items.map((line: any, i: number) => ({
             ...line, id: line.id ?? `new-${i}`,
             subItems: line.subItems.map((sub: any, j: number) => ({ ...sub, id: sub.id ?? `new-${i}-${j}` })),
@@ -97,6 +134,49 @@ async function save() {
 }
 
 describe("shared inline invoice workflow", () => {
+  it("keeps a non-midnight invoice in its original local sales day after an amount edit", async () => {
+    confirmed = {
+      ...structuredClone(original),
+      issuedAt: "2026-03-10T05:30:00.000Z",
+      createdAt: "2026-10-20T00:03:00.000Z",
+    } as Invoice;
+    const Wrapper = makeAuthWrapper("/reports", {
+      user: { id: "user-1", role: "billing" } as any,
+      status: "authed",
+    });
+    render(
+      <Wrapper>
+        <QueryProbe />
+        <SalesInvoicesPanel
+          organizationId="lab-1"
+          dateFrom="2026-03-10T04:00:00.000Z"
+          dateTo="2026-03-11T03:59:59.999Z"
+        />
+        <InlineInvoiceEditor
+          invoice={confirmed}
+          doctorNames={["Dr. Synthetic063"]}
+          onClose={vi.fn()}
+          onOpenEditor={vi.fn()}
+        />
+      </Wrapper>,
+    );
+    await loaded();
+    const salesRow = await screen.findByTestId("sales-invoice-row");
+    expect(within(salesRow).getByText("$110.00")).toBeInTheDocument();
+
+    change("Unit price", "150");
+    await save();
+
+    expect(patches()[0].body).not.toHaveProperty("issuedAt");
+    expect(patches()[0].body).not.toHaveProperty("dueAt");
+    expect(confirmed.issuedAt).toBe("2026-03-10T05:30:00.000Z");
+    expect(Number(confirmed.total)).toBe(160);
+    await waitFor(() => {
+      expect(within(screen.getByTestId("sales-invoice-row")).getByText("$160.00"))
+        .toBeInTheDocument();
+    });
+  });
+
   it("shows the legacy ownership warning and clears it only after an explicit successful save", async () => {
     confirmed.displayMetadata = {
       ...confirmed.displayMetadata,
@@ -327,17 +407,42 @@ describe("case tab integration", () => {
     const onClose = vi.fn();
     const Wrapper = makeAuthWrapper("/cases", { user: { id: "u1", role: "billing" } as any, status: "authed" });
     render(<Wrapper><AiPanelContext.Provider value={{ openPanel: () => {} }}><CaseDrawer labCase={fakeCase} onClose={onClose} docked /></AiPanelContext.Provider></Wrapper>);
-    fireEvent.click(screen.getByRole("button", { name: "Invoice" }));
+    const invoiceTab = screen.getByRole("tab", { name: "Invoice" });
+    fireEvent.click(invoiceTab);
     await loaded();
     change("Invoice number", "DRAWER-DRAFT");
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
-    await screen.findByText("Discard changes?");
+    invoiceTab.focus();
+    fireEvent.keyDown(invoiceTab, { key: "ArrowRight" });
+    const discardDialog = await screen.findByRole("alertdialog", { name: "Discard changes?" });
+    expect(discardDialog).toHaveAttribute("aria-modal", "true");
+    expect(discardDialog).toHaveAccessibleDescription(
+      "You have unsaved edits to this invoice. If you leave now, your changes will be lost.",
+    );
+    expect(screen.getByRole("tab", { name: "Invoice" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Keep editing" }), { key: "Tab", shiftKey: true });
+    expect(screen.getByRole("button", { name: "Discard changes" })).toHaveFocus();
     fireEvent.click(screen.getByText("Keep editing"));
+    expect(invoiceTab).toHaveFocus();
     expect(screen.getByLabelText("Invoice number")).toHaveValue("DRAWER-DRAFT");
+    invoiceTab.focus();
+    fireEvent.keyDown(invoiceTab, { key: "ArrowRight" });
+    await screen.findByRole("alertdialog", { name: "Discard changes?" });
     fireEvent.keyDown(window, { key: "Escape" });
-    await screen.findByText("Discard changes?");
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Keep editing"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(invoiceTab).toHaveFocus();
+    expect(screen.getByLabelText("Invoice number")).toHaveValue("DRAWER-DRAFT");
+    fireEvent.keyDown(invoiceTab, { key: "ArrowRight" });
+    await screen.findByRole("alertdialog", { name: "Discard changes?" });
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    const historyTab = screen.getByRole("tab", { name: /History/ });
+    await waitFor(() => expect(historyTab).toHaveAttribute("aria-selected", "true"));
+    expect(historyTab).toHaveFocus();
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAttribute("aria-labelledby", historyTab.id);
+    fireEvent.click(screen.getByRole("tab", { name: "Invoice" }));
+    await loaded();
+    change("Invoice number", "DRAWER-SAVED");
     fireEvent.click(screen.getByText("Save changes"));
     await waitFor(() => expect(patches()).toHaveLength(1));
     await waitFor(() => expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument());
@@ -345,14 +450,14 @@ describe("case tab integration", () => {
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Open in editor"));
     await screen.findByLabelText("Close without saving");
-    expect(screen.getByLabelText("Invoice number")).toHaveValue("DRAWER-DRAFT");
+    expect(screen.getByLabelText("Invoice number")).toHaveValue("DRAWER-SAVED");
   });
 
   it("prints confirmed read-only invoices with child lines and invoice adjustments", async () => {
     confirmed = { ...confirmed, tax: 5, discount: 10, displayMetadata: { ...confirmed.displayMetadata, credits: 3 } };
     const Wrapper = makeAuthWrapper("/cases", { user: { id: "reader", role: "technician" } as any, status: "authed" });
     render(<Wrapper><AiPanelContext.Provider value={{ openPanel: () => {} }}><CaseDrawer labCase={fakeCase} onClose={vi.fn()} /></AiPanelContext.Provider></Wrapper>);
-    fireEvent.click(screen.getByRole("button", { name: "Invoice" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Invoice" }));
     await screen.findByText("Open in editor");
     const print = screen.getByRole("button", { name: "Print" });
     await waitFor(() => expect(print).toBeEnabled());
@@ -367,7 +472,7 @@ describe("case tab integration", () => {
   it("retains a read-only invoice card for non-billing case users", async () => {
     const Wrapper = makeAuthWrapper("/cases", { user: { id: "u1", role: "technician" } as any, status: "authed" });
     render(<Wrapper><AiPanelContext.Provider value={{ openPanel: () => {} }}><CaseDrawer labCase={fakeCase} onClose={vi.fn()} /></AiPanelContext.Provider></Wrapper>);
-    fireEvent.click(screen.getByRole("button", { name: "Invoice" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Invoice" }));
     await screen.findByText("Open in editor");
     expect(screen.queryByLabelText("Invoice number")).not.toBeInTheDocument();
     expect(screen.getByText("Print", { exact: true })).toBeInTheDocument();

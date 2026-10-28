@@ -256,6 +256,107 @@ maybe("GET /api/invoices paginated list", () => {
     expect(currentSorted.body.data.rows[0].invoiceNumber).toBe("BATCH-00");
   });
 
+  it("filters and pages Customer Center invoices by entered date without changing issue-date filters", async () => {
+    const { db, invoices } = dbMod;
+    const enteredOct19IssuedOct18 = rid("invoice");
+    const enteredOct19IssuedOct20 = rid("invoice");
+    const enteredOct19WithoutIssueDate = rid("invoice");
+    const enteredOct18IssuedOct19 = rid("invoice");
+    const fixtures = [
+      {
+        id: enteredOct19IssuedOct18,
+        number: "CC-ENTERED-19-ISSUED-18",
+        createdAt: "2026-10-19T09:00:00.000Z",
+        issuedAt: "2026-10-18T12:00:00.000Z",
+      },
+      {
+        id: enteredOct19IssuedOct20,
+        number: "CC-ENTERED-19-ISSUED-20",
+        createdAt: "2026-10-19T15:00:00.000Z",
+        issuedAt: "2026-10-20T12:00:00.000Z",
+      },
+      {
+        id: enteredOct19WithoutIssueDate,
+        number: "CC-ENTERED-19-NO-ISSUE",
+        createdAt: "2026-10-19T20:00:00.000Z",
+        issuedAt: null,
+      },
+      {
+        id: enteredOct18IssuedOct19,
+        number: "CC-ENTERED-18-ISSUED-19",
+        createdAt: "2026-10-18T23:59:00.000Z",
+        issuedAt: "2026-10-19T12:00:00.000Z",
+      },
+    ];
+    invoiceIds.push(...fixtures.map((fixture) => fixture.id));
+    await db.insert(invoices).values(fixtures.map((fixture) => ({
+      id: fixture.id,
+      invoiceNumber: fixture.number,
+      labOrganizationId: labId,
+      providerOrganizationId: practiceId,
+      status: "void",
+      total: "10.00",
+      balanceDue: "0.00",
+      createdAt: new Date(fixture.createdAt),
+      issuedAt: fixture.issuedAt ? new Date(fixture.issuedAt) : null,
+      createdByUserId: userId,
+    })));
+
+    const enteredDateQuery = {
+      customerCenter: "true",
+      practiceId,
+      search: "CC-",
+      dateFrom: "2026-10-19T00:00:00.000Z",
+      dateTo: "2026-10-19T23:59:59.999Z",
+      limit: 1,
+    };
+    const firstPage = await get({ ...enteredDateQuery, offset: 0 });
+    expect(firstPage.status, JSON.stringify(firstPage.body)).toBe(200);
+    expect(firstPage.body.data.total).toBe(3);
+    expect(firstPage.body.data.hasMore).toBe(true);
+    expect(firstPage.body.data.rows[0].createdAt).toBe("2026-10-19T20:00:00.000Z");
+
+    const secondPage = await get({ ...enteredDateQuery, offset: 1 });
+    expect(secondPage.status, JSON.stringify(secondPage.body)).toBe(200);
+    expect(secondPage.body.data.total).toBe(3);
+    expect(secondPage.body.data.hasMore).toBe(true);
+    expect(secondPage.body.data.rows[0].createdAt).toBe("2026-10-19T15:00:00.000Z");
+    const thirdPage = await get({ ...enteredDateQuery, offset: 2 });
+    expect(thirdPage.body.data.total).toBe(3);
+    expect(thirdPage.body.data.hasMore).toBe(false);
+    expect(thirdPage.body.data.rows[0].createdAt).toBe("2026-10-19T09:00:00.000Z");
+
+    const unpagedExport = await get({
+      customerCenter: "true",
+      practiceId,
+      search: "CC-",
+      dateFrom: enteredDateQuery.dateFrom,
+      dateTo: enteredDateQuery.dateTo,
+    });
+    expect(unpagedExport.status, JSON.stringify(unpagedExport.body)).toBe(200);
+    expect(unpagedExport.body.data.map((row: { id: string }) => row.id).sort())
+      .toEqual([
+        enteredOct19IssuedOct18,
+        enteredOct19IssuedOct20,
+        enteredOct19WithoutIssueDate,
+      ].sort());
+
+    const ordinaryIssueDateQuery = await get({
+      practiceId,
+      dateFrom: "2026-10-18T00:00:00.000Z",
+      dateTo: "2026-10-18T23:59:59.999Z",
+      limit: 10,
+    });
+    expect(ordinaryIssueDateQuery.status, JSON.stringify(ordinaryIssueDateQuery.body)).toBe(200);
+    expect(ordinaryIssueDateQuery.body.data.rows.map((row: { id: string }) => row.id))
+      .toContain(enteredOct19IssuedOct18);
+    expect(ordinaryIssueDateQuery.body.data.rows.map((row: { id: string }) => row.id))
+      .not.toContain(enteredOct19IssuedOct20);
+
+    const customerCenterWithoutPractice = await get({ customerCenter: "true" });
+    expect(customerCenterWithoutPractice.status).toBe(400);
+  });
+
   it("uses the legacy sort pair when valid legacy and current sort parameters conflict", async () => {
     const response = await get({
       search: "batch",

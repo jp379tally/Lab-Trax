@@ -1,4 +1,4 @@
-import { finalizedInvoiceSql } from "./recovery-billing-hold";
+import { finalizedInvoiceSql } from "./historical-invoice-hold";
 /**
  * Dated AP/AR figures for the financial reports.
  *

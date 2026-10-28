@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import BackupWebScreen from "./BackupWebScreen";
 
 const mocks = vi.hoisted(() => ({
+  download: vi.fn(),
   schedule: {
+    sourceEnvironment: undefined as "development" | "production" | undefined,
     enabled: false,
     interval: 15,
     unit: "minutes" as const,
-    destination: "local" as const,
-    path: "C:\\Backups\\LabTrax",
+    destination: "local" as "local" | "network" | "onedrive" | "google-drive",
+    path: "C:\\Backups\\LabTrax" as string | null,
     lastSuccessfulBackupAt: "2026-10-12T16:00:00.000Z",
     staleAlertThresholdDays: 7,
     staleAlertRateLimitDays: 3,
@@ -41,6 +43,14 @@ const mocks = vi.hoisted(() => ({
     error: null,
     manageUrl: null,
   },
+  googleDrive: {
+    connected: true,
+    accountName: "Backup account",
+    accountEmail: "backup@example.test",
+    folder: "LabTrax Backups/non-production",
+    error: null,
+    manageUrl: null,
+  },
   history: [] as Array<Record<string, unknown>>,
   saveBackupSchedule: vi.fn(async (..._args: unknown[]) => ({ ok: true })),
   runBackupNow: vi.fn(async (..._args: unknown[]) => ({
@@ -51,6 +61,7 @@ const mocks = vi.hoisted(() => ({
     warnings: null as string | null,
   })),
   oneDriveRefetch: vi.fn(),
+  googleDriveRefetch: vi.fn(),
   queryClient: { invalidateQueries: vi.fn(async () => undefined) },
 }));
 
@@ -60,6 +71,8 @@ vi.mock("@tanstack/react-query", () => ({
       ? mocks.scheduleError ? undefined : mocks.schedule
       : queryKey[1] === "backup-onedrive-status-web"
         ? mocks.oneDrive
+        : queryKey[1] === "backup-google-drive-status-web"
+          ? mocks.googleDrive
         : queryKey[1] === "backup-history-web"
           ? { runs: mocks.history }
           : { retentionDays: 90, maxRows: 500 };
@@ -69,9 +82,12 @@ vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => mocks.queryClient,
 }));
 
-vi.mock("@workspace/api-client-react", () => ({
+vi.mock("@workspace/api-client-react", async () => ({
+  followManualBackup: (await import("../../../../lib/api-client-react/src/manual-backup-job")).followManualBackup,
+  getBackupRunStatus: vi.fn(),
   disableBackupSchedule: vi.fn(),
   getBackupSchedule: vi.fn(),
+  getGoogleDriveBackupStatus: vi.fn(),
   getOneDriveBackupStatus: vi.fn(),
   getRestoreStatus: vi.fn(),
   runBackupNow: mocks.runBackupNow,
@@ -81,6 +97,14 @@ vi.mock("@workspace/api-client-react", () => ({
 vi.mock("@/lib/platform-admin-session", () => ({
   getPlatformAdminSessionHeaders: async () => ({ "X-Platform-Admin-Session": "test-only-session" }),
 }));
+
+vi.mock("@/lib/query-client", () => ({
+  resilientFetch: mocks.download,
+  getApiUrl: () => "https://backup.example.test/",
+  refreshAndGetAccessToken: async () => null,
+  getCsrfToken: () => null,
+}));
+vi.mock("expo/fetch", () => ({ fetch: mocks.download }));
 
 vi.mock("@/lib/theme-context", () => ({
   useTheme: () => ({
@@ -107,15 +131,110 @@ vi.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 
 describe("BackupWebScreen schedule intervals", () => {
   beforeEach(() => {
+    mocks.schedule.sourceEnvironment = undefined;
     vi.clearAllMocks();
     mocks.schedule.interval = 15;
     mocks.schedule.unit = "minutes";
     mocks.scheduleError = false;
     mocks.oneDrive.connected = true;
+    mocks.googleDrive.connected = true;
     mocks.history = [];
+    mocks.download.mockReset();
   });
 
-  afterEach(async () => { await cleanup(); });
+  afterEach(async () => {
+    await cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it.each(["development", "production"] as const)("labels the connected %s database without changing bindings", async (source) => {
+    mocks.schedule.sourceEnvironment = source;
+    const view = await render(<BackupWebScreen />);
+    expect(view.getByText(`Database source: ${source === "production" ? "Production" : "Development"}`)).toBeTruthy();
+  });
+
+  it.each([
+    { kind: "complete-non-production", truncated: false, succeeds: true },
+    { kind: "db-only", truncated: false, succeeds: false },
+    { kind: "complete-non-production", truncated: true, succeeds: false },
+  ])("offers a local file only for confirmed complete bytes: $kind, truncated=$truncated", async ({ kind, truncated, succeeds }) => {
+    const bytes = new Uint8Array(44);
+    bytes.set([76, 84, 82, 50]);
+    bytes.set([76, 84, 70, 49], 32);
+    new DataView(bytes.buffer).setBigUint64(36, 32n, false);
+    mocks.download.mockResolvedValueOnce(new Response(truncated ? bytes.slice(0, 35) : bytes, {
+      headers: {
+        "x-backup-archive-kind": kind,
+        "x-backup-coverage-version": "1",
+        "x-backup-media-file-count": "0",
+        "x-backup-attachment-row-count": "0",
+        "content-length": "44",
+      },
+    }));
+    const screen = await render(<BackupWebScreen />);
+    const click = vi.fn();
+    vi.stubGlobal("document", {
+      createElement: () => ({ click, remove: vi.fn() }),
+      body: { appendChild: vi.fn() },
+    });
+    const createObjectURL = vi.fn(() => "blob:synthetic-backup");
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL: vi.fn() });
+    await fireEvent.press(screen.getByTestId("manual-backup-run"));
+    await waitFor(() => expect(mocks.download).toHaveBeenCalledWith(
+      "https://backup.example.test/api/admin/backup/generate",
+      expect.objectContaining({ method: "POST", headers: { "X-Platform-Admin-Session": "test-only-session" } }),
+    ));
+    if (succeeds) {
+      await waitFor(() => expect(screen.getByTestId("manual-backup-result")).toBeTruthy());
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+    } else {
+      await waitFor(() => expect(screen.queryByTestId("manual-backup-error")).toBeTruthy());
+      expect(screen.queryByTestId("manual-backup-result")).toBeNull();
+      expect(click).not.toHaveBeenCalled();
+      expect(createObjectURL).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([false, true])("streams to the selected file, truncated=%s, without a browser-memory blob", async (truncated) => {
+    mocks.schedule.sourceEnvironment = "production";
+    const bytes = new Uint8Array(44);
+    bytes.set([76, 84, 82, 50]);
+    bytes.set([76, 84, 70, 49], 32);
+    new DataView(bytes.buffer).setBigUint64(36, 32n, false);
+    const writable = {
+      write: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      abort: vi.fn(async () => undefined),
+    };
+    vi.stubGlobal("showSaveFilePicker", vi.fn(async () => ({
+      name: "synthetic-complete.zip.enc", createWritable: async () => writable,
+    })));
+    mocks.download.mockResolvedValueOnce(new Response(truncated ? bytes.slice(0, 35) : bytes, {
+      headers: {
+        "x-backup-archive-kind": "complete-production", "x-backup-coverage-version": "1",
+        "x-backup-media-file-count": "0", "x-backup-attachment-row-count": "0",
+      },
+    }));
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("manual-backup-run"));
+    await waitFor(() => expect(mocks.download).toHaveBeenCalledWith(
+      "https://backup.example.test/api/admin/backup/generate",
+      expect.objectContaining({ headers: {
+        "X-Platform-Admin-Session": "test-only-session", "X-LabTrax-Backup-Source": "production",
+      } }),
+    ));
+    if (truncated) {
+      await waitFor(() => expect(screen.getByTestId("manual-backup-error")).toBeTruthy());
+      expect(writable.abort).toHaveBeenCalledOnce();
+      expect(writable.close).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("manual-backup-result")).toBeNull();
+    } else {
+      await waitFor(() => expect(screen.getByTestId("manual-backup-result")).toBeTruthy());
+      expect(writable.close).toHaveBeenCalledOnce();
+      expect(writable.abort).not.toHaveBeenCalled();
+    }
+  });
 
   it("shows the approved 5-minute, 10-minute, 15-minute, and 1-hour choices", async () => {
     const screen = await render(<BackupWebScreen />);
@@ -172,10 +291,80 @@ describe("BackupWebScreen schedule intervals", () => {
     await fireEvent.press(screen.getByTestId("manual-backup-run"));
 
     await waitFor(() => expect(mocks.runBackupNow).toHaveBeenCalledWith(
-      { destination: "onedrive", path: "" },
+      { destination: "onedrive", path: "", runId: expect.any(String), respondAsync: true },
       expect.objectContaining({ headers: expect.any(Object) }),
     ));
     expect(screen.getByText("Backup completed with warnings")).toBeTruthy();
+  });
+
+  it("allows a connected Google Drive manual backup and reports its server-side result", async () => {
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("manual-backup-destination-google-drive"));
+    await fireEvent.press(screen.getByTestId("manual-backup-run"));
+
+    await waitFor(() => expect(mocks.runBackupNow).toHaveBeenCalledWith(
+      { destination: "google-drive", path: "", runId: expect.any(String), respondAsync: true },
+      expect.objectContaining({ headers: expect.any(Object) }),
+    ));
+    expect(screen.getByTestId("manual-google-drive-status")).toBeTruthy();
+    expect(screen.getByTestId("manual-backup-result")).toBeTruthy();
+  });
+
+  it("recovers the exact cloud job after a gateway 502 without submitting twice", async () => {
+    const api = await import("@workspace/api-client-react");
+    mocks.runBackupNow.mockRejectedValueOnce(Object.assign(new Error("Request failed (502)"), { status: 502 }));
+    vi.mocked(api.getBackupRunStatus).mockImplementationOnce(async runId => ({
+      runId, state: "completed", phase: "backup complete",
+      result: { runId, size: 1234, completedAt: "2026-10-21T12:00:00Z", fileName: "synthetic.enc",
+        partialFailure: true, warnings: "One synthetic original is missing." },
+    }));
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("manual-backup-destination-onedrive"));
+    await fireEvent.press(screen.getByTestId("manual-backup-run"));
+    await waitFor(() => expect(screen.getByText("Backup completed with warnings")).toBeTruthy());
+    expect(mocks.runBackupNow).toHaveBeenCalledTimes(1);
+    const runId = mocks.runBackupNow.mock.calls[0]![0] as { runId: string };
+    expect(api.getBackupRunStatus).toHaveBeenCalledWith(runId.runId, expect.any(Object));
+  });
+
+  it("shows an actionable terminal cloud error, never backup success", async () => {
+    const api = await import("@workspace/api-client-react");
+    mocks.runBackupNow.mockResolvedValueOnce({ state: "running" } as never);
+    vi.mocked(api.getBackupRunStatus).mockImplementationOnce(async runId => ({
+      runId, state: "failed", phase: "OneDrive upload",
+      error: "Reconnect OneDrive (HTTP 401); no verified backup was created.",
+    }));
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("manual-backup-destination-onedrive"));
+    await fireEvent.press(screen.getByTestId("manual-backup-run"));
+    await waitFor(() => expect(screen.getByText(/Reconnect OneDrive/)).toBeTruthy());
+    expect(screen.queryByTestId("manual-backup-result")).toBeNull();
+  });
+
+  it("saves Google Drive schedules without a local path and allows server-side Run now", async () => {
+    mocks.schedule.enabled = true;
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("schedule-destination-google-drive"));
+    await fireEvent.press(screen.getByTestId("schedule-save"));
+
+    await waitFor(() => expect(mocks.saveBackupSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ destination: "google-drive", path: null, enabled: true }),
+      expect.objectContaining({ headers: expect.any(Object) }),
+    ));
+    // The Run now control follows server-confirmed schedule state. Reflect
+    // the successful save as the next query response before asserting it is
+    // enabled; the unsaved local schedule still points at Local / USB.
+    mocks.schedule = { ...mocks.schedule, destination: "google-drive", path: null };
+    await screen.rerender(<BackupWebScreen />);
+    expect(screen.getByTestId("schedule-run-now")).not.toBeDisabled();
+  });
+
+  it("blocks Google Drive manual uploads until the status endpoint confirms a connection", async () => {
+    mocks.googleDrive.connected = false;
+    const screen = await render(<BackupWebScreen />);
+    await fireEvent.press(screen.getByTestId("manual-backup-destination-google-drive"));
+    expect(screen.getByTestId("google-drive-status-disconnected")).toBeTruthy();
+    expect(screen.getByTestId("manual-backup-run")).toBeDisabled();
   });
 
   it("does not allow unknown schedule values to overwrite a failed status read", async () => {

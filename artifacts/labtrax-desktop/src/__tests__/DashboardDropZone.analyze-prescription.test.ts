@@ -237,4 +237,44 @@ describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", 
       { timeout: 5000 }
     );
   });
+
+  it("opens the populated editable review even when doctor matching never responds", async () => {
+    const normalApi = mockApiFetch.getMockImplementation()!;
+    const matchingSignals: AbortSignal[] = [];
+    mockApiFetch.mockImplementation((endpoint: string, options?: RequestInit) => {
+      if (endpoint.startsWith("/organizations")) {
+        return [{ id: "synthetic-lab", type: "lab", name: "Synthetic Lab" }];
+      }
+      if (endpoint.startsWith("/vocabulary")) return [];
+      if (endpoint.startsWith("/rx-doctor-practice-memory") || endpoint.startsWith("/doctors/resolve-name")) {
+        matchingSignals.push(options?.signal as AbortSignal);
+        return new Promise<never>(() => {});
+      }
+      return normalApi(endpoint, options);
+    });
+    const Wrapper = makeAuthWrapper("/", { user: PRESCRIPTION_TEST_USER, status: "authed" });
+    const { container, findByDisplayValue } = render(
+      React.createElement(Wrapper, null, React.createElement(DashboardDropZone, null)),
+    );
+    // Wait for the synthetic lab's queries to resolve before starting the scan:
+    // a scan fired before the tenant is loaded intentionally has no lab to match.
+    await waitFor(() => expect(mockApiFetch.mock.calls.some(([endpoint]) =>
+      endpoint.startsWith("/vocabulary?kind=material&labOrganizationId=synthetic-lab"))).toBe(true));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["synthetic-prescription"], "synthetic-review.jpg", { type: "image/jpeg" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(matchingSignals).toHaveLength(2));
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(mockApiFetch.mock.calls.filter(([endpoint]) => endpoint === "/analyze-prescription")).toHaveLength(1);
+    const patient = await findByDisplayValue("Runtime Patient", {}, { timeout: 8_000 });
+    expect(patient).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("office pricing");
+    expect(matchingSignals).toHaveLength(2);
+    expect(matchingSignals.every((signal) => signal.aborted)).toBe(true);
+    expect(mockApiFetch.mock.calls.filter(([endpoint]) => endpoint === "/analyze-prescription")).toHaveLength(1);
+    expect(mockApiFetch.mock.calls.some(([endpoint, options]) =>
+      endpoint === "/cases" && options?.method === "POST")).toBe(false);
+    fireEvent.change(patient, { target: { value: "Corrected synthetic name" } });
+    expect((patient as HTMLInputElement).value).toBe("Corrected synthetic name");
+  }, 12_000);
 });

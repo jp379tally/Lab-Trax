@@ -106,17 +106,34 @@ function makeExecutionDeps({
 }
 
 async function expectExecutionFailure(deps, folderPath, messagePart) {
+  const failureReports = [];
+  const observedDeps = {
+    ...deps,
+    apiFetch: async (endpoint, options) => {
+      if (endpoint === "/admin/backup/desktop-run-report") {
+        const report = JSON.parse(options.body);
+        if (report.status === "error") failureReports.push(report);
+      }
+      return deps.apiFetch(endpoint, options);
+    },
+  };
   let failure;
   try {
-    await executeLocalBackup(deps, folderPath, "manual");
+    await executeLocalBackup(observedDeps, folderPath, "manual");
   } catch (error) {
     failure = error;
   }
   assert(failure, `Expected backup execution to fail${messagePart ? ` during ${messagePart}` : ""}.`);
+  assert(
+    String(failure.message).includes("The backup did not complete"),
+    `Expected the safe incomplete-backup message, received "${failure.message}".`,
+  );
+  assert(failureReports.length === 1, "Each failed backup must submit exactly one error history report.");
   if (messagePart) {
+    // Specific filesystem diagnostics belong in history, not the user-facing summary.
     assert(
-      String(failure.message).toLowerCase().includes(messagePart.toLowerCase()),
-      `Expected failure containing "${messagePart}", received "${failure.message}".`,
+      String(failureReports[0].error).toLowerCase().includes(messagePart.toLowerCase()),
+      `Expected history failure containing "${messagePart}", received "${failureReports[0].error}".`,
     );
   }
 }
@@ -154,6 +171,14 @@ async function runPackagedBackupDownloadSmoke({
   await expectExecutionFailure(makeDeps("interrupted"), interruptedFolder, null);
   assert((await fs.promises.readdir(interruptedFolder)).length === 0, "Interrupted transfer left a file behind.");
 
+  const retry = await executeLocalBackup(makeDeps("retry"), interruptedFolder, "manual");
+  assert(retry.sizeBytes === expectedSize, "Retry archive size did not match the synthetic source.");
+  assert((await fs.promises.stat(retry.path)).size === expectedSize, "Retry archive size on disk did not match.");
+  assert((await sha256File(retry.path)) === expectedHash, "Retry archive bytes did not match the complete source.");
+  assert((await fs.promises.readdir(interruptedFolder)).join(",") === retry.fileName,
+    "Retry did not leave exactly one complete archive in the destination folder.");
+  await assertNoPartialFiles(interruptedFolder);
+
   const blocker = path.join(root, "unavailable-folder");
   await fs.promises.writeFile(blocker, "not a folder");
   const unavailableFolder = path.join(blocker, "nested");
@@ -176,7 +201,7 @@ async function runPackagedBackupDownloadSmoke({
       archivePath: success.path,
       sizeBytes: success.sizeBytes,
       sha256: expectedHash,
-      scenarios: ["success", "interrupted", "unavailable-folder", "disk-full"],
+      scenarios: ["success", "interrupted", "retry", "unavailable-folder", "disk-full"],
     }),
   );
 }

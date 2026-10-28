@@ -149,6 +149,9 @@ vi.mock("archiver", () => ({
 // ---------------------------------------------------------------------------
 
 import { inflateSync } from "node:zlib";
+import fs from "node:fs";
+import path from "node:path";
+import PDFDocument from "pdfkit";
 import { coerceStatementTemplate } from "./statement-template";
 
 /**
@@ -506,6 +509,140 @@ describe("generateStatementPdfBuffer", () => {
       null, null, undefined, null, null, null, null, legacy as any,
     );
     expect(pdf.byteLength).toBeGreaterThan(100);
+    expect(pdfText(pdf)).toContain("INV-001");
+    expect(pdfText(pdf)).toContain("Running Balance");
+    expect(pdf.toString("binary").match(/\/Type \/Page\b/g)).toHaveLength(2);
+  });
+
+  it.each([
+    { x: 40, y: 260, w: 532, h: 10 },
+    { x: 40, y: 260, w: 250, h: 100 },
+  ])("does not add empty continuation pages for an undersized box %j", async (box) => {
+    const template = coerceStatementTemplate(null);
+    template.sections.find((section) => section.generatedType === "transactions")!.box = box;
+    const buffer = await generateStatementPdfBuffer("Acme Lab",
+      makePracticeData({ invoices: [], invoiceCount: 0, totalBilled: 0, totalPaid: 0, openBalance: 0 }),
+      "04/2025", null, null, undefined, null, null, null, null, template);
+    expect(buffer.toString("binary").match(/\/Type \/Page\b/g)).toHaveLength(1);
+    expect(pdfText(buffer)).not.toContain("continued on following pages");
+  });
+
+  it("keeps saved geometry, logo, contacts, dates, summary and totals unchanged", async () => {
+    const template = coerceStatementTemplate(null);
+    const summary = template.sections.find((section) => section.generatedType === "balanceSummary")!;
+    summary.box = { x: 50, y: 190, w: 500, h: 60 };
+    const before = JSON.stringify(template);
+    const image = vi.spyOn(PDFDocument.prototype, "image");
+    const text = vi.spyOn(PDFDocument.prototype, "text");
+    try {
+      const sharp = (await import("sharp")).default;
+      const logo = await sharp(Buffer.from(
+        '<svg width="170" height="50"><rect width="170" height="50" fill="#123456"/><text x="10" y="30" fill="white">ACME LAB</text></svg>',
+      )).png().toBuffer();
+      const contact = {
+        displayName: "Acme Dental Laboratory", legalName: null,
+        addressLine1: "123 Sample Street", addressLine2: null,
+        city: "Sample City", state: "FL", zip: "00000", phone: "555-0100",
+        billingEmail: "billing@example.test", additionalEmails: [],
+        accountNumber: null, licenseNumber: null, phones: [], emails: [],
+      };
+      const buffer = await generateStatementPdfBuffer("Acme Lab",
+        makePracticeData({ labContact: contact, practiceContact: { ...contact, displayName: "Sunrise Dental" } }),
+        "04/2025", logo, null, undefined, 10, "billing@example.test", null, null, template);
+      expect(JSON.stringify(template)).toBe(before);
+      expect(image).toHaveBeenCalledWith(logo, template.logo.x, template.logo.y, {
+        fit: [template.logo.w, template.logo.h], align: "center", valign: "center",
+      });
+      // PDFKit overloads are wider at runtime than the spy's inferred last signature.
+      const calls = text.mock.calls as unknown as [string, number, number, { width: number; height: number }][];
+      expect(calls).toContainEqual([
+        "Balance Summary\nInvoices: 1\nBilled: $200.00    Paid: $0.00    Open balance: $200.00\nPayment due: 05/10/2025",
+        53, 193, { width: 494, height: 54, align: "left", lineGap: 1 },
+      ]);
+      const visible = pdfText(buffer);
+      expect(visible).toContain("123 Sample Street");
+      expect(visible).toContain("billing@example.test");
+      expect(visible).toContain("Total billed: $200.00");
+      expect(visible).toContain("Balance due: $200.00");
+      expect(buffer.toString("binary")).toContain("/Subtype /Image");
+      if (process.env.STATEMENT_PDF_VISUAL_DIR) {
+        fs.mkdirSync(process.env.STATEMENT_PDF_VISUAL_DIR, { recursive: true });
+        fs.writeFileSync(path.join(process.env.STATEMENT_PDF_VISUAL_DIR, "branding.pdf"), buffer);
+      }
+    } finally {
+      image.mockRestore();
+      text.mockRestore();
+    }
+  });
+
+  it("preserves complete invoice groups, long content, zero amounts and repeated headers across pages", async () => {
+    const item = (id: string, description: string, parentLineItemId: string | null = null) => ({
+      id, description, parentLineItemId, quantity: 1, unitPrice: "0", lineTotal: "0",
+      isDiscount: false, toothLabel: null, toothNumber: null, sortOrder: 0,
+    });
+    const longName = "Alexandra Montgomery Robertson";
+    const longDescription = "Detailed ceramic prescription with long clinical instructions ".repeat(180) + "DETAIL-END";
+    const invoices = [
+      makeInvoiceEntry({
+        id: "zero", invoiceNumber: "INV-ZERO", patientName: longName, total: "0", balanceDue: "0",
+        billTo: "Dr. Long Practice Billing Recipient With An Extended Name",
+        lineItems: [
+          item("parent", "Metal framework crown"),
+          item("child", "Night guard - Tooth 5", "parent"),
+          { ...item("discount", "Courtesy discount"), isDiscount: true, lineTotal: "-10" },
+          item("long", longDescription),
+        ],
+      }),
+      makeInvoiceEntry({
+        id: "later", invoiceNumber: "INV-LATER", issuedAt: new Date("2025-04-19"),
+        total: "99", balanceDue: "59",
+      }),
+    ] as any;
+    const data = makePracticeData({
+      invoiceCount: 2, invoices, totalBilled: 99, totalPaid: 40, openBalance: 59,
+      payments: [makePaymentEntry({ invoiceId: "later", referenceNumber: "CHK-40" })],
+    });
+    const buffer = await generateStatementPdfBuffer("Acme Lab", data, "04/2025");
+    const text = pdfText(buffer);
+    const compact = text.replace(/\s/g, "");
+    const pages = buffer.toString("binary").match(/\/Type \/Page\b/g)!.length;
+    expect(pages).toBeGreaterThan(2);
+    expect(text.match(/Invoice #/g)).toHaveLength(pages);
+    expect(text.match(/Running Balance/g)).toHaveLength(pages);
+    expect(text.match(/INV-ZERO/g)).toHaveLength(1);
+    expect(text.match(/DETAIL-END/g)).toHaveLength(1);
+    expect(compact).toContain(longName.replace(/\s/g, ""));
+    // Headers/static sections interrupt long detail rows; every word still appears exactly once.
+    expect(text.match(/prescription/g)).toHaveLength(180);
+    expect(text).toContain("Night guard - Tooth 5");
+    expect(text).toContain("Subtotal");
+    expect(text).toContain("Discount: Courtesy discount");
+    expect(text).toContain("-$10.00");
+    expect(text).toContain("$0.00$0.00");
+    expect(text.indexOf("DETAIL-END")).toBeLessThan(text.indexOf("INV-LATER"));
+    expect(text.indexOf("INV-LATER")).toBeLessThan(text.indexOf("Payment", text.indexOf("INV-LATER")));
+    expect(text).toContain("-$40.00$59.00");
+    // Opt-in synthetic artifacts for print-size visual inspection; not part of source history.
+    if (process.env.STATEMENT_PDF_VISUAL_DIR) {
+      fs.mkdirSync(process.env.STATEMENT_PDF_VISUAL_DIR, { recursive: true });
+      fs.writeFileSync(path.join(process.env.STATEMENT_PDF_VISUAL_DIR, "multipage.pdf"), buffer);
+      const short = makePracticeData({
+        invoiceCount: 2,
+        invoices: [
+          { ...invoices[0], lineItems: invoices[0].lineItems.slice(0, 3) },
+          invoices[1],
+        ],
+        totalBilled: 99, openBalance: 99,
+      });
+      fs.writeFileSync(path.join(process.env.STATEMENT_PDF_VISUAL_DIR, "representative.pdf"),
+        await generateStatementPdfBuffer("Acme Lab", short, "04/2025"));
+      const template = coerceStatementTemplate(null);
+      const transaction = template.sections.find((section) => section.generatedType === "transactions")!;
+      transaction.box = { x: 40, y: 260, w: 250, h: 100 };
+      fs.writeFileSync(path.join(process.env.STATEMENT_PDF_VISUAL_DIR, "narrow.pdf"),
+        await generateStatementPdfBuffer("Acme Lab", short, "04/2025",
+          null, null, undefined, null, null, null, null, template));
+    }
   });
 
   describe("chronological running balance", () => {

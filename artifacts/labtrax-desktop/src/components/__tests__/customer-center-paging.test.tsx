@@ -73,12 +73,16 @@ function invoiceMatches(invoice: Invoice, params: URLSearchParams) {
   const status = params.get("status");
   if (status && invoice.status !== status) return false;
 
+  const dateValue =
+    params.get("customerCenter") === "true"
+      ? invoice.createdAt ?? invoice.issuedAt
+      : invoice.issuedAt;
   const dateFrom = params.get("dateFrom");
-  if (dateFrom && new Date(invoice.issuedAt!).getTime() < new Date(dateFrom).getTime()) {
+  if (dateFrom && new Date(dateValue!).getTime() < new Date(dateFrom).getTime()) {
     return false;
   }
   const dateTo = params.get("dateTo");
-  if (dateTo && new Date(invoice.issuedAt!).getTime() > new Date(dateTo).getTime()) {
+  if (dateTo && new Date(dateValue!).getTime() > new Date(dateTo).getTime()) {
     return false;
   }
   return true;
@@ -119,6 +123,92 @@ afterEach(() => {
 });
 
 describe("Customer Center server-driven windows", () => {
+  it("keeps the entered-date scope on later invoice pages", async () => {
+    const enteredDateInvoices: Invoice[] = [
+      ...Array.from({ length: 10 }, (_, index) => ({
+        ...invoices[0]!,
+        id: `entered-invoice-${index + 1}`,
+        invoiceNumber: `ENTERED-${String(index + 1).padStart(3, "0")}`,
+        createdAt: `2026-09-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
+        issuedAt: `2026-08-${String(index + 1).padStart(2, "0")}T12:00:00.000Z`,
+      })),
+      {
+        ...invoices[0]!,
+        id: "outside-entered-date",
+        invoiceNumber: "OUTSIDE-ENTERED-DATE",
+        createdAt: "2026-08-31T12:00:00.000Z",
+        issuedAt: "2026-09-15T12:00:00.000Z",
+      },
+      {
+        ...invoices[0]!,
+        id: "entered-invoice-11",
+        invoiceNumber: "ENTERED-011",
+        createdAt: "2026-09-20T12:00:00.000Z",
+        issuedAt: "2026-10-15T12:00:00.000Z",
+      },
+    ];
+
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = parsePath(path);
+      if (url.pathname !== "/invoices") return [];
+
+      const matching = enteredDateInvoices.filter((invoice) =>
+        invoiceMatches(invoice, url.searchParams),
+      );
+      const limit = Number(url.searchParams.get("limit"));
+      const offset = Number(url.searchParams.get("offset"));
+      return {
+        rows: matching.slice(offset, offset + limit),
+        total: matching.length,
+        limit,
+        offset,
+        hasMore: offset + limit < matching.length,
+      };
+    });
+
+    renderWithClient(<InvoicesTab practice={practice} labOrgId="lab-1" />);
+
+    fireEvent.change(screen.getByDisplayValue("All Dates"), {
+      target: { value: "custom" },
+    });
+    const dateInputs = document.querySelectorAll<HTMLInputElement>(
+      'input[type="date"]',
+    );
+    fireEvent.change(dateInputs[0]!, { target: { value: "2026-09-01" } });
+    fireEvent.change(dateInputs[1]!, { target: { value: "2026-09-30" } });
+
+    expect(await screen.findByText("Showing 10 of 11")).toBeInTheDocument();
+
+    const hasEnteredDateScope = (params: URLSearchParams) =>
+      params.get("customerCenter") === "true" &&
+      params.get("practiceId") === practice.id &&
+      params.get("dateFrom") === "2026-09-01T00:00:00.000Z" &&
+      params.get("dateTo") === "2026-09-30T00:00:00.000Z";
+
+    expect(
+      findInvoiceCall(
+        (params) =>
+          hasEnteredDateScope(params) &&
+          params.get("limit") === "10" &&
+          params.get("offset") === "0",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByText("Showing 11 of 11")).toBeInTheDocument();
+    expect(screen.getByText("ENTERED-011")).toBeInTheDocument();
+    expect(screen.queryByText("OUTSIDE-ENTERED-DATE")).not.toBeInTheDocument();
+    expect(
+      findInvoiceCall(
+        (params) =>
+          hasEnteredDateScope(params) &&
+          params.get("limit") === "10" &&
+          params.get("offset") === "10",
+      ),
+    ).toBeTruthy();
+  });
+
   it("pages invoices, resets paging for status/date filters, and exports every match", async () => {
     apiFetchMock.mockImplementation(async (path: string) => {
       const url = parsePath(path);

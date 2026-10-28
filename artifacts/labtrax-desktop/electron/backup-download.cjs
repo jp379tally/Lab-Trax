@@ -16,6 +16,10 @@ async function downloadBackupToFolder(request, deps) {
   if (typeof folderPath !== "string" || !folderPath.trim()) {
     return { ok: false, error: "A local backup folder is required." };
   }
+  const requestedArchiveKind = parsed.searchParams.get("archiveKind") ?? "full";
+  if (requestedArchiveKind !== "full" && requestedArchiveKind !== "database-only") {
+    return { ok: false, error: "The requested backup contents are invalid." };
+  }
   const controller = new AbortController();
   const startedAt = Date.now();
   const totalTimer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 70 * 60_000);
@@ -38,7 +42,7 @@ async function downloadBackupToFolder(request, deps) {
     phase = "generation and download";
     const safeHeaders = {};
     for (const [key, value] of Object.entries(headers)) {
-      if (/^(authorization|x-platform-admin-secret|x-platform-admin-pin)$/i.test(key) &&
+      if (/^(authorization|x-platform-admin-secret|x-platform-admin-pin|x-labtrax-backup-source)$/i.test(key) &&
           typeof value === "string") safeHeaders[key] = value;
     }
     log({ phase, elapsedMs: Date.now() - startedAt, sizeBytes: bytes });
@@ -64,15 +68,25 @@ async function downloadBackupToFolder(request, deps) {
     const coverageVersion = response.headers.get("x-backup-coverage-version");
     const mediaFileCount = Number(response.headers.get("x-backup-media-file-count"));
     const attachmentRowCount = Number(response.headers.get("x-backup-attachment-row-count"));
-    if (!["complete-production", "complete-non-production"].includes(archiveKind) ||
-        coverageVersion !== "1" || !Number.isSafeInteger(mediaFileCount) || mediaFileCount < 0 ||
-        !Number.isSafeInteger(attachmentRowCount) || attachmentRowCount < 0) {
+    const partial = requestedArchiveKind === "full" &&
+      ["partial-production", "partial-non-production"].includes(archiveKind);
+    const missingFileCount = Number(response.headers.get("x-backup-missing-file-count") ?? 0);
+    const validDatabaseOnly = requestedArchiveKind === "database-only" &&
+      archiveKind === "database-only" && coverageVersion === "0" && mediaFileCount === 0;
+    const validFull = requestedArchiveKind === "full" &&
+      (!partial || (Number.isSafeInteger(missingFileCount) && missingFileCount > 0)) &&
+      (partial || missingFileCount === 0) &&
+      ["complete-production", "complete-non-production", "partial-production", "partial-non-production"].includes(archiveKind) &&
+      ["1", "2"].includes(coverageVersion) && Number.isSafeInteger(mediaFileCount) && mediaFileCount >= 0 &&
+      Number.isSafeInteger(attachmentRowCount) && attachmentRowCount >= 0;
+    if (!validDatabaseOnly && !validFull) {
       throw new Error("The server did not confirm complete database-and-files recovery evidence.");
     }
     const destination = path.join(folderPath, fileName);
     tempPath = path.join(folderPath, `.labtrax-backup-${randomUUID()}.partial`);
     let lastBytesAt = Date.now();
     let lastLogAt = lastBytesAt;
+    let lastLoggedBytes = 0;
     const header = [];
     let headerBytes = 0;
     const counter = new Transform({
@@ -90,8 +104,15 @@ async function downloadBackupToFolder(request, deps) {
         }
         lastBytesAt = Date.now();
         if (lastBytesAt - lastLogAt >= 30_000) {
-          log({ phase: "download and local write", elapsedMs: lastBytesAt - startedAt, sizeBytes: bytes });
+          const elapsed = Math.max(1, lastBytesAt - lastLogAt);
+          log({
+            phase: "download and local write",
+            elapsedMs: lastBytesAt - startedAt,
+            sizeBytes: bytes,
+            bytesPerSecond: Math.round(((bytes - lastLoggedBytes) * 1000) / elapsed),
+          });
           lastLogAt = lastBytesAt;
+          lastLoggedBytes = bytes;
         }
         callback(null, chunk);
       },
@@ -131,7 +152,9 @@ async function downloadBackupToFolder(request, deps) {
     await fs.promises.rename(tempPath, destination);
     tempPath = undefined;
     log({ phase: "local file verified", elapsedMs: Date.now() - startedAt, sizeBytes: bytes });
-    return { ok: true, path: destination, fileName, sizeBytes: bytes, downloadRunId };
+    return { ok: true, path: destination, fileName, sizeBytes: bytes, downloadRunId,
+      archiveKind, missingFileCount, partialFailure: partial,
+      warnings: partial ? `${missingFileCount} original files unavailable; see missing-files.json. Not a complete recovery point.` : null };
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : null;
     const detail = controller.signal.aborted ? "The transfer stalled, was closed, or exceeded its time budget. No partial backup was kept."

@@ -43,7 +43,10 @@ import {
 } from "@tanstack/react-query";
 
 import { Alert, StyleSheet } from "react-native";
-import { Spacing } from "@/constants/tokens";
+import * as Native from "react-native";
+import { Spacing, Typography } from "@/constants/tokens";
+import Colors from "@/constants/colors";
+import * as ThemeContext from "@/lib/theme-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { resilientFetch } from "@/lib/query-client";
 import * as Sharing from "expo-sharing";
@@ -213,6 +216,143 @@ function caseActionLayoutHtml(
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:0;width:100%;font-family:Arial,sans-serif}#screen{box-sizing:border-box;width:100%;padding:0 ${bodyPadding}px}#action-row{${rowCss}}</style></head><body><main id="screen"><div id="action-row">${buttonHtml}</div></main></body></html>`;
 }
 
+function caseScheduleLayoutHtml(
+  scheduleStyle: Record<string, unknown>,
+  metricStyle: Record<string, unknown>,
+  values: string[],
+): string {
+  const scheduleCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-direction:${String(scheduleStyle.flexDirection ?? "row")}`,
+    `flex-wrap:${String(scheduleStyle.flexWrap ?? "nowrap")}`,
+    `align-items:${String(scheduleStyle.alignItems ?? "stretch")}`,
+    `gap:${cssLength(scheduleStyle.gap)}`,
+    `padding:${cssLength(scheduleStyle.padding)}`,
+    "width:280px",
+  ].join(";");
+  const metricCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-grow:${String(metricStyle.flexGrow ?? 0)}`,
+    `flex-shrink:${String(metricStyle.flexShrink ?? 1)}`,
+    `flex-basis:${cssLength(metricStyle.flexBasis)}`,
+    `min-width:${cssLength(metricStyle.minWidth)}`,
+    `padding:${cssLength(metricStyle.paddingVertical)} ${cssLength(metricStyle.paddingHorizontal)}`,
+  ].join(";");
+  const metrics = values
+    .map((value) => `<div class="metric">${escapeHtml(value)}</div>`)
+    .join("");
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:0;font-family:Arial,sans-serif}#schedule{${scheduleCss}}.metric{${metricCss}}</style></head><body><div id="schedule">${metrics}</div></body></html>`;
+}
+
+function casePatientProviderLayoutHtml(
+  gridStyle: Record<string, unknown>,
+  patientFieldStyle: Record<string, unknown>,
+  patientNameStyle: Record<string, unknown>,
+  doctorFieldStyle: Record<string, unknown>,
+  practiceFieldStyle: Record<string, unknown>,
+  patientName: string,
+): string {
+  const gridCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-direction:${String(gridStyle.flexDirection ?? "row")}`,
+    `flex-wrap:${String(gridStyle.flexWrap ?? "nowrap")}`,
+    `align-items:${String(gridStyle.alignItems ?? "stretch")}`,
+    `gap:${cssLength(gridStyle.gap)}`,
+    "width:256px",
+  ].join(";");
+  const fieldCss = (style: Record<string, unknown>) =>
+    [
+      "box-sizing:border-box",
+      "display:flex",
+      "flex-direction:column",
+      `flex-grow:${String(style.flexGrow ?? 0)}`,
+      `flex-shrink:${String(style.flexShrink ?? 1)}`,
+      `flex-basis:${cssLength(style.flexBasis)}`,
+      `min-width:${cssLength(style.minWidth)}`,
+    ].join(";");
+  const patientCss = [
+    "box-sizing:border-box",
+    "display:block",
+    `width:${cssLength(patientNameStyle.width)}`,
+    `flex-shrink:${String(patientNameStyle.flexShrink ?? 1)}`,
+    `font-size:${cssLength(patientNameStyle.fontSize)}`,
+    `line-height:${cssLength(patientNameStyle.lineHeight)}`,
+    "font-family:Arial,sans-serif",
+    "white-space:normal",
+  ].join(";");
+
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:0;font-family:Arial,sans-serif}.grid{${gridCss}}.field{${fieldCss(patientFieldStyle)}}.doctor{${fieldCss(doctorFieldStyle)}}.practice{${fieldCss(practiceFieldStyle)}}.patient-name{${patientCss}}</style></head><body><div class="grid"><section id="patient" class="field"><span>Patient</span><span id="patient-name" class="patient-name">${escapeHtml(patientName)}</span></section><section id="doctor" class="doctor"><span>Doctor</span><span>Dr. Smith</span></section><section id="practice" class="practice"><span>Practice</span><span>Linked Dental</span></section></div></body></html>`;
+}
+
+function caseOverviewLargeTextLayoutHtml(
+  scheduleStyle: Record<string, unknown>,
+  scheduleMetricStyle: Record<string, unknown>,
+  scheduleValueStyle: Record<string, unknown>,
+  providerGridStyle: Record<string, unknown>,
+  providerFieldStyle: Record<string, unknown>,
+  providerLabelStyle: Record<string, unknown>,
+  providerValueStyle: Record<string, unknown>,
+  fontScale: number,
+): string {
+  const scheduleCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-direction:${String(scheduleStyle.flexDirection ?? "column")}`,
+    `gap:${cssLength(scheduleStyle.gap)}`,
+    `padding:${cssLength(scheduleStyle.padding)}`,
+  ].join(";");
+  const metricCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-grow:${String(scheduleMetricStyle.flexGrow ?? 0)}`,
+    `flex-shrink:${String(scheduleMetricStyle.flexShrink ?? 1)}`,
+    `flex-basis:${cssLength(scheduleMetricStyle.flexBasis)}`,
+    `min-width:${cssLength(scheduleMetricStyle.minWidth)}`,
+    `padding:${cssLength(scheduleMetricStyle.paddingVertical)} ${cssLength(scheduleMetricStyle.paddingHorizontal)}`,
+  ].join(";");
+  const providerGridCss = [
+    "box-sizing:border-box",
+    "display:flex",
+    `flex-direction:${String(providerGridStyle.flexDirection ?? "row")}`,
+    `flex-wrap:${String(providerGridStyle.flexWrap ?? "nowrap")}`,
+    `align-items:${String(providerGridStyle.alignItems ?? "stretch")}`,
+    `gap:${cssLength(providerGridStyle.gap)}`,
+    `padding:${cssLength(providerGridStyle.padding)}`,
+  ].join(";");
+  const providerFieldCss = [
+    "box-sizing:border-box",
+    `align-self:${String(providerFieldStyle.alignSelf ?? "auto")}`,
+    `flex-grow:${String(providerFieldStyle.flexGrow ?? 0)}`,
+    `flex-shrink:${String(providerFieldStyle.flexShrink ?? 1)}`,
+    `flex-basis:${cssLength(providerFieldStyle.flexBasis)}`,
+    `min-width:${cssLength(providerFieldStyle.minWidth)}`,
+    `width:${cssLength(providerFieldStyle.width)}`,
+  ].join(";");
+  const fontCss = (style: Record<string, unknown>) =>
+    [
+      `font-size:${cssLength(Number(style.fontSize ?? 14) * fontScale)}`,
+      `line-height:${cssLength(Number(style.lineHeight ?? 20) * fontScale)}`,
+      `font-weight:${String(style.fontWeight ?? "400")}`,
+      "overflow-wrap:anywhere",
+    ].join(";");
+  const scheduleValues = [
+    "Date Created: April 5, 2025",
+    "Due Date: June 23, 2025 at 2:30 PM",
+    "Priority: Standard",
+  ].map((value) => `<div class="metric"><span class="schedule-value">${escapeHtml(value)}</span></div>`).join("");
+  const providerValues = [
+    ["Patient", "Jane Doe"],
+    ["Doctor", "Dr. Smith"],
+    ["Practice", "Linked Dental"],
+  ].map(([label, value]) =>
+    `<div class="provider-field"><span class="provider-label">${escapeHtml(label)}</span><span class="provider-value">${escapeHtml(value)}</span></div>`,
+  ).join("");
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:0;font-family:Arial,sans-serif}#overview{box-sizing:border-box;width:280px;display:flex;flex-direction:column;gap:12px}#schedule{${scheduleCss}}.metric{${metricCss}}.schedule-value{display:block;${fontCss(scheduleValueStyle)}}#providers{${providerGridCss}}.provider-field{${providerFieldCss}}.provider-label,.provider-value{display:block;${fontCss(providerLabelStyle)}}.provider-value{${fontCss(providerValueStyle)}}</style></head><body><main id="overview"><section id="schedule">${scheduleValues}</section><section id="providers">${providerValues}</section></main></body></html>`;
+}
+
 function resolveChromiumExecutable(): string | undefined {
   const configuredPath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
   if (configuredPath) return configuredPath;
@@ -338,6 +478,145 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getAllByText } = await render(<CaseDetailScreen />);
       expect(getAllByText(/Restorative/).length).toBeGreaterThan(0);
     });
+  });
+
+  describe("patient header", () => {
+    const headerCase = {
+      ...inProgressCase,
+      casePanBarcode: "",
+      organizationId: "org-1",
+      labOrganizationId: "org-1",
+    };
+
+    beforeEach(() => {
+      setMockSearchParams({ id: headerCase.id });
+      setMockAppState({ cases: [headerCase], invoices: [], meMemberships: [] });
+      setMockFetchHandler(locationsOnlyHandler());
+    });
+
+    it("uses the 18-point bold heading only for the subtitle beneath Case", async () => {
+      const screen = await render(<CaseDetailScreen />);
+      const header = within(screen.getByTestId("case-top-header"));
+      const patient = header.getByTestId("case-header-patient");
+      expect(patient).toHaveTextContent("Jane Doe");
+      expect(StyleSheet.flatten(patient.props.style)).toMatchObject({
+        ...Typography.h2,
+        color: ThemeContext.useTheme().colors.textSecondary,
+      });
+      expect(patient.parent).toBe(header.getByText("Case", { exact: true }).parent);
+      expect(StyleSheet.flatten(header.getByText("Case", { exact: true }).props.style))
+        .toMatchObject(Typography.h2);
+      expect(StyleSheet.flatten(screen.getByTestId("overview-patient-name").props.style))
+        .toMatchObject({ fontSize: 18, fontFamily: "Inter_700Bold", lineHeight: 24 });
+      expect(StyleSheet.flatten(header.getByText("Location", { exact: true }).props.style))
+        .toMatchObject(Typography.bodyMedium);
+    });
+
+    for (const [label, first, last, expected] of [
+      ["first name only", "Jane", null, "Jane"],
+      ["last name only", undefined, "Doe", "Doe"],
+      ["missing names", null, undefined, "Unnamed patient"],
+      ["blank names", " ", " ", "Unnamed patient"],
+      ["punctuation and casing", "  María-José", "O’Neill-Smith  ", "María-José O’Neill-Smith"],
+    ] as const) {
+      it(`keeps the existing name formatting for ${label}`, async () => {
+        setMockAppState({
+          cases: [{ ...headerCase, patientFirstName: first, patientLastName: last }],
+        });
+        const screen = await render(<CaseDetailScreen />);
+        expect(screen.getByTestId("case-header-patient").props.children).toBe(expected);
+      });
+    }
+
+    for (const mode of ["light", "dark"] as const) {
+      it(`preserves ${mode} theme colors and the rush red override`, async () => {
+        const theme = ThemeContext.useTheme();
+        const useTheme = vi.spyOn(ThemeContext, "useTheme").mockReturnValue({
+          ...theme,
+          mode,
+          isDark: mode === "dark",
+          colors: Colors[mode],
+        });
+        try {
+          const screen = await render(<CaseDetailScreen />);
+          expect(StyleSheet.flatten(screen.getByTestId("case-header-patient").props.style).color)
+            .toBe(Colors[mode].textSecondary);
+          setMockAppState({ cases: [{ ...headerCase, priority: "rush" }] });
+          await screen.rerender(<CaseDetailScreen />);
+          expect(StyleSheet.flatten(screen.getByTestId("case-header-patient").props.style))
+            .toMatchObject({ ...Typography.h2, color: Colors[mode].error });
+        } finally {
+          useTheme.mockRestore();
+        }
+      });
+    }
+
+    it("allows full long names and uncapped system text scaling without shrinking the controls", async () => {
+      const dimensions = vi.spyOn(Native, "useWindowDimensions").mockReturnValue({
+        width: 320, height: 720, scale: 2, fontScale: 2,
+      });
+      const name = "Alexandria Catherine Montgomery Worthington Smythe";
+      setMockAppState({
+        cases: [{ ...headerCase, patientFirstName: name, patientLastName: null }],
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+      try {
+        const screen = await render(<CaseDetailScreen />);
+        const patient = screen.getByTestId("case-header-patient");
+        expect(patient.props.children).toBe(name);
+        expect(patient.props.numberOfLines).toBeUndefined();
+        expect(patient.props.ellipsizeMode).toBeUndefined();
+        expect(patient.props.allowFontScaling).not.toBe(false);
+        expect(patient.props.maxFontSizeMultiplier).toBeUndefined();
+        expect(patient.props.adjustsFontSizeToFit).not.toBe(true);
+        expect(StyleSheet.flatten(patient.parent?.props.style))
+          .toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 });
+        const main = screen.getByTestId("case-header-main");
+        expect(StyleSheet.flatten(main.props.style))
+          .toMatchObject({ flexGrow: 1, flexShrink: 1, minWidth: 0 });
+        expect(StyleSheet.flatten(main.parent?.props.style))
+          .toMatchObject({ flexWrap: "wrap", justifyContent: "flex-end" });
+        expect(StyleSheet.flatten(screen.getByTestId("case-back").props.style).flexShrink).toBe(0);
+        expect(StyleSheet.flatten(screen.getByTestId("case-print").parent?.parent?.props.style).flexShrink).toBe(0);
+        // These are native style/prop contracts, not layout measurements.
+        // test:case-header-browser measures the real Expo-web text and hit targets.
+      } finally {
+        dimensions.mockRestore();
+      }
+    });
+
+    for (const { role, status, admin, edit } of [
+      { role: "owner", status: "active", admin: true, edit: true },
+      { role: "admin", status: "active", admin: true, edit: true },
+      { role: "read_only", status: "active", admin: false, edit: false },
+      { role: "admin", status: "inactive", admin: false, edit: false },
+    ]) {
+      it(`retains header actions and location permissions for ${status} ${role}`, async () => {
+        setMockAppState({
+          meMemberships: [{ organizationId: "org-1", role, status }],
+        });
+        const screen = await render(<CaseDetailScreen />);
+        const header = within(screen.getByTestId("case-top-header"));
+        expect(header.getByTestId("case-back")).toBeTruthy();
+        expect(header.getByTestId("case-ask-maynard-btn")).toBeTruthy();
+        expect(header.getByTestId("case-print")).toBeTruthy();
+        expect(Boolean(header.queryByTestId("case-remake-btn"))).toBe(admin);
+        expect(Boolean(header.queryByTestId("case-delete-btn"))).toBe(admin);
+        expect(header.getByTestId("case-header-location")).toBeTruthy();
+        if (edit) {
+          await waitFor(() => expect(header.getByTestId("locate-select")).toBeTruthy());
+        } else {
+          expect(header.queryByTestId("locate-select")).toBeNull();
+        }
+        await fireEvent.press(header.getByTestId("case-ask-maynard-btn"));
+        expect(router.push).toHaveBeenCalledWith(`/ai-assistant?caseId=${headerCase.id}`);
+        await fireEvent.press(screen.getByTestId("section-tab-history"));
+        expect(header.getByTestId("case-print-history")).toBeTruthy();
+        expect(header.queryByTestId("case-print")).toBeNull();
+        await fireEvent.press(header.getByTestId("case-back"));
+        expect(router.replace).toHaveBeenCalledWith("/(tabs)");
+      });
+    }
   });
 
   describe("history note bodies (Task #2597)", () => {
@@ -589,7 +868,7 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       );
 
       it(
-        "wraps the two available actions at 320 and fits them on one row at 375",
+        "keeps the two available actions readable at 320 and on one row at 375",
         async () => {
           const actionCase = {
             ...inProgressCase,
@@ -633,7 +912,11 @@ describe("CaseDetailScreen (read-only viewer)", () => {
               layout.bodyPadding,
               layout.buttons,
             );
-            expect(rendered.rowCount).toBe(width === 320 ? 2 : 1);
+            // Arial's fallback metrics differ across Linux images. Either
+            // one or two rows is usable at 320; keep the real layout gates
+            // below and require a single row at the wider phone size.
+            expect(rendered.rowCount).toBeGreaterThanOrEqual(1);
+            expect(rendered.rowCount).toBeLessThanOrEqual(width === 320 ? 2 : 1);
             expect(rendered.overlaps).toBe(false);
             expect(rendered.buttonsStayInRow).toBe(true);
             expect(rendered.labelsClipped).toBe(false);
@@ -1224,8 +1507,11 @@ describe("CaseDetailScreen (read-only viewer)", () => {
     it("locates the case to a new station via useUpdateCase with its location id", async () => {
       // Status/location is changed exclusively through the desktop-style
       // "Locate Case" control (editor-only), not the edit form.
-      const { getByTestId, getAllByTestId } = await render(<CaseDetailScreen />);
+      const { getByTestId, getAllByTestId, queryByTestId } = await render(<CaseDetailScreen />);
       await waitFor(() => expect(getByTestId("locate-select")).toBeTruthy());
+      expect(getByTestId("locate-select")).toBeTruthy();
+      expect(getByTestId("locate-select").props.accessibilityState?.disabled).toBeFalsy();
+      expect(queryByTestId("locate-confirm")).toBeNull();
       const header = getByTestId("case-top-header");
       const location = getByTestId("case-header-location");
       expect(within(header).getByTestId("case-header-patient")).toHaveTextContent("Jane Doe");
@@ -1234,10 +1520,9 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       expect(getAllByTestId("case-header-location")).toHaveLength(1);
       expect(getAllByTestId("locate-select")).toHaveLength(1);
 
-      // Pick a destination station, then press Locate (mirrors desktop).
+      // Picking a destination submits its exact station ID and mapped status.
       await fireEvent.press(getByTestId("locate-select"));
       await fireEvent.press(getByTestId("option-loc-complete"));
-      await fireEvent.press(getByTestId("locate-confirm"));
 
       await waitFor(() => {
         expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
@@ -1250,15 +1535,12 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       await waitFor(() => expect(getByTestId("locate-success")).toBeTruthy());
     });
 
-    it("retains a picked station across tabs and edit toggles with only one header owner", async () => {
+    it("keeps one header locator across tabs and edit toggles without a confirmation action", async () => {
       const screen = await render(<CaseDetailScreen />);
       await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
-      await fireEvent.press(screen.getByTestId("locate-select"));
-      await fireEvent.press(screen.getByTestId("option-loc-glaze"));
       for (const tab of ["history", "notes", "files", "restorations", "overview"]) {
         await fireEvent.press(screen.getByTestId(`section-tab-${tab}`));
         expect(screen.getAllByTestId("locate-select")).toHaveLength(1);
-        expect(within(screen.getByTestId("locate-select")).getByText("Glaze Oven")).toBeTruthy();
         expect(within(screen.getByTestId("case-detail-body")).queryByTestId("locate-select")).toBeNull();
       }
       await fireEvent.press(screen.getByTestId("overview-edit"));
@@ -1267,13 +1549,9 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       expect(screen.queryByTestId("locate-confirm")).toBeNull();
       await fireEvent.press(screen.getByTestId("overview-cancel"));
       await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
-      expect(within(screen.getByTestId("locate-select")).getByText("Glaze Oven")).toBeTruthy();
       await fireEvent.press(screen.getByTestId("section-tab-history"));
-      await fireEvent.press(screen.getByTestId("locate-confirm"));
-      await waitFor(() => expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
-        caseId: editableCase.id,
-        data: { status: "qc", labLocationId: "loc-glaze" },
-      }));
+      expect(screen.queryByTestId("locate-confirm")).toBeNull();
+      expect(mockUpdateCaseMutateAsync).not.toHaveBeenCalled();
     });
 
     it("keeps the selected station on a refused route and allows a successful retry", async () => {
@@ -1282,14 +1560,47 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const screen = await render(<CaseDetailScreen />);
       await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
       await fireEvent.press(screen.getByTestId("locate-select"));
+      // Both custom stations share qc; selecting Glaze Oven must preserve its
+      // own location ID through a refused request and retry.
+      expect(screen.getByTestId("option-loc-polish")).toBeTruthy();
+      expect(screen.getByTestId("option-loc-glaze")).toBeTruthy();
       await fireEvent.press(screen.getByTestId("option-loc-glaze"));
-      await fireEvent.press(screen.getByTestId("locate-confirm"));
       await waitFor(() => expect(alert).toHaveBeenCalledWith("Couldn't locate case", "Route refused."));
       expect(screen.queryByTestId("locate-success")).toBeNull();
       expect(within(screen.getByTestId("locate-select")).getByText("Glaze Oven")).toBeTruthy();
-      await fireEvent.press(screen.getByTestId("locate-confirm"));
+      await fireEvent.press(screen.getByTestId("locate-select"));
+      await fireEvent.press(screen.getByTestId("option-loc-glaze"));
       await waitFor(() => expect(screen.getByTestId("locate-success")).toBeTruthy());
       expect(mockUpdateCaseMutateAsync).toHaveBeenCalledTimes(2);
+      expect(mockUpdateCaseMutateAsync).toHaveBeenNthCalledWith(1, {
+        caseId: editableCase.id,
+        data: { status: "qc", labLocationId: "loc-glaze" },
+      });
+      expect(mockUpdateCaseMutateAsync).toHaveBeenNthCalledWith(2, {
+        caseId: editableCase.id,
+        data: { status: "qc", labLocationId: "loc-glaze" },
+      });
+    });
+
+    it("blocks another station choice while a locate write is pending", async () => {
+      let resolveWrite!: (value: { ok: boolean; data: null }) => void;
+      mockUpdateCaseMutateAsync.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveWrite = resolve; }),
+      );
+      const screen = await render(<CaseDetailScreen />);
+      await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
+      await fireEvent.press(screen.getByTestId("locate-select"));
+      await fireEvent.press(screen.getByTestId("option-loc-glaze"));
+
+      await waitFor(() => expect(mockUpdateCaseMutateAsync).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId("locate-select").props.accessibilityState?.disabled).toBe(true);
+      await fireEvent.press(screen.getByTestId("locate-select"));
+      expect(mockUpdateCaseMutateAsync).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveWrite({ ok: true, data: null });
+      });
+      await waitFor(() => expect(screen.getByTestId("locate-success")).toBeTruthy());
     });
 
     it("does not offer another write after a committed route whose refresh fails", async () => {
@@ -1299,11 +1610,37 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
       await fireEvent.press(screen.getByTestId("locate-select"));
       await fireEvent.press(screen.getByTestId("option-loc-glaze"));
-      await fireEvent.press(screen.getByTestId("locate-confirm"));
       await waitFor(() => expect(screen.getByTestId("locate-success")).toBeTruthy());
-      await waitFor(() => expect(screen.getByTestId("locate-confirm").props.disabled).toBe(true));
+      await waitFor(() => expect(screen.getByTestId("locate-select").props.accessibilityState?.disabled).toBe(true));
       expect(mockUpdateCaseMutateAsync).toHaveBeenCalledTimes(1);
       expect(alert).not.toHaveBeenCalledWith("Couldn't locate case", expect.anything());
+    });
+
+    it("keeps the return-to-intake questions after selecting a station for a completed case", async () => {
+      const returnedCase = {
+        ...completedCaseWithInvoice,
+        status: "completed",
+        organizationId: "org-1",
+        labOrganizationId: "org-1",
+      };
+      setMockSearchParams({ id: returnedCase.id });
+      setMockAppState({
+        cases: [returnedCase],
+        invoices: [],
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+      const screen = await render(<CaseDetailScreen />);
+      await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
+
+      await fireEvent.press(screen.getByTestId("locate-select"));
+      await fireEvent.press(screen.getByTestId("option-loc-received"));
+
+      await waitFor(() => expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
+        caseId: returnedCase.id,
+        data: { status: "received", labLocationId: "loc-received" },
+      }));
+      expect(await screen.findByTestId("returned-case-wizard")).toBeTruthy();
+      expect(screen.getByTestId("returned-wizard-title")).toHaveTextContent("Set a new due date?");
     });
 
     it("shows a read-only header location on every tab without offering routing", async () => {
@@ -1368,7 +1705,7 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId, queryByTestId, getByText } = await render(<CaseDetailScreen />);
       await waitFor(() => expect(getByTestId("locate-locations-empty")).toBeTruthy());
       expect(getByText("This lab has no active locations yet.")).toBeTruthy();
-      // No stand-in list, and nothing to submit.
+      // No stand-in list and no redundant confirmation control.
       expect(queryByTestId("locate-select")).toBeNull();
       expect(queryByTestId("locate-confirm")).toBeNull();
     });
@@ -1387,7 +1724,7 @@ describe("CaseDetailScreen (read-only viewer)", () => {
     });
 
     it("keeps two custom locations that share a workflow status independently selectable", async () => {
-      const { getByTestId, getByText } = await render(<CaseDetailScreen />);
+      const { getByTestId } = await render(<CaseDetailScreen />);
       await waitFor(() => expect(getByTestId("locate-select")).toBeTruthy());
       await fireEvent.press(getByTestId("locate-select"));
 
@@ -1396,24 +1733,13 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       expect(getByTestId("option-loc-polish")).toBeTruthy();
       expect(getByTestId("option-loc-glaze")).toBeTruthy();
 
-      // The picked location's own name lands in the select row — the two
-      // qc-mapped rows are distinct selections, not one shared entry.
+      // The picked location's own ID is submitted even though both stations
+      // map to qc.
       await fireEvent.press(getByTestId("option-loc-glaze"));
-      expect(within(getByTestId("locate-select")).getByText("Glaze Oven")).toBeTruthy();
-
-      // Selecting the sibling location swaps the selection (one destination at
-      // a time) rather than sharing it.
-      await fireEvent.press(getByTestId("locate-select"));
-      await fireEvent.press(getByTestId("option-loc-polish"));
-      const selectRow = within(getByTestId("locate-select"));
-      expect(selectRow.getByText("Polishing Bench")).toBeTruthy();
-      expect(selectRow.queryByText("Glaze Oven")).toBeNull();
-
-      await fireEvent.press(getByTestId("locate-confirm"));
       await waitFor(() => {
         expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
           caseId: editableCase.id,
-          data: { status: "qc", labLocationId: "loc-polish" },
+          data: { status: "qc", labLocationId: "loc-glaze" },
         });
       });
     });
@@ -2980,9 +3306,11 @@ describe("CaseDetailScreen (read-only viewer)", () => {
 
       const { getByTestId } = await render(<CaseDetailScreen />);
       await fireEvent.press(getByTestId("section-tab-files"));
-      expect(
-        getByTestId(`media-open-${attachments[0]!.id}`),
-      ).toBeTruthy();
+      const mediaCard = getByTestId(`media-open-${attachments[0]!.id}`);
+      expect(StyleSheet.flatten(mediaCard.props.style)).toMatchObject({
+        borderWidth: 1,
+        borderColor: expect.any(String),
+      });
       expect(
         getByTestId(`media-open-${attachments[1]!.id}`),
       ).toBeTruthy();
@@ -3856,12 +4184,13 @@ describe("OverviewSection — removable Step row", () => {
   });
 
   it("shows the wax-setup shade read-only for a non-admin viewer", async () => {
-    const { queryByTestId, getByTestId } = await renderCase(
+    const { queryByTestId, getByTestId, getByText } = await renderCase(
       removableCaseWaxSetup,
       nonAdminEditorMemberships,
     );
     expect(queryByTestId("step-shade-input")).toBeNull();
-    expect(getByTestId("step-shade-value")).toHaveTextContent("Shade: A2");
+    expect(getByTestId("step-shade-value")).toHaveTextContent("A2");
+    expect(getByText("Wax Setup Shade")).toBeTruthy();
   });
 
   it("saves the wax-setup shade through the case update", async () => {
@@ -4055,7 +4384,7 @@ describe("OverviewSection — hierarchy rows are always present", () => {
 
     expect(
       getByTestId("custom-shade-toggle").props.accessibilityState,
-    ).toEqual({ checked: true });
+    ).toEqual({ checked: true, disabled: false });
     expect(getByText("Technician name")).toBeTruthy();
     expect(getByDisplayValue("Jordan Lee")).toBeTruthy();
     expect(getByText("Pictures available")).toBeTruthy();
@@ -4066,7 +4395,7 @@ describe("OverviewSection — hierarchy rows are always present", () => {
     ).toBeTruthy();
   });
 
-  it("keeps a single Custom Shade flag beside the tooth rows and hides its details when unselected", async () => {
+  it("keeps a single Custom Shade flag below the tooth rows and hides its details when unselected", async () => {
     const ordinaryShadeCase = {
       ...inProgressCase,
       id: "case-standard-shade",
@@ -4080,7 +4409,7 @@ describe("OverviewSection — hierarchy rows are always present", () => {
 
     expect(
       getByTestId("custom-shade-toggle").props.accessibilityState,
-    ).toEqual({ checked: false });
+    ).toEqual({ checked: false, disabled: false });
     const pairing = getByTestId("tooth-shade-custom-shade");
     expect(within(pairing).getByTestId("custom-shade-toggle")).toBeTruthy();
     expect(within(pairing).getByTestId("tooth-shade-label-rest-1")).toHaveTextContent("8");
@@ -4097,8 +4426,8 @@ describe("OverviewSection — hierarchy rows are always present", () => {
     ]);
     expect(getByTestId("hierarchy-edit-btn")).toBeTruthy();
     expect(getByTestId("hierarchy-edit-subtype-btn")).toBeTruthy();
-    // Material becomes actionable only after a catalog subtype has materials.
-    expect(queryByTestId("hierarchy-edit-material-btn")).toBeNull();
+    // Keep its saved value visible, but do not enable unavailable choices.
+    expect(getByTestId("hierarchy-edit-material-btn").props.accessibilityState.disabled).toBe(true);
   });
 
   it("hides the hierarchy edit affordances from a read-only viewer", async () => {
@@ -4230,13 +4559,20 @@ describe("mobile Lab Slip refinement", () => {
     expect(screen.getByTestId("overview-details-card")).toBeTruthy();
     expect(screen.getByText("Patient & Provider")).toBeTruthy();
     expect(screen.getByText("Schedule & Priority")).toBeTruthy();
-    expect(screen.getByText("Restoration Details")).toBeTruthy();
+    expect(screen.queryByText("Restoration Details")).toBeNull();
+    expect(screen.getByText("Restoration Type")).toBeTruthy();
+    expect(screen.getByText("Restoration Sub Type")).toBeTruthy();
     expect(screen.getByText("Rx Notes")).toBeTruthy();
     expect(screen.getByTestId("clinical-details-editor")).toBeTruthy();
+    await fireEvent.press(screen.getByTestId("clinical-case-type-select"));
     await fireEvent.press(screen.getByTestId("clinical-case-type-removable"));
+    await fireEvent.press(screen.getByTestId("clinical-subtype-select"));
     await fireEvent.press(screen.getByTestId("clinical-subtype-dentures"));
+    await fireEvent.press(screen.getByTestId("clinical-case-material-select"));
     await fireEvent.press(screen.getByTestId("clinical-case-material-acrylic"));
+    await fireEvent.press(screen.getByTestId("clinical-arch-select"));
     await fireEvent.press(screen.getByTestId("clinical-arch-both"));
+    await fireEvent.press(screen.getByTestId("clinical-step-select"));
     await fireEvent.press(screen.getByTestId("clinical-step-wax_setup"));
     await fireEvent.changeText(screen.getByTestId("clinical-stepShade"), "A2");
     await fireEvent.changeText(screen.getByTestId("clinical-shade"), "B1");
@@ -4273,7 +4609,9 @@ describe("mobile Lab Slip refinement", () => {
     const alert = vi.spyOn(Alert, "alert");
     const screen = await render(<CaseDetailScreen />);
     await fireEvent.press(screen.getByTestId("overview-edit"));
+    await fireEvent.press(screen.getByTestId("clinical-case-type-select"));
     await fireEvent.press(screen.getByTestId("clinical-case-type-ortho"));
+    await fireEvent.press(screen.getByTestId("clinical-arch-select"));
     await fireEvent.press(screen.getByTestId("clinical-arch-upper"));
     await fireEvent.press(screen.getByTestId("overview-save"));
     await waitFor(() => expect(requests).toHaveLength(1));
@@ -4298,12 +4636,105 @@ describe("mobile Lab Slip refinement", () => {
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
-  it("keeps routing in the header and orders schedule, practice and tooth controls without duplicate sections", async () => {
+  it("keeps routing in the header and orders schedule, restoration fields and practice without duplicate sections", async () => {
+    // This browser geometry check outlives the overview's 400 ms barcode lookup
+    // debounce; omit an unrelated barcode so the async edit-only check stays idle.
+    setMockAppState({ cases: [{ ...detail, casePanBarcode: "" }] });
     const screen = await render(<CaseDetailScreen />);
     await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
     expect(screen.getByTestId("overview-date-created")).toHaveTextContent(/Date Created:/);
     expect(screen.getByTestId("overview-due-date")).toHaveTextContent(/2:30 PM/);
     expect(screen.getByTestId("overview-priority")).toHaveTextContent(/Standard/);
+    const patientName = screen.getByTestId("overview-patient-name");
+    const patientNameStyle = StyleSheet.flatten(patientName.props.style);
+    const patientLabelStyle = StyleSheet.flatten(
+      within(screen.getByTestId("overview-patient-details"))
+        .getByText("Patient").props.style,
+    );
+    const doctorDetails = within(screen.getByTestId("overview-doctor-details"));
+    const practiceDetails = within(screen.getByTestId("overview-practice-contact"));
+    const doctorLabelStyle = StyleSheet.flatten(
+      doctorDetails.getByText("Doctor").props.style,
+    );
+    const practiceLabelStyle = StyleSheet.flatten(
+      practiceDetails.getByText("Practice").props.style,
+    );
+    const doctorValue = doctorDetails.getByText("Dr. Smith");
+    const practiceValue = practiceDetails.getByText("Linked Dental");
+    const doctorValueStyle = StyleSheet.flatten(doctorValue.props.style);
+    const practiceValueStyle = StyleSheet.flatten(practiceValue.props.style);
+    expect(patientName).toHaveTextContent("Jane Doe");
+    expect(patientNameStyle.fontSize).toBeGreaterThan(
+      Math.max(
+        patientLabelStyle.fontSize,
+        doctorLabelStyle.fontSize,
+        practiceLabelStyle.fontSize,
+      ),
+    );
+    expect(patientNameStyle.fontFamily).toContain("700Bold");
+    expect(doctorValue).toHaveTextContent("Dr. Smith");
+    expect(practiceValue).toHaveTextContent("Linked Dental");
+    expect(doctorValueStyle.fontSize).toBe(14);
+    expect(practiceValueStyle.fontSize).toBe(doctorValueStyle.fontSize);
+    expect(practiceValueStyle.fontFamily).toBe(doctorValueStyle.fontFamily);
+
+    const schedule = screen.getByTestId("overview-schedule");
+    const scheduleStyle = StyleSheet.flatten(schedule.props.style);
+    const scheduleTestIDs = [
+      "overview-date-created",
+      "overview-due-date",
+      "overview-priority",
+    ];
+    const scheduleItems = within(schedule).getAllByTestId(
+      /^(overview-date-created|overview-due-date|overview-priority)$/,
+    );
+    expect(scheduleItems.map((item) => item.props.testID)).toEqual(scheduleTestIDs);
+    const scheduleValues = scheduleTestIDs.map((testID) => {
+      const item = screen.getByTestId(testID);
+      const children = item.props.children as unknown;
+      return {
+        text: Array.isArray(children) ? children.flat(Infinity).join("") : String(children),
+        style: StyleSheet.flatten(item.parent?.props.style),
+      };
+    });
+    expect(scheduleStyle.flexDirection).toBe("column");
+    expect(scheduleValues.map(({ text }) => text)).toEqual([
+      expect.stringMatching(/^Date Created:/),
+      expect.stringMatching(/^Due Date:/),
+      expect.stringMatching(/^Priority:/),
+    ]);
+    const browser = await chromium.launch({
+      headless: true,
+      ...(resolveChromiumExecutable()
+        ? { executablePath: resolveChromiumExecutable() }
+        : {}),
+      args: ["--no-sandbox"],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 320, height: 240 } });
+      await page.setContent(
+        caseScheduleLayoutHtml(
+          scheduleStyle,
+          scheduleValues[0]!.style,
+          scheduleValues.map(({ text }) => text),
+        ),
+      );
+      const metricPositions = await page.locator(".metric").evaluateAll((metrics) =>
+        metrics.map((metric) => {
+          const rect = metric.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom };
+        }),
+      );
+      expect(metricPositions).toHaveLength(3);
+      expect(metricPositions[1]!.top).toBeGreaterThanOrEqual(
+        metricPositions[0]!.bottom,
+      );
+      expect(metricPositions[2]!.top).toBeGreaterThanOrEqual(
+        metricPositions[1]!.bottom,
+      );
+    } finally {
+      await browser.close();
+    }
     expect(screen.getAllByTestId("locate-select")).toHaveLength(1);
     // The independently retained Rx Preview also has a case-number label.
     expect(within(screen.getByTestId("overview-details-card")).getAllByText("Case #")).toHaveLength(1);
@@ -4317,10 +4748,13 @@ describe("mobile Lab Slip refinement", () => {
       "case-header-patient",
       "case-header-location",
       "overview-schedule",
+      "overview-restoration-details",
+      "hierarchy-casetype-value",
+      "hierarchy-subtype-value",
+      "hierarchy-material-value",
+      "tooth-shade-custom-shade",
       "overview-patient-doctor-practice",
       "overview-practice-contact",
-      "overview-restoration-details",
-      "tooth-shade-custom-shade",
       "overview-rx-notes",
     ];
     // Only serialize the host layout identity, not React elements/callbacks
@@ -4331,7 +4765,7 @@ describe("mobile Lab Slip refinement", () => {
     for (let i = 1; i < ids.length; i += 1) {
       expect(tree.indexOf(ids[i])).toBeGreaterThan(tree.indexOf(ids[i - 1]));
     }
-    expect(StyleSheet.flatten(screen.getByTestId("overview-schedule").props.style).flexWrap).toBe("wrap");
+    expect(StyleSheet.flatten(screen.getByTestId("overview-schedule").props.style).flexDirection).toBe("column");
     expect(StyleSheet.flatten(screen.getByTestId("overview-schedule").props.style).padding).toBeGreaterThan(0);
     expect(StyleSheet.flatten(screen.getByTestId("overview-restoration-details").props.style).borderWidth).toBeGreaterThan(0);
     expect(StyleSheet.flatten(screen.getByTestId("overview-patient-provider-grid").props.style)).toMatchObject({
@@ -4344,8 +4778,353 @@ describe("mobile Lab Slip refinement", () => {
       flexGrow: 1,
       minWidth: expect.any(Number),
     });
-    expect(StyleSheet.flatten(screen.getByTestId("tooth-shade-custom-shade").props.style).flexWrap).toBe("wrap");
+    expect(StyleSheet.flatten(screen.getByTestId("tooth-shade-custom-shade").props.style)).toMatchObject({
+      flexDirection: "column", width: "100%", minWidth: 0,
+    });
+    expect(screen.getAllByTestId("overview-restoration-details")).toHaveLength(1);
+    expect(screen.queryByText("Restoration Details")).toBeNull();
+  }, 30_000);
+
+  it("puts the staged clinical fields immediately after Edit Priority and before patient inputs", async () => {
+    const screen = await render(<CaseDetailScreen />);
+    await fireEvent.press(screen.getByTestId("overview-edit"));
+    const expectedOrder = ["priority-select", "overview-restoration-details", "clinical-case-type-select",
+      "clinical-subtype-select", "clinical-case-material-select", "overview-edit-patient-provider"];
+    const found: string[] = [];
+    const visit = (node: any) => {
+      if (!node || typeof node === "string") return;
+      if (node.props?.testID && expectedOrder.includes(node.props.testID)) found.push(node.props.testID);
+      node.children?.forEach(visit);
+    };
+    visit(screen.toJSON());
+    expect(found).toEqual(expectedOrder);
+    expect(screen.getAllByTestId("overview-restoration-details")).toHaveLength(1);
+    await fireEvent.press(screen.getByTestId("clinical-case-material-select"));
+    await fireEvent.press(screen.getByTestId("clinical-case-material-select"));
+    await fireEvent.press(screen.getByTestId("priority-select"));
+    await fireEvent.press(screen.getByTestId("priority-select"));
+    await fireEvent.press(screen.getByTestId("overview-cancel"));
+    expect(mockUpdateCaseMutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByTestId("hierarchy-material-value")).toHaveTextContent("Zirconia");
   });
+
+  it("keeps row-specific implant details available in Edit on a mixed crown and implant case", async () => {
+    setMockAppState({ cases: [{ ...detail, restorations: [
+      { ...detail.restorations[0], restorationType: "Crown", restorationSubtype: "restorative/crown_and_bridge/zirconia" },
+      { ...detail.restorations[1], restorationType: "Implant", restorationSubtype: "restorative/implant/zirconia",
+        implantRetention: "Screw retained", implantManufacturer: "Straumann", implantPlatformNotes: "RC" },
+    ] }] });
+    const screen = await render(<CaseDetailScreen />);
+    expect(screen.getByTestId("overview-implantRetention-select")).toHaveTextContent("Screw retained");
+    await fireEvent.press(screen.getByTestId("overview-edit"));
+    expect(screen.getByTestId("clinical-case-type-value")).toHaveTextContent("Multiple");
+    expect(screen.getAllByTestId("overview-implantRetention-select")).toHaveLength(1);
+    expect(screen.getByTestId("overview-implantManufacturer-select")).toHaveTextContent("Straumann");
+    expect(screen.getByLabelText("Implant Platform Notes").props.value).toBe("RC");
+    await fireEvent.press(screen.getByTestId("overview-cancel"));
+    expect(mockUpdateCaseRestorationMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("does not mix immediate arch saves with the clinical draft, including refetch then Save or Cancel", async () => {
+    const upper = { id: "draft-upper", restorationType: "Full Denture", restorationSubtype: "removable/dentures/acrylic",
+      material: "Acrylic", arch: "upper", toothNumber: "", shade: "A1" };
+    const lower = { ...upper, id: "draft-lower", arch: "lower", shade: "B1" };
+    const archCase = { ...detail, restorations: [upper, lower], casePanBarcode: "" };
+    setMockAppState({ cases: [archCase] });
+    const writes: unknown[] = [];
+    setMockFetchHandler((url, init) => {
+      if (url.endsWith("/restorations/hierarchy") && init?.method === "PATCH") {
+        writes.push(JSON.parse(init.body as string));
+        return new Response(JSON.stringify({ ok: true, data: { invoiceAction: "updated", repricedCount: 0 } }));
+      }
+      return locationsOnlyHandler()(url, init);
+    });
+    const screen = await render(<CaseDetailScreen />);
+    // The immediate row editor remains available in normal Overview.
+    await fireEvent.press(screen.getByTestId("tooth-shade-select-draft-upper"));
+    await fireEvent.press(screen.getByTestId("tooth-shade-option-draft-upper-A2"));
+    expect(mockUpdateCaseRestorationMutateAsync).toHaveBeenCalledWith({
+      caseId: archCase.id, restorationId: "draft-upper", data: { shade: "A2", syncLinkedArch: false },
+    });
+    const savedUpper = { ...upper, shade: "A2" };
+    const refreshedCase = { ...archCase, restorations: [savedUpper, lower] };
+    setMockAppState({ cases: [refreshedCase] });
+    await screen.rerender(<CaseDetailScreen />);
+    await fireEvent.press(screen.getByTestId("overview-edit"));
+    expect(screen.queryByTestId("tooth-shade-select-draft-upper")).toBeNull();
+    expect(screen.queryByTestId("tooth-shade-select-draft-lower")).toBeNull();
+    expect(screen.getByTestId("tooth-shade-value-draft-upper")).toHaveTextContent("A2");
+    expect(screen.getByTestId("tooth-shade-value-draft-lower")).toHaveTextContent("B1");
+    expect(screen.getByTestId("clinical-shade").props.value).toBe("A2, B1");
+    // A regular refetch cannot introduce a row write while the form is staged.
+    setMockAppState({ cases: [{ ...refreshedCase, restorations: [{ ...savedUpper }, { ...lower }] }] });
+    await screen.rerender(<CaseDetailScreen />);
+    await fireEvent.press(screen.getByTestId("overview-save"));
+    await waitFor(() => expect(screen.queryByTestId("clinical-details-editor")).toBeNull());
+    expect(writes).toEqual([]);
+    expect(mockUpdateCaseRestorationMutateAsync).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("tooth-shade-value-draft-upper")).toHaveTextContent("A2");
+    expect(screen.getByTestId("tooth-shade-value-draft-lower")).toHaveTextContent("B1");
+    await fireEvent.press(screen.getByTestId("overview-edit"));
+    await fireEvent.changeText(screen.getByTestId("clinical-shade"), "A3");
+    setMockAppState({ cases: [{ ...refreshedCase, restorations: [{ ...savedUpper }, { ...lower }] }] });
+    await screen.rerender(<CaseDetailScreen />);
+    await fireEvent.press(screen.getByTestId("overview-cancel"));
+    expect(writes).toEqual([]);
+    expect(mockUpdateCaseRestorationMutateAsync).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("tooth-shade-value-draft-upper")).toHaveTextContent("A2");
+    expect(screen.getByTestId("tooth-shade-value-draft-lower")).toHaveTextContent("B1");
+    expect(screen.getByTestId("tooth-shade-select-draft-upper")).toBeTruthy();
+    expect(screen.getByTestId("tooth-shade-select-draft-lower")).toBeTruthy();
+  });
+
+  it("wraps long patient names without crowding doctor or practice details on narrow screens", async () => {
+    const narrowCase = {
+      ...detail,
+      casePanBarcode: "",
+      patientFirstName: "Alexandria Catherine",
+      patientLastName: "Montgomery Worthington",
+    };
+    setMockAppState({ cases: [narrowCase] });
+    const screen = await render(<CaseDetailScreen />);
+    await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
+
+    const patientName = screen.getByTestId("overview-patient-name");
+    expect(patientName).toHaveTextContent(
+      "Alexandria Catherine Montgomery Worthington",
+    );
+    const patientNameStyle = StyleSheet.flatten(
+      patientName.props.style,
+    ) as unknown as Record<string, unknown>;
+    expect(patientNameStyle.width).toBe("100%");
+    expect(patientNameStyle.flexShrink).toBe(1);
+
+    const gridStyle = StyleSheet.flatten(
+      screen.getByTestId("overview-patient-provider-grid").props.style,
+    ) as unknown as Record<string, unknown>;
+    const patientFieldStyle = StyleSheet.flatten(
+      screen.getByTestId("overview-patient-details").props.style,
+    ) as unknown as Record<string, unknown>;
+    const doctorFieldStyle = StyleSheet.flatten(
+      screen.getByTestId("overview-doctor-details").props.style,
+    ) as unknown as Record<string, unknown>;
+    const practiceFieldStyle = StyleSheet.flatten(
+      screen.getByTestId("overview-practice-contact").props.style,
+    ) as unknown as Record<string, unknown>;
+    const browser = await chromium.launch({
+      headless: true,
+      ...(resolveChromiumExecutable()
+        ? { executablePath: resolveChromiumExecutable() }
+        : {}),
+      args: ["--no-sandbox"],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 320, height: 320 },
+      });
+      await page.setContent(
+        casePatientProviderLayoutHtml(
+          gridStyle,
+          patientFieldStyle,
+          patientNameStyle,
+          doctorFieldStyle,
+          practiceFieldStyle,
+          patientName.props.children as string,
+        ),
+      );
+      const layout = await page.evaluate(() => {
+        const rect = (id: string) => {
+          const element = document.getElementById(id)!;
+          const bounds = element.getBoundingClientRect();
+          return {
+            left: bounds.left,
+            right: bounds.right,
+            top: bounds.top,
+            bottom: bounds.bottom,
+            height: bounds.height,
+          };
+        };
+        return {
+          patient: rect("patient"),
+          patientName: rect("patient-name"),
+          doctor: rect("doctor"),
+          practice: rect("practice"),
+        };
+      });
+      expect(layout.patientName.height).toBeGreaterThan(
+        Number(patientNameStyle.lineHeight ?? 28),
+      );
+      expect(layout.patientName.right).toBeLessThanOrEqual(
+        layout.patient.right + 1,
+      );
+      expect(layout.patientName.right).toBeLessThanOrEqual(
+        layout.doctor.left + 1,
+      );
+      expect(layout.practice.top).toBeGreaterThanOrEqual(
+        Math.max(layout.patient.bottom, layout.doctor.bottom),
+      );
+    } finally {
+      await browser.close();
+    }
+    expect(
+      within(screen.getByTestId("overview-doctor-details")).getByText(
+        "Dr. Smith",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("overview-practice-contact")).getByText(
+        "Linked Dental",
+      ),
+    ).toBeTruthy();
+    await fireEvent.press(screen.getByTestId("overview-edit"));
+    expect(screen.getByLabelText("Patient first name").props.value).toBe(
+      "Alexandria Catherine",
+    );
+    expect(screen.getByLabelText("Patient last name").props.value).toBe(
+      "Montgomery Worthington",
+    );
+    await fireEvent.press(screen.getByTestId("overview-cancel"));
+    expect(mockUpdateCaseMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("keeps all case overview details readable when the system text scale is enlarged", async () => {
+    setMockAppState({ cases: [{ ...detail, casePanBarcode: "" }] });
+    const dimensions = vi.spyOn(Native, "useWindowDimensions").mockReturnValue({
+      width: 320,
+      height: 720,
+      scale: 2,
+      fontScale: 1,
+    });
+    const screen = await render(<CaseDetailScreen />);
+    await waitFor(() => expect(screen.getByTestId("locate-select")).toBeTruthy());
+    const providerGrid = screen.getByTestId("overview-patient-provider-grid");
+    expect(StyleSheet.flatten(providerGrid.props.style).flexDirection).toBe("row");
+
+    const fontScale = 1.8;
+    dimensions.mockReturnValue({
+      width: 320,
+      height: 720,
+      scale: 2,
+      fontScale,
+    });
+    await act(async () => {
+      screen.rerender(<CaseDetailScreen />);
+    });
+
+    const enlargedProviderGrid = screen.getByTestId("overview-patient-provider-grid");
+    const providerGridStyle = StyleSheet.flatten(enlargedProviderGrid.props.style);
+    expect(providerGridStyle).toMatchObject({
+      flexDirection: "column",
+      alignItems: "stretch",
+    });
+    const patientField = screen.getByTestId("overview-patient-details");
+    const doctorField = screen.getByTestId("overview-doctor-details");
+    const practiceField = screen.getByTestId("overview-practice-contact");
+    const providerFieldStyle = StyleSheet.flatten(patientField.props.style);
+    expect(providerFieldStyle).toMatchObject({
+      alignSelf: "stretch",
+      flexBasis: "auto",
+      minWidth: 0,
+    });
+    expect(StyleSheet.flatten(doctorField.props.style)).toMatchObject(providerFieldStyle);
+    expect(StyleSheet.flatten(practiceField.props.style)).toMatchObject(providerFieldStyle);
+
+    const values = [
+      screen.getByTestId("overview-date-created"),
+      screen.getByTestId("overview-due-date"),
+      screen.getByTestId("overview-priority"),
+      screen.getByTestId("overview-patient-name"),
+      within(screen.getByTestId("overview-doctor-details")).getByText("Dr. Smith"),
+      within(practiceField).getByText("Linked Dental"),
+    ];
+    for (const value of values) {
+      expect(value.props.allowFontScaling).not.toBe(false);
+    }
+    expect(values[0]).toHaveTextContent(/^Date Created:/);
+    expect(values[1]).toHaveTextContent(/^Due Date:/);
+    expect(values[2]).toHaveTextContent(/^Priority:/);
+    expect(values[3]).toHaveTextContent("Jane Doe");
+
+    const schedule = screen.getByTestId("overview-schedule");
+    const scheduleStyle = StyleSheet.flatten(schedule.props.style);
+    const scheduleMetrics = [
+      screen.getByTestId("overview-date-created"),
+      screen.getByTestId("overview-due-date"),
+      screen.getByTestId("overview-priority"),
+    ];
+    const scheduleMetricStyle = StyleSheet.flatten(
+      scheduleMetrics[0]!.parent!.props.style,
+    );
+    const scheduleValueStyle = StyleSheet.flatten(scheduleMetrics[0]!.props.style);
+    const patientLabelStyle = StyleSheet.flatten(
+      within(patientField).getByText("Patient").props.style,
+    );
+    const patientValueStyle = StyleSheet.flatten(
+      screen.getByTestId("overview-patient-name").props.style,
+    );
+
+    const browser = await chromium.launch({
+      headless: true,
+      ...(resolveChromiumExecutable()
+        ? { executablePath: resolveChromiumExecutable() }
+        : {}),
+      args: ["--no-sandbox"],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 320, height: 720 } });
+      await page.setContent(
+        caseOverviewLargeTextLayoutHtml(
+          scheduleStyle,
+          scheduleMetricStyle,
+          scheduleValueStyle,
+          providerGridStyle,
+          providerFieldStyle,
+          patientLabelStyle,
+          patientValueStyle,
+          fontScale,
+        ),
+      );
+      expect(await page.locator("#overview").innerText()).toContain("Patient");
+      expect(await page.locator("#overview").innerText()).toContain("Dr. Smith");
+      expect(await page.locator("#overview").innerText()).toContain("Linked Dental");
+      const layout = await page.locator("#overview").evaluate((overview) => {
+        const overviewRect = overview.getBoundingClientRect();
+        const rows = Array.from(
+          overview.querySelectorAll(".metric, .provider-field"),
+        ).map((row) => {
+          const rect = row.getBoundingClientRect();
+          const label = row.querySelector(".provider-label");
+          const value = row.querySelector(".provider-value, .schedule-value");
+          return {
+            top: rect.top,
+            bottom: rect.bottom,
+            right: rect.right,
+            labelBottom: label?.getBoundingClientRect().bottom,
+            valueTop: value?.getBoundingClientRect().top,
+          };
+        });
+        return {
+          overviewRight: overviewRect.right,
+          scrollHeight: document.documentElement.scrollHeight,
+          rows,
+        };
+      });
+      expect(layout.rows).toHaveLength(6);
+      for (let index = 0; index < layout.rows.length; index += 1) {
+        const row = layout.rows[index]!;
+        expect(row.right).toBeLessThanOrEqual(layout.overviewRight + 0.5);
+        expect(row.bottom).toBeLessThanOrEqual(layout.scrollHeight + 1);
+        if (index > 0) {
+          expect(row.top).toBeGreaterThanOrEqual(layout.rows[index - 1]!.bottom);
+        }
+        if (row.labelBottom !== undefined && row.valueTop !== undefined) {
+          expect(row.valueTop).toBeGreaterThanOrEqual(row.labelBottom);
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  }, 30_000);
 
   it("uses the case-authorized practice contact when the linked practice is absent from the list", async () => {
     const screen = await render(<CaseDetailScreen />);
@@ -4415,7 +5194,8 @@ describe("mobile Lab Slip refinement", () => {
     }));
     await fireEvent.press(screen.getByTestId("overview-edit"));
     expect(screen.getAllByTestId("custom-shade-toggle")).toHaveLength(1);
-    expect(screen.getByTestId("tooth-shade-select-shade-4")).toBeTruthy();
+    expect(screen.queryByTestId("tooth-shade-select-shade-4")).toBeNull();
+    expect(screen.getByTestId("tooth-shade-value-shade-4")).toHaveTextContent("A1");
   });
 
   it("hides Step for restorative and ortho cases, including overview editing", async () => {
@@ -4442,8 +5222,9 @@ describe("mobile Lab Slip refinement", () => {
     expect(screen.getByTestId("step-shade-input").props.value).toBe("A2");
     await fireEvent.press(screen.getByTestId("overview-edit"));
     expect(screen.queryByTestId("step-select")).toBeNull();
-    expect(screen.getByTestId("clinical-case-type-removable")).toBeTruthy();
-    expect(screen.getByTestId("clinical-step-wax_setup").props.accessibilityState.selected).toBe(true);
+    expect(screen.getByTestId("clinical-case-type-value")).toHaveTextContent("Removable");
+    expect(screen.getByTestId("clinical-step-value")).toHaveTextContent("Wax Setup");
+    expect(screen.queryByTestId("clinical-step-wax_setup")).toBeNull();
     expect(screen.getByTestId("clinical-stepShade").props.value).toBe("A2");
     await fireEvent.changeText(screen.getByTestId("clinical-stepShade"), "B1");
     expect(mockUpdateCaseMutateAsync).not.toHaveBeenCalled();

@@ -86,7 +86,7 @@ const state = vi.hoisted(() => {
     profilePhotoUrl: null as string | null,
   };
   const sessions: Array<Record<string, unknown>> = [];
-  return { fakeUser, sessions, PASSWORD };
+  return { fakeUser, sessions, PASSWORD, mediaQueries: [] as Array<{ sql: string; values?: unknown[] }> };
 });
 
 vi.mock("@workspace/db", () => {
@@ -279,7 +279,16 @@ vi.mock("@workspace/db", () => {
     },
   };
 
-  return { db, ...tables };
+  const pool = {
+    connect: async () => ({
+      query: async (sql: string, values?: unknown[]) => {
+        state.mediaQueries.push({ sql, values });
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  };
+  return { db, pool, ...tables };
 });
 
 import { corsOptions } from "./lib/cors.js";
@@ -328,6 +337,7 @@ describe("desktop sign-in against the API", () => {
     const endpoint = `/api/auth/users/${state.fakeUser.id}/profile-photo`;
     const image = await sharp({ create: { width: 300, height: 150, channels: 3, background: "red" } }).png().toBuffer();
     const created: string[] = [];
+    state.mediaQueries.length = 0;
     try {
       const anonymous = await request(server).post(endpoint).attach("photo", image, "photo.png");
       expect(anonymous.status).toBe(401);
@@ -361,6 +371,16 @@ describe("desktop sign-in against the API", () => {
         created.push(uploaded.body.profilePhotoUrl);
         const metadata = await sharp(path.join(process.cwd(), uploaded.body.profilePhotoUrl)).metadata();
         expect(metadata).toMatchObject({ width: 200, height: 200, format: "jpeg" });
+      }
+      // Exercise the real atomic writer and journal calls against this unit
+      // suite's recording DB adapter; PostgreSQL durability is tested separately.
+      const intents = state.mediaQueries.filter(q => q.sql.includes("INSERT INTO labtrax_production_media_write_intents"));
+      expect(intents).toHaveLength(created.length);
+      for (const [index, intent] of intents.entries()) {
+        expect(intent.values?.slice(1)).toEqual([
+          `local-uploads/${created[index]!.replace(/^\/uploads\//, "")}`, "profile-photo", "replace",
+        ]);
+        expect(state.mediaQueries.some(q => q.sql.includes("SET state = 'complete'") && q.values?.[0] === intent.values?.[0])).toBe(true);
       }
       const confirmed = state.fakeUser.profilePhotoUrl;
       const invalid = await request(server).post(endpoint).set("Authorization", bearer)

@@ -13,13 +13,36 @@
  * the installerStatus logic. isPlatformAdmin() still runs its real check
  * (header === PLATFORM_ADMIN_SECRET) to ensure the 403 guard is also exercised.
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from "vitest";
 import type { Server } from "node:http";
 import request from "supertest";
 
 // ── Mocks must be declared before any dynamic import of app.js ────────────
 
 const TEST_ADMIN_SECRET = "test-installer-status-secret";
+const installerHealthMocks = vi.hoisted(() => ({
+  runHealthCheck: vi.fn(),
+  dispatchAlert: vi.fn(),
+}));
+const adminSessionFixture = vi.hoisted(() => ({
+  row: null as { key: string; value: string } | null,
+}));
+afterEach(() => {
+  adminSessionFixture.row = null;
+});
+
+beforeEach(() => {
+  installerHealthMocks.runHealthCheck.mockReset();
+  installerHealthMocks.dispatchAlert.mockReset();
+});
+
+vi.mock("./lib/desktop-installer-health.js", () => ({
+  runDesktopInstallerHealthCheck: installerHealthMocks.runHealthCheck,
+}));
+
+vi.mock("./lib/desktop-installer-alerts.js", () => ({
+  dispatchInstallerAlert: installerHealthMocks.dispatchAlert,
+}));
 
 // Bypass requireAuth so the test can probe the settings endpoint without a
 // real JWT. Set req.user to an admin so the inline isPlatformAdmin() in
@@ -28,6 +51,10 @@ const TEST_ADMIN_SECRET = "test-installer-status-secret";
 vi.mock("./middlewares/auth.js", () => ({
   requireAuth: (req: any, _res: any, next: any) => {
     req.user = { id: "test-admin-id", role: "admin", organizationId: null };
+    req.auth = {
+      userId: "test-admin-id",
+      sessionId: req.headers["x-test-session"] ?? "test-session-a",
+    };
     next();
   },
   optionalAuth: (_req: any, _res: any, next: any) => next(),
@@ -42,6 +69,10 @@ vi.mock("./middlewares/auth.js", () => ({
   requireAnyRole: vi.fn(),
   requireMembership: vi.fn(),
   signDeleteSessionToken: vi.fn(),
+}));
+
+vi.mock("./lib/db-constraints.js", () => ({
+  ensureStartupDbConstraints: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Controllable mock for App Storage metadata calls. Default: no installer present.
@@ -92,18 +123,24 @@ vi.mock("./lib/desktop-installer-storage.js", () => ({
 // Minimal DB mock — settings queries return empty rows so the endpoint falls
 // back to process.env.DESKTOP_INSTALLER_URL and DESKTOP_INSTALLER_VERSION.
 vi.mock("@workspace/db", () => {
+  const systemSettings = { key: "key", value: "value", updatedAt: "updatedAt" } as const;
   const passthrough = () => ({
-    from: () => ({
-      where: () => Promise.resolve([]),
-      orderBy: () => ({ limit: () => Promise.resolve([]) }),
-      limit: () => Promise.resolve([]),
-      innerJoin: () => ({ where: () => Promise.resolve([]) }),
-    }),
+    from: (table: unknown) => {
+      const rows =
+        table === systemSettings && adminSessionFixture.row
+          ? [adminSessionFixture.row]
+          : [];
+      const query: any = Promise.resolve(rows);
+      query.where = () => query;
+      query.orderBy = () => query;
+      query.limit = () => query;
+      query.innerJoin = () => query;
+      return query;
+    },
   });
 
-  const systemSettings = { key: "key", value: "value", updatedAt: "updatedAt" } as const;
-
   return {
+    buildOwningOrganizationGuardSql: () => "",
     db: {
       select: passthrough,
       insert: () => ({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) }),
@@ -244,6 +281,96 @@ describe("GET /admin/settings/desktop-installer — installerStatus", () => {
       .get("/api/admin/settings/desktop-installer");
 
     expect(res.status).toBe(403);
+  });
+
+  it("accepts an unlock tied to the authenticated session", async () => {
+    adminSessionFixture.row = {
+      key: "padmin_sess:test-admin-id:test-session-a",
+      value: JSON.stringify({
+        userId: "test-admin-id",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    };
+
+    const res = await request(server)
+      .get("/api/admin/users")
+      .set("X-Test-Session", "test-session-a")
+      .set("X-Platform-Admin-Session", "test-admin-id:test-session-a");
+
+    expect(res.status).toBe(200);
+    adminSessionFixture.row = null;
+  });
+
+  it("rejects an unlock copied from a different authenticated session", async () => {
+    adminSessionFixture.row = {
+      key: "padmin_sess:test-admin-id:unlocked-session",
+      value: JSON.stringify({
+        userId: "test-admin-id",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    };
+
+    const res = await request(server)
+      .get("/api/admin/users")
+      .set("X-Test-Session", "locked-session")
+      .set("X-Platform-Admin-Session", "test-admin-id:unlocked-session");
+
+    expect(res.status).toBe(403);
+    adminSessionFixture.row = null;
+  });
+
+  it("does not alert for healthy Windows and macOS update feeds", async () => {
+    const report = {
+      ok: true,
+      settings: { version: "1.2.3" },
+      download: { status: 200 },
+      updateFeeds: { ok: true },
+      issues: [],
+    };
+    installerHealthMocks.runHealthCheck.mockResolvedValue(report);
+
+    const res = await request(server)
+      .get("/api/admin/desktop-installer/health?alert=1")
+      .set("X-Platform-Admin-Secret", TEST_ADMIN_SECRET);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject(report);
+    expect(installerHealthMocks.dispatchAlert).not.toHaveBeenCalled();
+  });
+
+  it("passes actionable Windows and macOS feed findings to the on-demand alert", async () => {
+    const feedFindings = [
+      "updateFeeds: /downloads/latest.yml is missing",
+      "updateFeeds: Windows update payload LabTrax-Setup.exe referenced by /downloads/latest.yml is missing",
+      "updateFeeds: /downloads/latest-mac.yml is missing",
+      "updateFeeds: macOS update payload LabTrax-1.2.3-x64-mac.zip referenced by /downloads/latest-mac.yml is missing",
+    ];
+    const report = {
+      ok: false,
+      settings: { version: "1.2.3" },
+      download: { status: 200 },
+      updateFeeds: { ok: false },
+      issues: feedFindings,
+    };
+    installerHealthMocks.runHealthCheck.mockResolvedValue(report);
+    installerHealthMocks.dispatchAlert.mockResolvedValue({ sent: true, suppressed: false, hash: "feed-alert" });
+
+    const res = await request(server)
+      .get("/api/admin/desktop-installer/health?alert=1")
+      .set("X-Platform-Admin-Secret", TEST_ADMIN_SECRET);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject(report);
+    expect(installerHealthMocks.dispatchAlert).toHaveBeenCalledOnce();
+    const [alert] = installerHealthMocks.dispatchAlert.mock.calls[0] as [
+      { stage: string; errorMessage: string },
+    ];
+    expect(alert.stage).toBe("health-check");
+    expect(alert.errorMessage).toBe(feedFindings.join("\n"));
+    expect(alert.errorMessage).toContain("latest.yml");
+    expect(alert.errorMessage).toContain("LabTrax-Setup.exe");
+    expect(alert.errorMessage).toContain("latest-mac.yml");
+    expect(alert.errorMessage).toContain("LabTrax-1.2.3-x64-mac.zip");
   });
 });
 

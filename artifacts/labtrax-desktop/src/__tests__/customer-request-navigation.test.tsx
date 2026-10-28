@@ -8,8 +8,15 @@ import { AppLayout } from "@/components/AppLayout";
 import { AuthContext } from "@/lib/auth-context";
 import { MOCK_AUTH_DEFAULTS } from "./test-utils";
 import { setScheduledLocalBackupProgress } from "@/lib/local-backup-progress";
+import { Toaster } from "@/components/ui/toaster";
 
-const state = vi.hoisted(() => ({ fetch: vi.fn(), duplicates: 2 }));
+const state = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  duplicates: 2,
+  notifications: [] as Array<Record<string, unknown>>,
+  notificationResponses: [] as Array<Array<Record<string, unknown>>>,
+  notificationCalls: 0,
+}));
 vi.mock("@/lib/api", () => ({
   apiFetch: state.fetch, apiFetchArrayBuffer: vi.fn(),
   serverAssetUrl: (path: string) => path,
@@ -38,21 +45,26 @@ const user = { id: "admin-1", username: "admin", practiceOrganizationId: "lab-1"
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const location = memoryLocation({ path: "/accounts", record: true });
-  render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <Router hook={location.hook} searchHook={location.searchHook}>
         <AuthContext.Provider value={{ ...MOCK_AUTH_DEFAULTS, user: { ...user, role }, status: "authed" }}>
           <AppLayout><div>Customer content</div></AppLayout>
+          <Toaster />
         </AuthContext.Provider>
       </Router>
     </QueryClientProvider>,
   );
-  return { client, location };
+  return { ...rendered, client, location };
 }
 beforeEach(() => {
+  window.localStorage.removeItem("labtrax_sidebar_width_v1");
   role = "admin";
   pending = true;
   state.duplicates = 2;
+  state.notifications = [];
+  state.notificationResponses = [];
+  state.notificationCalls = 0;
   state.fetch.mockReset();
   state.fetch.mockImplementation(async (path: string) => {
     if (path === "/auth/me") return {
@@ -65,12 +77,103 @@ beforeEach(() => {
     if (path.startsWith("/auth/lab-team?")) return {
       pendingJoinRequests: pending && path.endsWith("lab-2") ? [{ id: "r2", organizationId: "lab-2" }] : [],
     };
-    if (path === "/notifications") return [];
+    if (path === "/notifications") {
+      state.notificationCalls += 1;
+      return state.notificationResponses.shift() ?? state.notifications;
+    }
     return {};
   });
 });
 
+describe("desktop sidebar sizing", () => {
+  it("uses a readable default width when there is no saved choice", () => {
+    mount();
+    expect(screen.getByTestId("sidebar-resize-handle")).toHaveAttribute(
+      "aria-valuenow",
+      "260",
+    );
+  });
+
+  it("restores and persists a bounded width through keyboard resizing", async () => {
+    window.localStorage.setItem("labtrax_sidebar_width_v1", "300");
+    const first = mount();
+    const handle = screen.getByTestId("sidebar-resize-handle");
+
+    expect(handle).toHaveAttribute("aria-valuenow", "300");
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(handle).toHaveAttribute("aria-valuenow", "316");
+    await waitFor(() =>
+      expect(window.localStorage.getItem("labtrax_sidebar_width_v1")).toBe("316"),
+    );
+
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(handle).toHaveAttribute("aria-valuenow", "360");
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(handle).toHaveAttribute("aria-valuenow", "360");
+    first.unmount();
+
+    mount();
+    expect(screen.getByTestId("sidebar-resize-handle")).toHaveAttribute(
+      "aria-valuenow",
+      "360",
+    );
+  });
+});
+
 describe("Customer Center alert navigation", () => {
+  it("dismisses only the offsite-failure toast after its notification is resolved", async () => {
+    let pollNotifications: (() => void) | null = null;
+    const originalSetInterval = globalThis.setInterval.bind(globalThis);
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(
+      ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 60_000 && typeof handler === "function") {
+          const callback = handler as (...callbackArgs: unknown[]) => void;
+          pollNotifications = () => { void callback(...args); };
+        }
+        return originalSetInterval(handler, timeout, ...args);
+      }) as typeof globalThis.setInterval,
+    );
+    try {
+      const offsiteAlert = {
+        id: "offsite-alert",
+        userId: user.id,
+        type: "backup_offsite_failure",
+        title: "Off-site backup is not running",
+        body: "Protection has lapsed.",
+        dataJson: null,
+        readAt: null,
+        createdAt: new Date().toISOString(),
+      };
+      state.notificationResponses = [
+        [],
+        [offsiteAlert],
+        [{ ...offsiteAlert, readAt: new Date().toISOString() }],
+        [{
+          ...offsiteAlert,
+          id: "local-alert",
+          type: "backup_local_error",
+          title: "Local backup failed",
+        }],
+      ];
+      mount();
+      await waitFor(() => expect(state.notificationCalls).toBe(1));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(pollNotifications).toBeTypeOf("function");
+      await act(async () => pollNotifications?.());
+      expect(await screen.findByText("Off-site backup is not running")).toBeVisible();
+
+      await act(async () => pollNotifications?.());
+
+      await waitFor(() =>
+        expect(screen.queryByText("Off-site backup is not running")).not.toBeInTheDocument(),
+      );
+      await act(async () => pollNotifications?.());
+      expect(screen.getByText("Local backup failed")).toBeVisible();
+    } finally {
+      intervalSpy.mockRestore();
+    }
+  });
+
   it("shows scheduled backup progress in the app header and clears it when the run ends", async () => {
     setScheduledLocalBackupProgress({
       startedAt: Date.now(),

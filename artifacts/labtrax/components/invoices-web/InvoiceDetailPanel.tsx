@@ -8,7 +8,7 @@ import { useMe, canEditOrg } from "@/lib/auth-me";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { titleCase, formatMoney, formatDate } from "@/lib/format";
 import { customerNameOf, formatInvoiceIssueDate } from "@/lib/invoice-filters";
-import { doctorOf, metaOf, paymentActionState, patientOf, restorationOf, toothOf, type LinkedCaseLike } from "@/lib/invoice-web-fields";
+import { doctorOf, isHistoricalInvoiceHeld, metaOf, paymentActionState, patientOf, restorationOf, toothOf, type LinkedCaseLike } from "@/lib/invoice-web-fields";
 
 function sumPayments(inv: CanonicalInvoice): number {
   return (inv.payments ?? []).reduce((t, p) => {
@@ -79,7 +79,8 @@ export function InvoiceDetailView(p: InvoiceDetailViewProps) {
       ["Payments", formatMoney(sumPayments(inv))],
     ];
     const writable = p.canWrite && !p.error;
-    const webDraft = Platform.OS === "web" && (inv.status === "draft" || (inv.status as string) === "recovery_draft");
+    const historicalHold = isHistoricalInvoiceHeld(inv);
+    const webDraft = historicalHold || (Platform.OS === "web" && inv.status === "draft");
     const frozen = Boolean(inv.frozen);
     const pay = paymentActionState(inv, writable && !webDraft);
     const notes = inv.notes || (typeof meta.caseNotes === "string" ? meta.caseNotes : "");
@@ -87,7 +88,11 @@ export function InvoiceDetailView(p: InvoiceDetailViewProps) {
       <ScrollView contentContainerStyle={s.scroll} testID="invoice-detail-body">
         {p.error ? <Text style={s.warn} testID="invoice-detail-stale">Showing last loaded details; refresh failed.</Text> : null}
         <Text style={s.status}>{titleCase(inv.status ?? "—")}{frozen ? " · Frozen" : ""}</Text>
-        {webDraft ? <Text style={s.warn}>Draft invoices are read-only here; use their original creation or review workflow.</Text> : null}
+        {webDraft ? <Text style={s.warn}>
+          {historicalHold
+            ? "Historical reconstructed invoice remains held and is not collectible."
+            : "Draft invoices are read-only here; use their original creation or review workflow."}
+        </Text> : null}
         {rows.map(([k, v]) => <View key={k} style={s.kv}><Text style={s.k}>{k}</Text><Text style={s.v} numberOfLines={2}>{v}</Text></View>)}
         <View style={[s.kv, s.balanceRow]}><Text style={s.bk}>Balance Due</Text><Text style={s.bv} testID="invoice-detail-balance">{formatMoney(inv.balanceDue ?? inv.total)}</Text></View>
         <View style={s.kv}><Text style={s.k}>Notes</Text><Text style={s.v}>{notes || "—"}</Text></View>

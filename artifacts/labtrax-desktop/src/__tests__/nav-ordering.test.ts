@@ -12,6 +12,8 @@
  * Keep this test permanently per REGRESSION_GUARDRAILS.md policy.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { NAV, SECONDARY } from "@/components/AppLayout";
 
 // Flatten a nav tree into label strings for easy ordering assertions.
@@ -69,7 +71,7 @@ describe("SECONDARY sidebar items", () => {
     expect(labels).not.toContain("Stats");
   });
 
-  it("Financial sub-group contains Invoices, Statements, Bank Register in that order", () => {
+  it("Financial sub-group contains only Invoices, Statements, Bank Register in that order", () => {
     const adminGroup = SECONDARY.find(
       (n) => "children" in n && n.label === "Admin Settings",
     ) as { label: string; children: Array<{ label: string; children?: Array<{ label: string }> }> } | undefined;
@@ -77,7 +79,13 @@ describe("SECONDARY sidebar items", () => {
       (c) => "children" in c && c.label === "Financial",
     ) as { label: string; children: Array<{ label: string }> } | undefined;
     const finLabels = (financialGroup?.children ?? []).map((c) => c.label);
-    expect(finLabels).toEqual(["Invoices", "Statements", "Bank Register", "Recovery Billing"]);
+    expect(finLabels).toEqual(["Invoices", "Statements", "Bank Register"]);
+    expect(flatLabels(SECONDARY as Parameters<typeof flatLabels>[0])).not.toContain("Recovery Billing");
+  });
+
+  it("does not register the retired direct route", () => {
+    const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+    expect(appSource).not.toContain('path="/recovery-billing"');
   });
 
   it("has no item labelled with two-factor / 2FA language", () => {

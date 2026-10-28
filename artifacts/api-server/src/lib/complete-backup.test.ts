@@ -5,24 +5,45 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  includedBackupStagingObjectSizes, planCompleteBackupStaging, recoveryReferences, requireCompleteBackupCapacity,
+  COMPLETE_BACKUP_REFERENCE_FETCH_SIZE, includedBackupStagingObjectSizes, planCompleteBackupStaging, recoveryReferences, requireCompleteBackupCapacity,
   requireCompleteDestinationCapacity, restoreCompleteFiles,
   validateCompleteRecovery, type CompleteRecoveryManifest,
 } from "./complete-backup";
 
 vi.mock("@workspace/db", () => ({ pool: {} }));
+// Archive contract unit fixture: real disk bytes, not a PostgreSQL writer test.
+// The owned PostgreSQL writer suite executes the actual receipt/version boundary.
+vi.mock("./production-media-local-write", async () => ({
+  ...await vi.importActual<typeof import("./production-media-local-write")>("./production-media-local-write"),
+  copyProductionUpload: async (source: string, destination: string) => {
+    await (await import("node:fs/promises")).copyFile(source, destination);
+  },
+}));
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-function fixture() {
+function fixture(installerName: "LabTrax-Setup.exe" | "LabTrax.dmg" | "LabTrax-Windows-Portable.zip" = "LabTrax-Setup.exe") {
   const zip = new AdmZip();
-  zip.addFile("manifest.json", Buffer.from(JSON.stringify({ coverageVersion: 1 })));
+  zip.addFile("manifest.json", Buffer.from(JSON.stringify({ coverageVersion: 2 })));
   const dump = Buffer.from("synthetic PostgreSQL custom dump");
+  const installerBytes = Buffer.from("synthetic signed installer bytes");
   zip.addFile("db/database.pgdump", dump);
   const manifest: CompleteRecoveryManifest = {
-    coverageVersion: 1, sourceEnvironment: "production", sourceDatabase: "synthetic",
+    coverageVersion: 2, sourceEnvironment: "production", sourceRevision: "a".repeat(40),
+    sourceDatabase: "synthetic",
     sourceIdentitySha256: sha(Buffer.from("database identity")), storageNamespaceSha256: sha(Buffer.from("private namespace")),
     provenance: { productionLineageVerified: true, fingerprintSha256: sha(Buffer.from("committed fingerprint")) },
     snapshotAt: "2026-10-13T12:00:00Z", snapshot: "0001-0002-1", databaseSha256: sha(dump),
     tables: [{ schema: "public", name: "case_notes", rows: 1 }], files: [], requiredReferences: [], exclusions: [],
+  };
+  manifest.releaseIdentity = {
+    schemaVersion: 1,
+    version: "1.2.3",
+    sourceRevision: manifest.sourceRevision!,
+    signatureVerification: installerName === "LabTrax-Windows-Portable.zip" ? "verified-contained-executable" : "verified-installer",
+    artifact: {
+      fileName: installerName,
+      size: installerBytes.length,
+      sha256: sha(installerBytes),
+    },
   };
   for (const [namespace, name] of [
     ["media", "video.mov"], ["media", "note-document.pdf"], ["local-uploads", "profile-photos/photo.jpg"],
@@ -40,12 +61,111 @@ function fixture() {
     manifest.files.push({ archivePath, relativeName: name!, size: bytes.length, sha256: sha(bytes) });
     manifest.requiredReferences.push(namespace === "media" ? `case-media/${name}` : name!);
   }
+  const releaseSidecarBytes = Buffer.from(JSON.stringify(manifest.releaseIdentity));
+  for (const [name, bytes] of [
+    [installerName, installerBytes],
+    ["release-identity.json", releaseSidecarBytes],
+  ] as const) {
+    const relativeName = `desktop-installer/${name}`;
+    const archivePath = `private-objects/${relativeName}`;
+    zip.addFile(archivePath, bytes);
+    manifest.files.push({
+      archivePath, relativeName, size: bytes.length, sha256: sha(bytes),
+    });
+    manifest.requiredReferences.push(relativeName);
+  }
   const save = () => zip.addFile("complete-recovery.json", Buffer.from(JSON.stringify(manifest)));
   save();
   return { zip, manifest, save };
 }
 
+function declareMissing(f: ReturnType<typeof fixture>, names: string[]) {
+  f.manifest.missingReferences = names.sort();
+  f.manifest.recoveryCoverage = "partial";
+  for (const name of names) {
+    const archivePath = `private-objects/${name}`;
+    f.zip.deleteFile(archivePath);
+    f.manifest.files = f.manifest.files.filter(file => file.archivePath !== archivePath);
+  }
+  f.zip.addFile("manifest.json", Buffer.from(JSON.stringify({
+    coverageVersion: 2, archiveKind: "partial-production",
+    recoveryCoverage: "partial", missingFileCount: names.length,
+  })));
+  f.zip.addFile("missing-files.json", Buffer.from(JSON.stringify({
+    version: 1, missingFileCount: names.length, missingReferences: names,
+  })));
+  f.save();
+}
+
 describe("all-content recovery contract", () => {
+  it("accepts a production data archive with explicitly missing release evidence, never as complete protection", () => {
+    const f = fixture();
+    delete f.manifest.releaseIdentity;
+    declareMissing(f, ["desktop-installer/release-identity.json"]);
+    expect(validateCompleteRecovery(f.zip)).toEqual(f.manifest);
+    expect(f.zip.getEntry("media/video.mov")).not.toBeNull();
+    expect(f.zip.getEntry("db/database.pgdump")).not.toBeNull();
+    f.zip.addFile("manifest.json", Buffer.from(JSON.stringify({
+      coverageVersion: 2, archiveKind: "complete-production", recoveryCoverage: "complete",
+    })));
+    expect(() => validateCompleteRecovery(f.zip)).toThrow(/partial recovery coverage/);
+  });
+
+  it("accepts an explicitly absent installer without accepting corrupt installer bytes or an unbound source", () => {
+    const f = fixture();
+    declareMissing(f, ["desktop-installer/LabTrax-Setup.exe"]);
+    expect(validateCompleteRecovery(f.zip)).toEqual(f.manifest);
+    f.manifest.sourceRevision = null;
+    f.save();
+    expect(() => validateCompleteRecovery(f.zip)).toThrow(/missing its matched Desktop release identity/);
+    const corrupt = fixture();
+    declareMissing(corrupt, ["desktop-installer/release-identity.json"]);
+    delete corrupt.manifest.releaseIdentity;
+    corrupt.zip.addFile("media/video.mov", Buffer.from("corrupt readable file"));
+    corrupt.save();
+    expect(() => validateCompleteRecovery(corrupt.zip)).toThrow(/integrity/);
+  });
+
+  it("refuses an undeclared absent release sidecar even in an otherwise partial archive", () => {
+    const f = fixture();
+    delete f.manifest.releaseIdentity;
+    declareMissing(f, ["case-media/missing.pdf"]);
+    f.manifest.requiredReferences.push("case-media/missing.pdf");
+    f.save();
+    expect(() => validateCompleteRecovery(f.zip)).toThrow(/missing its matched Desktop release identity/);
+  });
+  it("halves reference-cursor fetches for the measured 192k-row inventory without skipping rows", () => {
+    const measuredRows = 192_573;
+    const newFetches = Math.ceil(measuredRows / COMPLETE_BACKUP_REFERENCE_FETCH_SIZE);
+    const previousFetches = Math.ceil(measuredRows / 64);
+    expect(COMPLETE_BACKUP_REFERENCE_FETCH_SIZE).toBe(128);
+    expect(newFetches).toBe(1_505);
+    expect(newFetches).toBeLessThan(previousFetches);
+    expect(newFetches * COMPLETE_BACKUP_REFERENCE_FETCH_SIZE).toBeGreaterThanOrEqual(measuredRows);
+  });
+
+  it("accepts only explicitly inventoried partial coverage and never falls back to legacy restore", () => {
+    const { zip, manifest, save } = fixture();
+    manifest.missingReferences = ["case-media/missing-synthetic-original.pdf"];
+    manifest.requiredReferences.push(...manifest.missingReferences);
+    manifest.recoveryCoverage = "partial";
+    zip.addFile("manifest.json", Buffer.from(JSON.stringify({
+      coverageVersion: 2, archiveKind: `partial-${manifest.sourceEnvironment}`,
+      recoveryCoverage: "partial", missingFileCount: 1,
+    })));
+    zip.addFile("missing-files.json", Buffer.from(JSON.stringify({
+      version: 1, missingFileCount: 1, missingReferences: manifest.missingReferences,
+    })));
+    save();
+    expect(validateCompleteRecovery(zip)).toEqual(manifest);
+    zip.deleteFile("missing-files.json");
+    expect(() => validateCompleteRecovery(zip)).toThrow(/inventory/);
+    zip.addFile("manifest.json", Buffer.from(JSON.stringify({
+      archiveKind: `partial-${manifest.sourceEnvironment}`, recoveryCoverage: "partial", missingFileCount: 1,
+    })));
+    zip.deleteFile("complete-recovery.json");
+    expect(() => validateCompleteRecovery(zip)).toThrow(/evidence is missing/);
+  });
   it("sizes only cloud objects included by the archive appenders", () => {
     const objects = [
       { relativeName: "case-media/case-file.bin", size: 1_200_000_000 },
@@ -107,6 +227,26 @@ describe("all-content recovery contract", () => {
     expect(() => requireCompleteBackupCapacity(10_000, 1, -1, 1, "cloud")).toThrow(/invalid/);
   });
 
+  it.each([NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid destination measurements (%s) instead of treating them as sufficient capacity",
+    invalid => {
+      for (let index = 0; index < 3; index++) {
+        const values: [number, number, number] = [2_000_000_000, 1, 1];
+        values[index] = invalid;
+        expect(() => requireCompleteDestinationCapacity(...values)).toThrow(/inventory is invalid/);
+      }
+    },
+  );
+
+  it("rejects unknown staging modes and unsafe capacity arithmetic", () => {
+    expect(() => requireCompleteBackupCapacity(2_000_000_000, 1, 1, 1, "unknown" as never))
+      .toThrow(/inventory is invalid/);
+    expect(() => requireCompleteBackupCapacity(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 1, 1))
+      .toThrow(/inventory is invalid/);
+    expect(() => requireCompleteDestinationCapacity(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 1))
+      .toThrow(/inventory is invalid/);
+  });
+
   it("refuses insufficient capacity without reducing required capture scope", () => {
     expect(() => requireCompleteBackupCapacity(1, 33_400_000_000, 100_000_000, 70_000_000)).toThrow(/capacity failure.*no files were omitted/);
     expect(() => requireCompleteBackupCapacity(100_000_000_000, 33_400_000_000, 100_000_000, 70_000_000)).not.toThrow();
@@ -136,6 +276,9 @@ describe("all-content recovery contract", () => {
     zip.addFile(fileEvidence.archivePath, bytes);
     const manifest: CompleteRecoveryManifest = {
       ...source.manifest,
+      sourceEnvironment: "non-production",
+      sourceRevision: null,
+      releaseIdentity: undefined,
       files: [fileEvidence],
       requiredReferences: ["case-media/video.mov"],
     };
@@ -146,6 +289,12 @@ describe("all-content recovery contract", () => {
     try {
       await restoreCompleteFiles(zip, manifest, root);
       await expect(readFile(path.join(root, "case-media", "video.mov"))).resolves.toEqual(bytes);
+      const separateMediaRoot = path.join(root, "namespace-specific-media");
+      const separateUploadsRoot = path.join(root, "other-uploads");
+      await restoreCompleteFiles(zip, manifest, separateUploadsRoot, { caseMediaRoot: separateMediaRoot });
+      await expect(readFile(path.join(separateMediaRoot, "video.mov"))).resolves.toEqual(bytes);
+      await expect(readFile(path.join(separateUploadsRoot, "case-media", "video.mov")))
+        .rejects.toHaveProperty("code", "ENOENT");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -165,6 +314,47 @@ describe("all-content recovery contract", () => {
     missing.save();
     expect(() => validateCompleteRecovery(missing.zip)).toThrow(/coverage/);
   });
+  it("requires a signed release identity bound to the running revision and archived installer bytes", () => {
+    const missing = fixture();
+    delete missing.manifest.releaseIdentity;
+    missing.save();
+    expect(() => validateCompleteRecovery(missing.zip)).toThrow(/missing its matched Desktop release identity/);
+
+    const mismatchedRevision = fixture();
+    mismatchedRevision.manifest.releaseIdentity!.sourceRevision = "b".repeat(40);
+    mismatchedRevision.save();
+    expect(() => validateCompleteRecovery(mismatchedRevision.zip)).toThrow(/does not match the running backup code/);
+
+    const wrongSize = fixture();
+    wrongSize.manifest.releaseIdentity!.artifact.size += 1;
+    wrongSize.save();
+    expect(() => validateCompleteRecovery(wrongSize.zip)).toThrow(/exact archived installer size and SHA-256/);
+
+    const unsigned = fixture();
+    unsigned.manifest.releaseIdentity!.signatureVerification = "unverified" as never;
+    unsigned.save();
+    expect(() => validateCompleteRecovery(unsigned.zip)).toThrow(/unsigned or contains invalid artifact metadata/);
+  });
+  it.each(["LabTrax-Setup.exe", "LabTrax.dmg", "LabTrax-Windows-Portable.zip"] as const)(
+    "validates the recorded release against the exact archived %s and sidecar bytes",
+    installerName => {
+      const valid = fixture(installerName);
+      expect(validateCompleteRecovery(valid.zip)?.releaseIdentity).toEqual(valid.manifest.releaseIdentity);
+
+      const wrongSignature = fixture(installerName);
+      wrongSignature.manifest.releaseIdentity!.signatureVerification = installerName === "LabTrax-Windows-Portable.zip"
+        ? "verified-installer" : "verified-contained-executable";
+      wrongSignature.save();
+      expect(() => validateCompleteRecovery(wrongSignature.zip)).toThrow(/unsigned or contains invalid artifact metadata/);
+
+      const corrupt = fixture(installerName);
+      const archivePath = `private-objects/desktop-installer/${installerName}`;
+      const bytes = Buffer.from(corrupt.zip.getEntry(archivePath)!.getData());
+      bytes[0] = bytes[0]! ^ 1;
+      corrupt.zip.addFile(archivePath, bytes);
+      expect(() => validateCompleteRecovery(corrupt.zip)).toThrow(/integrity/i);
+    },
+  );
   it("rejects unsafe restore mappings and unverified table coverage", () => {
     const unsafe = fixture();
     unsafe.manifest.files[0]!.relativeName = "../outside";

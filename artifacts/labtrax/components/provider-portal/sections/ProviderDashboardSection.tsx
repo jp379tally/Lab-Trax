@@ -30,7 +30,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { Radius, Spacing, Typography } from "@/constants/tokens";
+import { BorderWidth, Radius, Spacing, Typography } from "@/constants/tokens";
 import { DateField } from "@/components/DateField";
 import { useProviderCases, type ProviderCase } from "@/lib/provider-cases";
 // Every formatted value on a case row comes from the package desktop's
@@ -443,8 +443,8 @@ function makeStyles(colors: ThemeColors) {
       paddingVertical: Spacing.sm,
       paddingHorizontal: Spacing.md,
       borderRadius: Radius.md,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      borderWidth: BorderWidth.section,
+      borderColor: colors.sectionBorder,
       backgroundColor: colors.surface,
     },
     completedEntryLabel: { ...Typography.bodyMedium, color: colors.tint },
@@ -474,8 +474,8 @@ function makeStyles(colors: ThemeColors) {
       gap: Spacing.sm,
       padding: Spacing.md,
       borderRadius: Radius.md,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      borderWidth: BorderWidth.section,
+      borderColor: colors.sectionBorder,
       backgroundColor: colors.surface,
     },
     rowBody: { flex: 1, gap: Spacing.xs },

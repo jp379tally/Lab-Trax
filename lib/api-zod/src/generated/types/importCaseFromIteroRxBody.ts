@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ImportCaseFromIteroRxBodyRemovableSubtypeHint } from './importCaseFromIteroRxBodyRemovableSubtypeHint';
 
 export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
@@ -15,4 +16,30 @@ export type ImportCaseFromIteroRxBody = {
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;
+  receivedAt?: Date;
+  scanDateHint?: Date | '';
+  /** Rx due date, not the lab's scheduled due date. */
+  rxDueDateHint?: string;
+  labDueDateHint?: Date | '';
+  /** Source-platform case/order identifier, separate from the Case Pan barcode. */
+  externalPatientIdHint?: string;
+  casePanBarcodeHint?: string;
+  /** JSON-encoded contact details reviewed for this case. */
+  providerContactSnapshot?: string;
+  invoiceNotesHint?: string;
+  toothIndicesHint?: string;
+  shadeHint?: string;
+  materialHint?: string;
+  caseTypeHint?: string;
+  archHint?: string;
+  removableSubtypeHint?: ImportCaseFromIteroRxBodyRemovableSubtypeHint;
+  /** JSON-encoded reviewed restoration rows; prices are resolved by the server. */
+  reviewedRestorationsHint?: string;
+  /** JSON-encoded explicit tooth-chart roles. */
+  toothAssignments?: string;
+  /** Explicit bridge connector pairs from the reviewed tooth chart. */
+  bridgeConnectors?: string;
+  notesHint?: string;
+  /** JSON-encoded role-authorized reviewed invoice lines. */
+  invoiceOverrideLines?: string;
 };

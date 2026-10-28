@@ -96,6 +96,11 @@ function makeHealthyReport() {
     download: { ok: true, checked: true, url: "https://example.com/downloads/LabTrax-Windows-Portable.zip", status: 200, contentLength: 1000, etag: "abc", etagMatchesStorage: true, error: null },
     downloadSpeed: { checked: false, bytesPerSecond: null, estimatedSeconds: null, slow: false, error: null },
     githubRelease: { ok: false, configured: false, tagName: null, publishedAt: null, manifestUrl: null, hasManifest: false, issue: null },
+    updateFeeds: {
+      ok: true,
+      windows: { path: "/downloads/latest.yml", ok: true, version: "1.2.3", payloadFiles: ["LabTrax-Setup.exe"], issues: [] },
+      mac: { path: "/downloads/latest-mac.yml", ok: true, version: "1.2.3", payloadFiles: ["LabTrax-1.2.3-x64-mac.zip"], issues: [] },
+    },
     downloadInterruptions: { count24h: 0, retryFailCount24h: 0, lastOccurredAt: null },
     issues: [],
   };
@@ -161,6 +166,31 @@ describe("checkAndAlertInstallerHealth — alert dispatch", () => {
     expect(args.version).toBe("1.2.3");
     expect(args.errorMessage).toContain("storage:");
     expect(args.errorMessage).toContain("download:");
+  });
+
+  it("passes Windows and macOS manifest and payload findings to the scheduled alert", async () => {
+    const feedIssues = [
+      "updateFeeds: /downloads/latest.yml is missing",
+      "updateFeeds: Windows update payload LabTrax-Setup.exe referenced by /downloads/latest.yml is missing",
+      "updateFeeds: /downloads/latest-mac.yml is missing",
+      "updateFeeds: macOS update payload LabTrax-1.2.3-x64-mac.zip referenced by /downloads/latest-mac.yml is missing",
+    ];
+    runHealthCheckMock.mockResolvedValue({
+      ...makeHealthyReport(),
+      ok: false,
+      issues: feedIssues,
+    });
+    dispatchAlertMock.mockResolvedValue({ sent: true, suppressed: false, hash: "feed-alert" });
+
+    await checkAndAlertInstallerHealth();
+
+    expect(dispatchAlertMock).toHaveBeenCalledOnce();
+    const args = dispatchAlertMock.mock.calls[0][0] as { errorMessage: string };
+    expect(args.errorMessage).toBe(feedIssues.join("\n"));
+    expect(args.errorMessage).toContain("latest.yml");
+    expect(args.errorMessage).toContain("LabTrax-Setup.exe");
+    expect(args.errorMessage).toContain("latest-mac.yml");
+    expect(args.errorMessage).toContain("LabTrax-1.2.3-x64-mac.zip");
   });
 
   it("passes admin emails from the DB to dispatchInstallerAlert", async () => {

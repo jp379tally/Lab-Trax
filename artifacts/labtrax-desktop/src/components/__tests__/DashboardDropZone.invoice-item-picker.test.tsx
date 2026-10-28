@@ -141,6 +141,8 @@ const RX_RESPONSE = {
   toothIndices: "14",
   toothAssignments: [{ toothNumber: "14", role: "prepared_crown", roleEvidence: "Prepared crown #14", material: "Zirconia", shade: "A2", requiresReview: false }],
   dueDate: "2026-08-01",
+  scanDate: "2026-07-30",
+  platformCaseIdentifier: "3shape-case-42",
   isRush: false,
   notes: "",
   practiceName: "Maple Dental",
@@ -150,7 +152,17 @@ const RX_RESPONSE = {
 
 const ORGS = [
   { id: "lab1", type: "lab", name: "Test Lab" },
-  { id: "provB", type: "provider", name: "Maple Dental" },
+  {
+    id: "provB",
+    type: "provider",
+    name: "Maple Dental",
+    addressLine1: "10 Maple Street",
+    city: "Springfield",
+    state: "IL",
+    zip: "62701",
+    phone: "555-0100",
+    billingEmail: "billing@maple.example",
+  },
 ];
 
 // One auto-generated line at $150 so the running total is easy to assert.
@@ -269,6 +281,11 @@ function installHandlers() {
   mockApiFetch.mockReset();
   mockApiFetch.mockImplementation((path: string, init?: any) => {
     if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
+    if (path === "/organizations/provB")
+      return Promise.resolve({
+        ...ORGS[1],
+        additionalEmails: [{ email: "office@maple.example", type: "correspondence" }],
+      });
     if (path.startsWith("/organizations")) return Promise.resolve(ORGS);
     if (path === "/cases/doctor-names") return Promise.resolve([]);
     if (path === "/cases/doctor-directory") return Promise.resolve([]);
@@ -476,6 +493,129 @@ describe("DashboardDropZone — intake invoice item picker", () => {
 
     await waitFor(() => expect(postedCases.length).toBe(1), { timeout: 5000 });
     expect(postedCases[0]?.casePanBarcode).toBe("0000123");
+  }, 20000);
+
+  it("renders the ordered intake sections and keeps dates and source IDs distinct in the case payload", async () => {
+    const container = await reachPreview();
+    const review = container.querySelector<HTMLElement>('[data-testid="rx-review-container"]')!;
+    const headings = ["Provider", "Patient Information", "Restoration Details", "Tooth Chart", "Invoice Details", "Invoice Notes"];
+    const positions = headings.map((heading) => review.textContent!.indexOf(heading));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+
+    fireEvent.change(container.querySelector<HTMLInputElement>("#rx-due-date")!, {
+      target: { value: "2026-08-02" },
+    });
+    fireEvent.change(container.querySelector<HTMLInputElement>("#rx-scan-date")!, {
+      target: { value: "2026-07-29" },
+    });
+    fireEvent.change(container.querySelector<HTMLInputElement>("#rx-lab-due-date")!, {
+      target: { value: "2026-08-12" },
+    });
+    fireEvent.change(container.querySelector<HTMLInputElement>("#rx-received-date")!, {
+      target: { value: "2026-07-28" },
+    });
+    fireEvent.change(container.querySelector<HTMLInputElement>('[aria-label="Source platform case/order ID"]')!, {
+      target: { value: "3shape-reviewed-77" },
+    });
+    fireEvent.change(container.querySelector<HTMLTextAreaElement>('[aria-label="Invoice Notes"]')!, {
+      target: { value: "Please call before delivery." },
+    });
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    await waitFor(() => expect(postedCases.length).toBe(1), { timeout: 5000 });
+    expect(container.querySelector('[data-testid="practice-contact-confirm"]')).toBeNull();
+    expect(postedCases[0]).toMatchObject({
+      dueDate: "2026-08-12",
+      prescriptionDueDate: "2026-08-02",
+      scanDate: "2026-07-29",
+      receivedAt: "2026-07-28",
+      externalPatientId: "3shape-reviewed-77",
+      invoiceNotes: "Please call before delivery.",
+      providerContactSnapshot: {
+        providerOrganizationId: "provB",
+        practiceName: "Maple Dental",
+        primaryEmail: "office@maple.example",
+        billingEmail: "billing@maple.example",
+      },
+    });
+    expect(postedCases[0]?.casePanBarcode).toBeUndefined();
+  }, 20000);
+
+  it("asks before applying changed practice contact details, but not when unchanged", async () => {
+    const container = await reachPreview();
+    expect(container.querySelector('[data-testid="practice-contact-confirm"]')).toBeNull();
+    fireEvent.change(container.querySelector<HTMLInputElement>('[aria-label="Practice address line 1"]')!, {
+      target: { value: "99 New Street" },
+    });
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+    });
+    const prompt = await waitFor(() =>
+      container.querySelector<HTMLElement>('[data-testid="practice-contact-confirm"]'),
+    );
+    expect(prompt?.textContent).toContain("Practice address");
+    expect(prompt?.textContent).toContain("Save for this case only");
+    expect(prompt?.textContent).toContain("Update practice account too");
+    expect(postedCases).toHaveLength(0);
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Save for this case only/i));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    await waitFor(() => expect(postedCases).toHaveLength(1), { timeout: 5000 });
+    expect(mockApiFetch.mock.calls.some(([path]: any[]) =>
+      path === "/organizations/provB/intake-contact",
+    )).toBe(false);
+    expect(postedCases[0].providerContactSnapshot.primaryAddress).toContain("99 New Street");
+  }, 20000);
+
+  it("applies confirmed practice contact changes before creating and retains the snapshot", async () => {
+    const container = await reachPreview();
+    fireEvent.change(container.querySelector<HTMLInputElement>('[aria-label="Practice phone"]')!, {
+      target: { value: "555-0199" },
+    });
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="practice-contact-confirm"]')).not.toBeNull());
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Update practice account too/i));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    await waitFor(() => expect(postedCases).toHaveLength(1), { timeout: 5000 });
+    const updateCall = mockApiFetch.mock.calls.find(([path, init]: any[]) =>
+      path === "/organizations/provB/intake-contact" && init?.method === "PATCH",
+    );
+    expect(updateCall).toBeTruthy();
+    expect(JSON.parse(updateCall![1].body)).toMatchObject({ phone: "555-0199" });
+    expect(postedCases[0].providerContactSnapshot.phone).toBe("555-0199");
+  }, 20000);
+
+  it("stops before case creation when the confirmed shared-practice update fails", async () => {
+    const originalFetch = mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation((path: string, init?: any) => {
+      if (path === "/organizations/provB/intake-contact" && init?.method === "PATCH") {
+        return Promise.reject(new Error("Contact update unavailable"));
+      }
+      return originalFetch(path, init);
+    });
+    const container = await reachPreview();
+    fireEvent.change(container.querySelector<HTMLInputElement>('[aria-label="Practice phone"]')!, {
+      target: { value: "555-0199" },
+    });
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Create case/i));
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="practice-contact-confirm"]')).not.toBeNull());
+    await act(async () => {
+      fireEvent.click(findButtonByText(container, /Update practice account too/i));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    expect(postedCases).toHaveLength(0);
+    expect(container.textContent).toContain("Shared practice details were not updated");
+    expect(container.textContent).toContain("no case was created");
   }, 20000);
 
   it("sends an empty override set when every preview line is removed", async () => {

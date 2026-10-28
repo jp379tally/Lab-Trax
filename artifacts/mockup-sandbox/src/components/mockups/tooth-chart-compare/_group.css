@@ -1,0 +1,2 @@
+/* Fixture styling only: neutral page, app-like tokens for the chart shell. */
+:root { --secondary: 40 20% 94%; --border: 40 15% 85%; --foreground: 222 30% 14%; --primary: 175 70% 25%; --primary-foreground: 0 0% 100%; --muted: 40 15% 92%; --muted-foreground: 215 12% 40%; }

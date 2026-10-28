@@ -1,3 +1,4 @@
+import { productionMediaDiskStorage } from "../lib/production-media-multipart";
 /**
  * Provider-Lab Messenger REST API
  *
@@ -112,7 +113,7 @@ const messengerMediaDir = path.resolve(
   "messenger-media"
 );
 
-const messengerStorage = multer.diskStorage({
+const messengerStorage = productionMediaDiskStorage({
   destination: (_req, _file, cb) => {
     fs.mkdirSync(messengerMediaDir, { recursive: true });
     cb(null, messengerMediaDir);
@@ -129,7 +130,7 @@ const messengerStorage = multer.diskStorage({
       `msg-${Date.now()}-${randomBytes(4).toString("hex")}${ext}`
     );
   },
-});
+}, "provider-messenger");
 
 const messengerUpload = multer({
   storage: messengerStorage,

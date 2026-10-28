@@ -44,6 +44,17 @@ const log = {
 const sentMessages: Array<{ channel: string; payload: unknown }> = [];
 let electronMock: ElectronMock;
 let whenReadyResolve: () => void;
+const appListeners = new Map<string, Listener>();
+const windowListeners = new Map<string, Listener>();
+const trayListeners = new Map<string, Listener>();
+let fakeWindow: Record<string, any>;
+let trayMenu: Array<Record<string, unknown>> = [];
+let trayClick: (() => void) | undefined;
+let trayDestroyed = false;
+let trayTooltip = "";
+let windowHidden = false;
+let windowShown = false;
+let windowFocused = false;
 const whenReadyPromise = new Promise<void>((r) => {
   whenReadyResolve = r;
 });
@@ -76,15 +87,19 @@ beforeAll(async () => {
     },
     openDevTools: () => {},
   };
-  const fakeWindow = {
+  let visible = true;
+  fakeWindow = {
     webContents: fakeWebContents,
     isDestroyed: () => false,
+    isVisible: () => visible,
     loadURL: () => {},
     setMenuBarVisibility: () => {},
-    on: () => {},
+    on: (event: string, listener: Listener) => { windowListeners.set(event, listener); },
     once: () => {},
-    show: () => {},
-    focus: () => {},
+    show: () => { visible = true; windowShown = true; windowHidden = false; },
+    focus: () => { windowFocused = true; },
+    hide: () => { visible = false; windowHidden = true; },
+    isMinimized: () => false,
     close: () => {},
   };
 
@@ -92,9 +107,11 @@ beforeAll(async () => {
     app: {
       getPath: () => tmpDir,
       whenReady: () => whenReadyPromise,
-      on: () => {},
-      quit: () => {},
+      on: (event: string, fn: Listener) => { appListeners.set(event, fn); },
+      quit: vi.fn(),
       getVersion: () => "1.2.3",
+      getLoginItemSettings: () => ({ openAtLogin: false, wasOpenedAtLogin: false }),
+      setLoginItemSettings: vi.fn(),
     },
     BrowserWindow: Object.assign(
       function BrowserWindow() {
@@ -102,6 +119,22 @@ beforeAll(async () => {
       } as unknown as ElectronMock["BrowserWindow"],
       { getAllWindows: () => [fakeWindow] },
     ),
+    Tray: class {
+      on(event: string, listener: Listener) {
+        trayListeners.set(event, listener);
+        if (event === "click") trayClick = listener as () => void;
+      }
+      setToolTip(text: string) { trayTooltip = text; }
+      setContextMenu(menu: unknown) { trayMenu = menu as Array<Record<string, unknown>>; }
+      destroy() { trayDestroyed = true; }
+    },
+    Menu: {
+      buildFromTemplate: (items: Array<Record<string, unknown>>) => {
+        trayMenu = items;
+        return items;
+      },
+    },
+    nativeImage: { createFromPath: () => ({}) },
   });
 
   injectModule("electron-updater", { autoUpdater: updater });
@@ -152,8 +185,38 @@ describe("auto-updater wiring in main.cjs", () => {
     expect(updaterListeners.has("error")).toBe(true);
   });
 
+  it("keeps the signed-in backup companion running when the window is closed", () => {
+    expect(trayTooltip).toMatch(/backup companion/i);
+    const close = windowListeners.get("close");
+    expect(close).toBeTypeOf("function");
+    const closeEvent = { preventDefault: vi.fn() };
+    close?.(closeEvent);
+    expect(closeEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(windowHidden).toBe(true);
+
+    trayListeners.get("click")?.();
+    expect(windowShown).toBe(true);
+    expect(windowFocused).toBe(true);
+
+    const quit = trayMenu.find((item) => item.label === "Quit LabTrax")?.click as (() => void) | undefined;
+    expect(quit).toBeTypeOf("function");
+    quit?.();
+    expect(electronMock.app.quit).toHaveBeenCalledOnce();
+    appListeners.get("before-quit")?.();
+    const finalCloseEvent = { preventDefault: vi.fn() };
+    close?.(finalCloseEvent);
+    expect(finalCloseEvent.preventDefault).not.toHaveBeenCalled();
+  });
+
   it("kicks off an initial update check", () => {
     expect(updater.checkForUpdatesAndNotify).toHaveBeenCalled();
+  });
+
+  it("uses the stable API generic feed when no packaged feed URL is available", () => {
+    expect(updater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://lab-trax.replit.app/downloads/",
+    });
   });
 
   it("forwards rounded download-progress percentages to the renderer", () => {
@@ -263,6 +326,15 @@ describe("auto-updater wiring in main.cjs", () => {
     expect(handler?.()).toBe("1.2.3");
   });
 
+  it("returns only the safe build metadata fields through IPC", () => {
+    const handler = electronMock.ipcMain.handlers.get("get-build-metadata");
+    expect(handler).toBeTypeOf("function");
+    const metadata = handler?.() as Record<string, unknown>;
+    expect(metadata.version).toBe("1.2.3");
+    expect(Object.keys(metadata).sort()).toEqual(["buildNumber", "updateChannel", "version"]);
+    expect(JSON.stringify(metadata)).not.toContain("feed");
+  });
+
   it("get-update-state IPC handler returns a snapshot with the current version", () => {
     const handler = electronMock.ipcMain.handlers.get("get-update-state");
     expect(handler).toBeTypeOf("function");
@@ -270,6 +342,8 @@ describe("auto-updater wiring in main.cjs", () => {
     expect(snapshot.currentVersion).toBe("1.2.3");
     expect(typeof snapshot.status).toBe("string");
     expect(snapshot.autoUpdaterEnabled).toBe(true);
+    expect(snapshot.isWindowsStore).toBe(false);
+    expect(snapshot.feedUrl).toBe("https://lab-trax.replit.app/downloads/");
   });
 
   it("check-for-updates IPC handler invokes autoUpdater.checkForUpdates and returns state", async () => {
@@ -296,5 +370,46 @@ describe("auto-updater wiring in main.cjs", () => {
     expect(stateMsg).toBeDefined();
     expect((stateMsg!.payload as { status: string }).status).toBe("available");
     expect((stateMsg!.payload as { latestVersion: string }).latestVersion).toBe("2.0.0");
+  });
+
+  it("configures and disables the user-scoped backup schedule through IPC", () => {
+    const setActive = electronMock.ipcMain.handlers.get("backup:set-local-schedule-active");
+    expect(setActive).toBeTypeOf("function");
+    const result = setActive?.(
+      { sender: fakeWindow.webContents },
+      true,
+    ) as { active: boolean; backgroundAvailable: boolean };
+
+    expect(result).toEqual({ active: true, backgroundAvailable: true });
+    expect(trayMenu.map((item) => item.label)).toContain("Open LabTrax");
+    expect(trayMenu.map((item) => item.label)).toContain("Quit LabTrax");
+
+    trayClick?.();
+    expect(fakeWindow.isVisible()).toBe(true);
+
+    const disabled = setActive?.(
+      { sender: fakeWindow.webContents },
+      false,
+    ) as { active: boolean; backgroundAvailable: boolean };
+    expect(disabled).toEqual({ active: false, backgroundAvailable: true });
+    expect(trayDestroyed).toBe(false);
+  });
+
+  it("rejects schedule companion control from a non-main renderer", () => {
+    const setActive = electronMock.ipcMain.handlers.get("backup:set-local-schedule-active");
+    expect(setActive?.({ sender: {} }, true)).toEqual({
+      active: false,
+      backgroundAvailable: false,
+    });
+  });
+
+  it("checks local scheduled-backup destinations without creating missing folders", () => {
+    const check = electronMock.ipcMain.handlers.get("backup:is-folder-accessible");
+    expect(check).toBeTypeOf("function");
+    const event = { sender: fakeWindow.webContents };
+    expect(check?.(event, tmpDir)).toBe(true);
+    expect(check?.(event, path.join(tmpDir, "not-created"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "not-created"))).toBe(false);
+    expect(check?.({ sender: {} }, tmpDir)).toBe(false);
   });
 });

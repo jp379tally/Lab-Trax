@@ -1,0 +1,109 @@
+name: Prepare Desktop Recovery Release
+
+# Build-only, explicit approval. No push/tag/workflow_call trigger and no live
+# publishing credentials: these artifacts are NOT an installed-app update.
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full 40-character source revision recorded by the API deployment build
+        required: true
+        type: string
+      checks_passed:
+        description: Required pre-release checklist passed for this exact source revision
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-recovery-preparation
+  cancel-in-progress: false
+
+jobs:
+  prepare-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Require an approved full source revision
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          CHECKS_PASSED: ${{ inputs.checks_passed }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHECKS_PASSED" != true || ! "$SOURCE_REVISION" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            echo "::error::Approve the required checks for an exact full source revision before building."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+
+      - name: Refuse revisions without the build-only preparation entry point
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${SOURCE_REVISION,,}" ]]; then
+            echo "::error::The checkout is not the selected API source revision."
+            exit 1
+          fi
+          # Older versions ignore unknown shell arguments and publish by default.
+          # Never execute their build script just to ask whether a flag exists.
+          if [[ ! -f scripts/src/desktop-recovery-release.ts ]] ||
+             ! grep -q '^PREPARE_ONLY=false$' scripts/desktop-build-publish.sh; then
+            echo "::error::This source revision lacks build-only release preparation. Nothing was built or published."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Locate Windows signature verifier
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { throw "Windows SDK signtool is required; unsigned preparation is refused." }
+          $tool.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Prepare signed installer without publishing
+        shell: bash
+        run: bash scripts/desktop-build-publish.sh --prepare-only
+        env:
+          # GITHUB_SHA identifies the workflow ref, which may differ from the
+          # selected release checkout. Stamp only the checked-out full revision.
+          GIT_COMMIT_SHA: ${{ inputs.source_revision }}
+          VITE_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          ELECTRON_UPDATE_CHANNEL: installer
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          CSC_EXPECTED_PUBLISHER: ${{ vars.CSC_EXPECTED_PUBLISHER }}
+
+      - name: Retain prepared release files for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-recovery-${{ inputs.source_revision }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            artifacts/labtrax-desktop/electron-dist/LabTrax-Setup.exe
+            artifacts/labtrax-desktop/electron-dist/release-identity.json
+            artifacts/labtrax-desktop/electron-dist/build-stamp.txt
+            artifacts/labtrax-desktop/electron-dist/latest.yml

@@ -76,6 +76,7 @@ if (typeof window !== "undefined") {
   if (!(window as { electronAPI?: unknown }).electronAPI) {
     Object.defineProperty(window, "electronAPI", {
       writable: true,
+      configurable: true,
       value: {},
     });
   }

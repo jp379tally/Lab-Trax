@@ -88,3 +88,4 @@ export type {
   RemakeReasonCategory,
   RemakeConditionalField,
 } from "./remake-reasons";
+export * from "./tooth-indications";

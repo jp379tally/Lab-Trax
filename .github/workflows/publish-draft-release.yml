@@ -16,26 +16,162 @@ jobs:
       contents: write
 
     steps:
-      - name: Verify the release is still a draft
-        id: check
+      - name: Verify release assets and prepare the generic update feed
+        id: prepare
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          draft=$(gh release view "${{ inputs.tag }}" \
-            --repo "${{ github.repository }}" \
-            --json isDraft \
-            --jq '.isDraft')
-          if [[ "$draft" != "true" ]]; then
-            echo "::error::Release ${{ inputs.tag }} is not a draft (isDraft=$draft). Publish aborted to avoid overwriting an already-live release."
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::Pre-release tags are not sent to the stable in-app update feed."
+            echo "skip_feed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
+            echo "::error::PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL are required to publish the update feed."
             exit 1
           fi
-          echo "Release ${{ inputs.tag }} is a draft — proceeding."
+
+          mkdir -p dist/update-feed
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.yml \
+            --pattern latest-mac.yml \
+            --pattern '*.zip' \
+            --dir dist/update-feed
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '[.assets[].name]' > dist/update-feed/assets.json
+
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const tag = process.env.RELEASE_TAG;
+          const version = tag.slice(1);
+          const dir = "dist/update-feed";
+          const windowsPath = path.join(dir, "latest.yml");
+          const macPath = path.join(dir, "latest-mac.yml");
+          const assets = new Set(JSON.parse(fs.readFileSync(path.join(dir, "assets.json"), "utf8")));
+          const windows = fs.readFileSync(windowsPath, "utf8");
+          const mac = fs.readFileSync(macPath, "utf8");
+          const readVersion = (content) => content.match(/^version:\s*["']?([^\s"']+)["']?\s*$/m)?.[1];
+
+          if (readVersion(windows) !== version || readVersion(mac) !== version) {
+            throw new Error(`Release manifests must both report version ${version}.`);
+          }
+          if (!assets.has("LabTrax-Setup.exe")) {
+            throw new Error("The release does not contain LabTrax-Setup.exe.");
+          }
+          if (!/^path:\s*LabTrax-Setup\.exe\s*$/m.test(windows)) {
+            throw new Error("latest.yml does not point at the NSIS LabTrax-Setup.exe installer.");
+          }
+
+          const macFiles = [];
+          let current = null;
+          for (const line of mac.split(/\r?\n/)) {
+            const urlMatch = line.match(/^\s*-\s+url:\s*["']?([^"'\s]+)["']?\s*$/);
+            if (urlMatch) {
+              if (current) macFiles.push(current);
+              current = { fileName: urlMatch[1], sha512: "", size: Number.NaN };
+              continue;
+            }
+            if (!current) continue;
+            const sha512 = line.match(/^\s+sha512:\s*["']?([A-Za-z0-9+/=]+)["']?\s*$/)?.[1];
+            const size = line.match(/^\s+size:\s*(\d+)\s*$/)?.[1];
+            if (sha512) current.sha512 = sha512;
+            if (size) current.size = Number(size);
+          }
+          if (current) macFiles.push(current);
+          for (const entry of macFiles) {
+            const { fileName } = entry;
+            if (!new RegExp(`^LabTrax-${version.replaceAll(".", "\\.")}-(arm64|x64|universal)-mac\\.zip$`).test(fileName)) {
+              throw new Error(`Unsupported macOS update payload name: ${fileName}`);
+            }
+            if (!assets.has(fileName) || !fs.existsSync(path.join(dir, fileName))) {
+              throw new Error(`The release is missing macOS update payload ${fileName}.`);
+            }
+            if (!entry.sha512 || !Number.isSafeInteger(entry.size) || entry.size < 1) {
+              throw new Error(`latest-mac.yml has incomplete integrity metadata for ${fileName}.`);
+            }
+          }
+          if (macFiles.length === 0 || new Set(macFiles.map((entry) => entry.fileName)).size !== macFiles.length) {
+            throw new Error("latest-mac.yml must list unique signed macOS update ZIPs.");
+          }
+          fs.writeFileSync(path.join(dir, "payloads.json"), JSON.stringify(macFiles), "utf8");
+          NODE
+
+          draft=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft \
+            --jq '.isDraft')
+          if [[ "$draft" != "true" && "$draft" != "false" ]]; then
+            echo "::error::Could not determine whether release $RELEASE_TAG is a draft."
+            exit 1
+          fi
+          echo "is_draft=$draft" >> "$GITHUB_OUTPUT"
+          echo "Update manifests and payload references are valid for $RELEASE_TAG."
 
       - name: Publish draft release
+        if: ${{ steps.prepare.outputs.skip_feed != 'true' && steps.prepare.outputs.is_draft == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          gh release edit "${{ inputs.tag }}" \
-            --repo "${{ github.repository }}" \
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             --draft=false
-          echo "Release ${{ inputs.tag }} is now published."
+          echo "Release $RELEASE_TAG is now published."
+
+      - name: Upload macOS updater packages to App Storage
+        if: ${{ steps.prepare.outputs.skip_feed != 'true' }}
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          while IFS= read -r item; do
+            FILE_NAME=$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.fileName)' "$item")
+            SHA512=$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.sha512)' "$item")
+            SIZE=$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.size))' "$item")
+            echo "Uploading macOS update package $FILE_NAME"
+            curl --fail-with-body --show-error --silent \
+              -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+              -F "version=$VERSION" \
+              -F "sha512=$SHA512" \
+              -F "size=$SIZE" \
+              -F "file=@dist/update-feed/$FILE_NAME;type=application/zip" \
+              "$BASE_URL/api/admin/desktop-installer/upload-update-payload"
+            echo
+          done < <(node -e 'for (const x of JSON.parse(require("fs").readFileSync("dist/update-feed/payloads.json", "utf8"))) console.log(JSON.stringify(x))')
+
+      - name: Publish update manifests to the API feed
+        if: ${{ steps.prepare.outputs.skip_feed != 'true' }}
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          curl --fail-with-body --show-error --silent \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -F "version=$VERSION" \
+            -F "windowsManifest=@dist/update-feed/latest.yml;type=application/yaml" \
+            -F "macManifest=@dist/update-feed/latest-mac.yml;type=application/yaml" \
+            "$BASE_URL/api/admin/desktop-installer/publish-update-feed"
+          echo
+          echo "::notice::Published Windows and macOS update manifests for $RELEASE_TAG."

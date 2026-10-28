@@ -19,6 +19,11 @@ const derivedKeys = [
   ["finance", "accounts", "lab-a"],
   ["doctor-invoices", "lab-a"],
   ["organizations"],
+  ["customer-center-summary"],
+  ["shared-provider-account", "lab-a", "practice-a"],
+  ["customer-statement-charges", "practice-a", "lab-a", "all", "", "", 0],
+  ["billing", "eligible-invoice-accounts", "lab-a"],
+  ["billing", "eligible-statement-accounts", "lab-a"],
 ] as const;
 
 function clientWithCachedViews() {

@@ -43,6 +43,8 @@ export const Svg = forwardRef<SVGSVGElement, SvgElementProps>(function Svg(props
 
 export const Path = (props: NativeSvgProps<SVGPathElement>) => <path {...toSvgProps(props)} />;
 export const Circle = (props: NativeSvgProps<SVGCircleElement>) => <circle {...toSvgProps(props)} />;
+export const Ellipse = (props: NativeSvgProps<SVGEllipseElement>) => <ellipse {...toSvgProps(props)} />;
+export const Image = (props: NativeSvgProps<SVGImageElement>) => <image {...toSvgProps(props)} />;
 export const Text = (props: NativeSvgProps<SVGTextElement>) => <text {...toSvgProps(props)} />;
 export const G = (props: NativeSvgProps<SVGGElement>) => <g {...toSvgProps(props)} />;
 

@@ -61,9 +61,9 @@ catalog:
   tailwind-merge: ^3.3.1
   tailwindcss: ^4.1.14
   tsx: ^4.21.0
-  vite: ^7.3.5
+  vite: ^7.3.7
   wouter: ^3.3.5
-  zod: ^3.25.76
+  zod: 4.6.7
 
 autoInstallPeers: false
 
@@ -76,76 +76,8 @@ onlyBuiltDependencies:
   - unrs-resolver
 
 overrides:
-  # replit uses linux-x64 only, we can exclude all other platforms
-  "esbuild>@esbuild/darwin-arm64": "-"
-  "esbuild>@esbuild/darwin-x64": "-"
-  "esbuild>@esbuild/freebsd-arm64": "-"
-  "esbuild>@esbuild/freebsd-x64": "-"
-  "esbuild>@esbuild/linux-arm": "-"
-  "esbuild>@esbuild/linux-arm64": "-"
-  "esbuild>@esbuild/linux-ia32": "-"
-  "esbuild>@esbuild/linux-loong64": "-"
-  "esbuild>@esbuild/linux-mips64el": "-"
-  "esbuild>@esbuild/linux-ppc64": "-"
-  "esbuild>@esbuild/linux-riscv64": "-"
-  "esbuild>@esbuild/linux-s390x": "-"
-  "esbuild>@esbuild/netbsd-arm64": "-"
-  "esbuild>@esbuild/netbsd-x64": "-"
-  "esbuild>@esbuild/openbsd-arm64": "-"
-  "esbuild>@esbuild/openbsd-x64": "-"
-  "esbuild>@esbuild/sunos-x64": "-"
-  "esbuild>@esbuild/win32-arm64": "-"
-  "esbuild>@esbuild/win32-ia32": "-"
-  "esbuild>@esbuild/win32-x64": "-"
-  "esbuild>@esbuild/aix-ppc64": '-'
-  "esbuild>@esbuild/android-arm": '-'
-  "esbuild>@esbuild/android-arm64": '-'
-  "esbuild>@esbuild/android-x64": '-'
-  "esbuild>@esbuild/openharmony-arm64": '-'
-  "lightningcss>lightningcss-android-arm64": "-"
-  "lightningcss>lightningcss-darwin-arm64": "-"
-  "lightningcss>lightningcss-darwin-x64": "-"
-  "lightningcss>lightningcss-freebsd-x64": "-"
-  "lightningcss>lightningcss-linux-arm-gnueabihf": "-"
-  "lightningcss>lightningcss-linux-arm64-gnu": "-"
-  "lightningcss>lightningcss-linux-arm64-musl": "-"
-  "lightningcss>lightningcss-linux-x64-musl": "-"
-  "lightningcss>lightningcss-win32-arm64-msvc": "-"
-  "lightningcss>lightningcss-win32-x64-msvc": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-android-arm64": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-darwin-arm64": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-darwin-x64": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-freebsd-x64": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-linux-arm-gnueabihf": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-linux-arm64-gnu": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-linux-arm64-musl": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-win32-arm64-msvc": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc": "-"
-  "@tailwindcss/oxide>@tailwindcss/oxide-linux-x64-musl": "-"
-  "rollup>@rollup/rollup-android-arm-eabi": "-"
-  "rollup>@rollup/rollup-android-arm64": "-"
-  "rollup>@rollup/rollup-darwin-arm64": "-"
-  "rollup>@rollup/rollup-darwin-x64": "-"
-  "rollup>@rollup/rollup-freebsd-arm64": "-"
-  "rollup>@rollup/rollup-freebsd-x64": "-"
-  "rollup>@rollup/rollup-linux-arm-gnueabihf": "-"
-  "rollup>@rollup/rollup-linux-arm-musleabihf": "-"
-  "rollup>@rollup/rollup-linux-arm64-gnu": "-"
-  "rollup>@rollup/rollup-linux-arm64-musl": "-"
-  "rollup>@rollup/rollup-linux-loong64-gnu": "-"
-  "rollup>@rollup/rollup-linux-loong64-musl": "-"
-  "rollup>@rollup/rollup-linux-ppc64-gnu": "-"
-  "rollup>@rollup/rollup-linux-ppc64-musl": "-"
-  "rollup>@rollup/rollup-linux-riscv64-gnu": "-"
-  "rollup>@rollup/rollup-linux-riscv64-musl": "-"
-  "rollup>@rollup/rollup-linux-s390x-gnu": "-"
-  "rollup>@rollup/rollup-linux-x64-musl": "-"
-  "rollup>@rollup/rollup-openbsd-x64": "-"
-  "rollup>@rollup/rollup-openharmony-arm64": "-"
-  "rollup>@rollup/rollup-win32-arm64-msvc": "-"
-  "rollup>@rollup/rollup-win32-ia32-msvc": "-"
-  "rollup>@rollup/rollup-win32-x64-gnu": "-"
-  "rollup>@rollup/rollup-win32-x64-msvc": "-"
+  # Keep native build-tool packages available on Linux, Windows, and macOS.
+  # pnpm installs only the binary matching the host platform.
   "@expo/ngrok-bin>@expo/ngrok-bin-darwin-arm64": "-"
   "@expo/ngrok-bin>@expo/ngrok-bin-darwin-x64": "-"
   "@expo/ngrok-bin>@expo/ngrok-bin-freebsd-ia32": "-"
@@ -176,8 +108,9 @@ overrides:
   "brace-expansion@5": "5.0.12"
   # postcss: parser denial-of-service advisories
   "postcss": "8.5.28"
-  # follow-redirects: GHSA-r4q5-vmmm-2653
-  "follow-redirects": "1.16.0"
+  # follow-redirects: GHSA-r4q5-vmmm-2653, GHSA-8r9p-f939-6h3c,
+  # GHSA-q3jh-wrc6-jgq8 — strip sensitive object and array-form headers.
+  "follow-redirects": "1.16.1"
   # @xmldom/xmldom security advisories
   # Pinned to the patched 0.8 line (not 0.9.x) — 0.9.0 introduced a breaking change where
   # DOMParser.parseFromString requires a valid mimeType argument. @expo/plist
@@ -185,16 +118,19 @@ overrides:
   "@xmldom/xmldom": "0.8.15"
   # Security floors for vulnerable direct and transitive dependencies.
   "@babel/core@7": "7.29.6"
-  "@vitest/mocker@4": "4.1.11"
+  # GHSA-qxg6-89mg-rqv8 / GHSA-xp26-3454-mjgp: escape manual mocks
+  # and normalize Windows redirect paths. Keep the Vitest family in sync.
+  "@vitest/mocker@4": "4.1.12"
   "baseline-browser-mapping": "2.11.25"
-  "body-parser": "2.3.0"
+  "body-parser": "2.4.0"
   "browserslist": "4.29.0"
   "builder-util-runtime": "9.7.0"
   "decode-uri-component": "0.5.0"
   # twilio's axios range includes vulnerable versions; keep all resolved copies patched.
   "axios": "1.20.0"
-  "dompurify": "3.4.16"
-  "fast-uri@3": "3.1.8"
+  # Shadow-root template scrubbing, detached-hook cleanup, and XHTML SMIL guards.
+  "dompurify": "3.4.17"
+  "fast-uri@3": "3.1.9"
   "fflate": "0.8.3"
   "form-data@2": "2.5.6"
   "form-data@4": "4.0.6"
@@ -204,11 +140,14 @@ overrides:
   "js-yaml@3": "3.15.2"
   "js-yaml@4": "4.3.2"
   "linkify-it@5": "5.0.2"
-  "markdown-it@14": "14.3.1"
+  # Bound smartquotes, multiline references, and unterminated inline HTML scans.
+  "markdown-it@14": "14.3.3"
   "nanoid@3": "3.3.18"
-  "nodemailer": "10.0.9"
+  # Linear-time DKIM header unfolding (GHSA-39m8-27wv-hr27).
+  "nodemailer": "10.2.0"
   "qs": "6.16.0"
   "shell-quote": "1.12.0"
+  "serialize-javascript": "7.1.3"
   # Security floors for the proxy, source-map, cache, compression, native image,
   # copy and selector-parser advisories. See docs/dependency-security-remediation.md.
   "proxy-addr": "2.0.8"
@@ -222,11 +161,12 @@ overrides:
   "sprintf-js": "1.1.3"
   "tar": "7.5.22"
   "tmp": "0.2.7"
-  "undici@6": "6.28.1"
-  "undici@7": "7.29.1"
+  "undici@6": "6.29.1"
+  "undici@7": "7.30.1"
   "uuid": "11.1.1"
-  "vite": "7.3.6"
-  "vitest@4": "4.1.11"
+  # Includes launch-editor fixes for all three Windows/WSL advisories.
+  "vite": "7.3.7"
+  "vitest@4": "4.1.12"
   "ws@6": "6.2.4"
   "ws@7": "7.5.11"
   "ws@8": "8.21.3"
@@ -239,5 +179,7 @@ overrides:
 patchedDependencies:
   braces@3.0.3: patches/braces@3.0.3.patch
   http-cache-semantics@4.3.0: patches/http-cache-semantics@4.3.0.patch
+  # GHSA-86w9-cpqp-85rv: no patched upstream release; validate nested
+  # DigestAlgorithm elements with the tracked source patch.
   node-forge@1.4.0: patches/node-forge@1.4.0.patch
   sprintf-js@1.1.3: patches/sprintf-js@1.1.3.patch

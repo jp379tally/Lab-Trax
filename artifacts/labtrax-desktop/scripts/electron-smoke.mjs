@@ -10,6 +10,8 @@
  *   4. The preload-exposed `window.electronAPI` bridge exists with the
  *      complete set of expected groups and methods.
  *   5. `app.getVersion()` is callable from the main process.
+ *   6. Bundled PDF.js worker loads over app:// and both synthetic PDF pages
+ *      reach a local analysis stub through the real intake UI.
  *
  * This complements the vitest suite (which mocks Electron). Failures here
  * indicate real-runtime breakage — preload contextIsolation issues, broken
@@ -29,6 +31,7 @@
  * explaining why each line is benign.
  *
  * Run locally:
+ *   LABTRAX_RENDERER_SMOKE=1 VITE_API_BASE_URL=https://example.invalid pnpm --filter @workspace/labtrax-desktop exec vite build --config vite.electron.config.ts
  *   pnpm --filter @workspace/labtrax-desktop run electron:smoke
  *
  * Run in CI under a virtual display:
@@ -39,6 +42,7 @@ import { _electron as electron } from "playwright-core";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { verifyPackagedPdfIntake } from "./lib/packaged-pdf-intake-smoke.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -47,7 +51,16 @@ const indexHtml = path.join(appRoot, "dist", "electron-app", "index.html");
 if (!existsSync(indexHtml)) {
   console.error(
     `\nERROR: renderer build not found at ${indexHtml}\n` +
-      `Run \`pnpm --filter @workspace/labtrax-desktop exec vite build --config vite.electron.config.ts\` first.\n`,
+      `Run \`LABTRAX_RENDERER_SMOKE=1 VITE_API_BASE_URL=https://example.invalid pnpm --filter @workspace/labtrax-desktop exec vite build --config vite.electron.config.ts\` first.\n`,
+  );
+  process.exit(1);
+}
+
+const intakeFixture = path.join(appRoot, "dist", "electron-app", "browser-tests", "dashboard-reference.html");
+if (!existsSync(intakeFixture)) {
+  console.error(
+    `ERROR: packaged PDF intake fixture missing at ${intakeFixture}\n` +
+    "Rebuild with LABTRAX_RENDERER_SMOKE=1 (smoke-only fixtures are excluded from release builds).",
   );
   process.exit(1);
 }
@@ -245,7 +258,13 @@ const version = await electronApp
   });
 console.log("App version reported by main process:", version);
 
-await electronApp.close();
+try {
+  await verifyPackagedPdfIntake(window);
+} catch (error) {
+  errors.push(error.message);
+} finally {
+  await electronApp.close();
+}
 
 if (errors.length > 0) {
   console.error("\n✗ Electron smoke test FAILED:");

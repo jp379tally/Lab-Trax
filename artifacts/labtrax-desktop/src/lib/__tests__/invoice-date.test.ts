@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatInvoiceDate,
   hasInvoiceDateRepairChanges,
+  invoiceDateInputHasChanged,
   isLikelyLegacyShiftedInvoiceDate,
   invoiceDateInputToTimestamp,
   invoiceTimestampToDateInput,
@@ -17,6 +18,13 @@ describe("invoice date-only conversion", () => {
 
   it("serializes date input as canonical UTC midnight", () => {
     expect(invoiceDateInputToTimestamp("2026-01-15")).toBe("2026-01-15T00:00:00.000Z");
+  });
+
+  it("does not treat the same displayed calendar date as an issue-date edit", () => {
+    expect(invoiceDateInputHasChanged("2026-01-15", "2026-01-15T05:30:00.000Z")).toBe(false);
+    expect(invoiceDateInputHasChanged("2026-01-16", "2026-01-15T05:30:00.000Z")).toBe(true);
+    expect(invoiceDateInputHasChanged("", null)).toBe(false);
+    expect(invoiceDateInputHasChanged("", "2026-01-15T05:30:00.000Z")).toBe(true);
   });
 
   it("remains stable through repeated save and reopen round trips", () => {

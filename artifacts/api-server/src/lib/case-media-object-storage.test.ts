@@ -1,29 +1,60 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import * as os from "node:os";
 import * as path from "node:path";
+import archiver from "archiver";
+import { planBackupMedia } from "./backup-media-producer";
+
+interface FakePinnedFile {
+  name: string;
+  bucket: { file(name: string, options?: { generation?: string }): FakePinnedFile };
+  getMetadata(): Promise<Array<{ size: string; generation: string }>>;
+  createReadStream(options?: { validation?: string }): Readable;
+}
 
 const fakeStorage = vi.hoisted(() => ({
-  objects: [] as Array<{ name: string; bytes: Buffer; fail?: boolean; size?: number; stall?: boolean; deny?: boolean }>,
+  objects: [] as Array<{ name: string; bytes: Buffer; fail?: boolean; size?: number; stall?: boolean; stallAfterData?: boolean; deny?: boolean }>,
   requests: [] as Array<{ bucketName: string; prefix: string }>,
+  reads: [] as Array<{ name: string; generation?: string; validation?: string }>,
+  readStarted: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@google-cloud/storage", () => ({
   Storage: class {
     bucket(bucketName: string) {
-      return {
-        file: (name: string) => {
+      const bucket = {
+        file: (name: string, fileOptions?: { generation?: string }): FakePinnedFile => {
           const object = fakeStorage.objects.find((item) => item.name === name)!;
           return {
+            name,
+            bucket,
             getMetadata: async () => {
               if (!object) throw Object.assign(new Error("No such object"), { code: 404 });
               if (object.deny) throw Object.assign(new Error("test permission denied"), { code: 403 });
               return [{ size: String(object.size ?? object.bytes.length), generation: "1" }];
             },
-            createReadStream: () => object.stall ? new Readable({ read() {} }) : object.fail
-              ? Readable.from((async function* () { throw new Error("test object stream failure"); })())
-              : Readable.from([object.bytes]),
+            createReadStream: (streamOptions?: { validation?: string }) => {
+              fakeStorage.reads.push({
+                name,
+                generation: fileOptions?.generation,
+                validation: streamOptions?.validation,
+              });
+              fakeStorage.readStarted?.();
+              if (object.stall) return new Readable({ read() {} });
+              if (object.stallAfterData) {
+                let sent = false;
+                return new Readable({ read() {
+                  if (!sent) { sent = true; this.push(object.bytes); }
+                } });
+              }
+              if (object.fail) {
+                const stream = new Readable({ read() {} });
+                queueMicrotask(() => stream.destroy(new Error("test object stream failure")));
+                return stream;
+              }
+              return Readable.from([object.bytes]);
+            },
           };
         },
         getFiles: async ({ prefix }: { prefix: string }) => {
@@ -48,6 +79,7 @@ vi.mock("@google-cloud/storage", () => ({
           ];
         },
       };
+      return bucket;
     }
   },
 }));
@@ -60,6 +92,8 @@ describe("copyCaseMediaObjectsToDirectory", () => {
     vi.stubEnv("PRIVATE_OBJECT_DIR", "/test-bucket/private-data");
     fakeStorage.objects = [];
     fakeStorage.requests = [];
+    fakeStorage.reads = [];
+    fakeStorage.readStarted = undefined;
     destinationDir = await mkdtemp(path.join(os.tmpdir(), "case-media-object-copy-"));
   });
 
@@ -128,6 +162,135 @@ describe("copyCaseMediaObjectsToDirectory", () => {
     const checked = expect(pending).rejects.toThrow("stalled for 60 seconds");
     await vi.advanceTimersByTimeAsync(61_000);
     await checked;
+  });
+
+  it("times out a stalled pinned stream used by the direct-to-archive producer", async () => {
+    fakeStorage.objects = [{ name: "private-data/case-media/stalled-stream.bin", bytes: Buffer.from("unread"), stall: true }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    vi.useFakeTimers();
+    const consumed = (async () => {
+      for await (const _chunk of object!.openStream!()) {
+        // Consume until the idle guard rejects the non-progressing source.
+      }
+    })();
+    const checked = expect(consumed).rejects.toThrow("stalled for 60 seconds");
+    await vi.advanceTimersByTimeAsync(61_000);
+    await checked;
+    expect(fakeStorage.reads).toContainEqual({
+      name: "private-data/case-media/stalled-stream.bin",
+      generation: "1",
+      validation: "crc32c",
+    });
+  });
+
+  it("does not count downstream backpressure as a stalled pinned download", async () => {
+    const bytes = Buffer.alloc(256 * 1024, "p");
+    fakeStorage.objects = [{ name: "private-data/case-media/queued.bin", bytes }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    vi.useFakeTimers();
+    const stream = object!.openStream!();
+    const errors: Error[] = [];
+    stream.on("error", error => errors.push(error));
+    // A later archive entry is allowed to wait for the current entry/output.
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(errors).toEqual([]);
+    expect(stream.destroyed).toBe(false);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(bytes);
+  });
+
+  it("still times out a stalled source after downstream demand resumes", async () => {
+    fakeStorage.objects = [{
+      name: "private-data/case-media/stall-after-pause.bin",
+      bytes: Buffer.alloc(256 * 1024, "p"), stallAfterData: true,
+    }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    vi.useFakeTimers();
+    const stream = object!.openStream!();
+    stream.on("error", () => undefined);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(stream.destroyed).toBe(false);
+    const consumed = (async () => { for await (const _chunk of stream) { /* drain */ } })();
+    const checked = expect(consumed).rejects.toThrow("stalled for 60 seconds");
+    await vi.advanceTimersByTimeAsync(61_000);
+    await checked;
+  });
+
+  it("honors cancellation while a pinned download is backpressured", async () => {
+    fakeStorage.objects = [{
+      name: "private-data/case-media/cancel-paused.bin", bytes: Buffer.alloc(256 * 1024, "p"),
+    }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const stream = object!.openStream!(controller.signal);
+    stream.on("error", () => undefined);
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort();
+    const consumed = (async () => { for await (const _chunk of stream) { /* drain */ } })();
+    await expect(consumed).rejects.toThrow("aborted");
+  });
+
+  it("refuses to write complete-recovery evidence when a pinned media stream times out", async () => {
+    fakeStorage.objects = [{ name: "private-data/case-media/recovery-stall.bin", bytes: Buffer.from("unread"), stall: true }];
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>(resolve => { markReadStarted = resolve; });
+    fakeStorage.readStarted = markReadStarted;
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    const media = await planBackupMedia(path.join(destinationDir, "local"), [object!]);
+    const archive = archiver("zip");
+    archive.on("error", () => undefined);
+    archive.pipe(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
+    vi.useFakeTimers();
+    let completeRecoveryEvidenceWritten = false;
+    const append = media.append(archive).then(() => {
+      // Complete-backup appends its recovery manifest only after every media
+      // source has been read and appended successfully.
+      completeRecoveryEvidenceWritten = true;
+    });
+    await readStarted;
+    expect(fakeStorage.reads).toHaveLength(1);
+    const checked = expect(append).rejects.toThrow(/case-media transfer into archive/i);
+    await vi.advanceTimersByTimeAsync(61_000);
+    await checked;
+    expect(completeRecoveryEvidenceWritten).toBe(false);
+  });
+
+  it("streams the pinned generation with explicit CRC32C validation", async () => {
+    const bytes = Buffer.from("verified pinned object");
+    fakeStorage.objects = [{ name: "private-data/case-media/pinned.bin", bytes }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    const chunks: Buffer[] = [];
+    for await (const chunk of object!.openStream!()) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(bytes);
+    expect(fakeStorage.reads).toEqual([{
+      name: "private-data/case-media/pinned.bin",
+      generation: "1",
+      validation: "crc32c",
+    }]);
+  });
+
+  it("rejects an unreadable pinned object stream instead of treating it as covered", async () => {
+    fakeStorage.objects = [{
+      name: "private-data/case-media/unreadable.bin",
+      bytes: Buffer.from("unreadable"),
+      fail: true,
+    }];
+    const storage = await import("./case-media-object-storage.js");
+    const [object] = await storage.listCaseMediaBackupObjects();
+    const readAll = async () => {
+      for await (const _chunk of object!.openStream!()) {
+        // Consume the full stream so late CRC or transport errors are observed.
+      }
+    };
+    await expect(readAll()).rejects.toThrow("test object stream failure");
   });
 
   it("rejects unsafe paths and an already cancelled inventory without downloading anything", async () => {

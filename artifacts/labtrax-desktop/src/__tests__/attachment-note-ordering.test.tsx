@@ -269,7 +269,7 @@ describe("Per-file note prompt — each note lands on the right file", () => {
     );
 
     // Wait for the drawer to open (deep-link fetches the case detail).
-    const filesTab = await screen.findByRole("button", { name: "Files" }, { timeout: 10000 });
+    const filesTab = await screen.findByRole("tab", { name: /^Files(?:\s|$)/ }, { timeout: 10000 });
     fireEvent.click(filesTab);
 
     const input = container.querySelector(

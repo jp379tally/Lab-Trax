@@ -40,6 +40,7 @@ import {
   getBackupRunId,
   markBackupLiveAwaitingVerification,
   measureBackupPhase,
+  overallBackupProgress,
   setBackupLiveArchiveEvidence,
   setBackupLiveProgress,
   setBackupLivePhase,
@@ -52,6 +53,28 @@ afterEach(() => {
   persistence.rows.clear();
 });
 describe("backup phase timing and failure feedback", () => {
+  it("reports conservative whole-run progress and reserves 100 for confirmed success", () => {
+    expect(overallBackupProgress({
+      state: "running",
+      phase: "case-media transfer into archive",
+      metrics: { completedBytes: 5, totalBytes: 10 },
+    })).toBe(51);
+    expect(overallBackupProgress({
+      state: "awaiting_verification",
+      phase: "desktop verification",
+      metrics: {},
+    })).toBe(97);
+    expect(overallBackupProgress({
+      state: "failed",
+      phase: "backup complete",
+      metrics: {},
+    })).toBe(99);
+    expect(overallBackupProgress({
+      state: "completed",
+      phase: "backup complete",
+      metrics: {},
+    })).toBe(100);
+  });
   it("logs bounded sizes, elapsed time, heartbeat and a common run identity", async () => {
     vi.useFakeTimers();
     await withBackupRun(async () => {
@@ -68,6 +91,33 @@ describe("backup phase timing and failure feedback", () => {
     expect(records[2]).toMatchObject({ dumpBytes: 100, elapsedMs: 31_000 });
     expect(new Set(records.map((record) => record.runId)).size).toBe(1);
     expect(records[0].runId).toBeTruthy();
+  });
+
+  it("records completed media phase throughput alongside the captured byte totals", async () => {
+    vi.useFakeTimers();
+    const pending = measureBackupPhase(
+      "case-media transfer into archive",
+      async () => {
+        await new Promise(resolve => setTimeout(resolve, 2_000));
+        return 12_000;
+      },
+      () => ({ completedBytes: 12_000, totalBytes: 12_000, mediaBytesPerSecond: 6_000 }),
+      bytes => ({ completedBytes: bytes, totalBytes: bytes, mediaBytesPerSecond: 6_000 }),
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    await pending;
+
+    const completion = logs.info.mock.calls
+      .map(([record, message]) => ({ record, message }))
+      .find(({ record, message }) => record.phase === "case-media transfer into archive" &&
+        message === "[backup] phase completed");
+    expect(completion?.record).toMatchObject({
+      elapsedMs: 2_000,
+      completedBytes: 12_000,
+      totalBytes: 12_000,
+      mediaBytesPerSecond: 6_000,
+      throughputBytesPerSecond: 6_000,
+    });
   });
 
   it("returns a useful phase-specific reason without logging credentials or signed URLs", async () => {
@@ -114,7 +164,9 @@ describe("backup phase timing and failure feedback", () => {
     await withBackupRun(async () => {
       runId = getBackupRunId()!;
       setBackupLivePhase("case-media inventory and reference validation", { tableCount: 4 });
-      setBackupLiveProgress({ tablesCompleted: 2, tableCount: 4, rowsScanned: 512, secretLabel: 7 });
+      setBackupLiveProgress({
+        tablesCompleted: 2, tableCount: 4, rowsScanned: 512, rowsPerSecond: 42, secretLabel: 7,
+      });
       setBackupLiveArchiveEvidence({
         archiveKind: "complete-non-production",
         coverageVersion: 1,
@@ -128,7 +180,7 @@ describe("backup phase timing and failure feedback", () => {
     const expected = {
       state: "completed",
       phase: "backup complete",
-      metrics: { tablesCompleted: 2, tableCount: 4, rowsScanned: 512 },
+      metrics: { tablesCompleted: 2, tableCount: 4, rowsScanned: 512, rowsPerSecond: 42 },
       archiveEvidence: {
         archiveKind: "complete-non-production",
         coverageVersion: 1,

@@ -11,9 +11,11 @@ import {
 import {
   fetchMe,
   getAuthRestoreStatus,
+  installBrowserTabCloseSignOut,
   login as apiLogin,
   logout as apiLogout,
   register as apiRegister,
+  retrySavedAuthRestore,
   subscribeSession,
   waitForTokenHydration,
   type RegisterPayload,
@@ -56,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser((current) => current?.id === userId ? { ...current, profilePhotoUrl: url } : current);
   }, []);
 
-  const verify = useCallback(async () => {
+  const verify = useCallback(async (automaticRestore = false): Promise<void> => {
     const requestRevision = revision.current;
     try {
       // Make sure the encrypted-token hydration has finished before we
@@ -70,6 +72,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("authed");
     } catch {
       if (requestRevision !== revision.current) return;
+      const nextRestoreStatus = getAuthRestoreStatus();
+      setRestoreStatus(
+        automaticRestore && nextRestoreStatus === "ok"
+          ? "restore-failed"
+          : nextRestoreStatus,
+      );
       setUser(null);
       setStatus("anonymous");
     }
@@ -95,11 +103,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void verify();
   }, [verify]);
 
+  // Browser sign-in is tab-scoped. On page termination clear local credentials
+  // synchronously and best-effort revoke only the current bearer session.
+  // Electron uses its encrypted credential bridge and is intentionally skipped.
+  useEffect(() => installBrowserTabCloseSignOut(), []);
+
+  // Electron's safeStorage API does not emit keychain-unlocked events. While
+  // the login screen is active and the initial restore was blocked, re-check
+  // the existing status IPC periodically. The main process returns decrypted
+  // credentials only through the existing secure token bridge, never in a
+  // notification or log message.
+  useEffect(() => {
+    if (status !== "anonymous" || restoreStatus !== "keychain-unavailable") {
+      return;
+    }
+    let stopped = false;
+    let checking = false;
+
+    const retry = async () => {
+      if (checking || stopped) return;
+      checking = true;
+      try {
+        const nextStatus = await retrySavedAuthRestore();
+        if (stopped || nextStatus === "keychain-unavailable") return;
+        setRestoreStatus(nextStatus);
+        if (nextStatus === "ok") {
+          await verify(true);
+        } else if (nextStatus === "decrypt-failed") {
+          setRestoreNoticeDismissed(false);
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    void retry();
+    const interval = setInterval(() => void retry(), 5_000);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [status, restoreStatus, verify]);
+
   // React to session being cleared from anywhere (e.g. failed token refresh).
   useEffect(() => {
     return subscribeSession((next) => {
       revision.current++;
       if (next === null) {
+        setRestoreStatus(getAuthRestoreStatus());
         setUser(null);
         setStatus("anonymous");
       } else {

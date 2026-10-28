@@ -15,22 +15,27 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   disableBackupSchedule,
   getBackupSchedule,
+  getGoogleDriveBackupStatus,
   getOneDriveBackupStatus,
   getRestoreStatus,
   runBackupNow,
+  getBackupRunStatus,
+  followManualBackup,
   saveBackupSchedule,
 } from "@workspace/api-client-react";
 import { SettingsSection } from "@/components/settings/SettingsRow";
 import { Radius, Spacing, Typography } from "@/constants/tokens";
 import { useTheme } from "@/lib/theme-context";
 import { getPlatformAdminSessionHeaders } from "@/lib/platform-admin-session";
-import { resilientFetch } from "@/lib/query-client";
+import { resilientFetch, getApiUrl, refreshAndGetAccessToken, getCsrfToken } from "@/lib/query-client";
+import { chooseBackupSaveFile, readBoundedBrowserBackup, streamCompleteBackupToFile } from "@/lib/backup-browser-download";
 import { DismissKeyboardView, scrollKeyboardDismissMode } from "@/components/ui/DismissKeyboardView";
 
-type Destination = "local" | "network" | "onedrive";
+type Destination = "local" | "network" | "onedrive" | "google-drive";
 type Unit = "minutes" | "hours";
 type ScheduleFrequency = { interval: number; unit: Unit; label: string };
 type BackupSchedule = {
+  sourceEnvironment?: "development" | "production";
   ok?: boolean;
   interval: number | null;
   unit: Unit | null;
@@ -78,6 +83,14 @@ type OneDriveStatus = {
   error: string | null;
   userMessage?: string | null;
   diagnostic?: string | null;
+  manageUrl: string | null;
+};
+type GoogleDriveStatus = {
+  connected: boolean;
+  accountName: string | null;
+  accountEmail: string | null;
+  folder: string;
+  error: string | null;
   manageUrl: string | null;
 };
 type BackupRun = {
@@ -204,6 +217,7 @@ export default function BackupWebScreen() {
   const [manualPath, setManualPath] = useState("");
   const [manualBusy, setManualBusy] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
+  const [manualPhase, setManualPhase] = useState<string | null>(null);
   const [manualResult, setManualResult] = useState<RunResult | null>(null);
   const [scheduleFrequency, setScheduleFrequency] = useState<ScheduleFrequency>(FREQUENCIES[2]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
@@ -256,6 +270,17 @@ export default function BackupWebScreen() {
     staleTime: 60_000,
     retry: false,
   });
+  const googleDriveQuery = useQuery({
+    queryKey: ["admin", "backup-google-drive-status-web"],
+    queryFn: async () => {
+      const data = await getGoogleDriveBackupStatus({
+        headers: await getPlatformAdminSessionHeaders(),
+      });
+      return data as GoogleDriveStatus;
+    },
+    staleTime: 60_000,
+    retry: false,
+  });
   const historyQuery = useQuery({
     queryKey: ["admin", "backup-history-web"],
     queryFn: () => jsonRequest<{ ok?: boolean; runs?: BackupRun[] }>("/history"),
@@ -269,6 +294,9 @@ export default function BackupWebScreen() {
     retry: false,
   });
   const schedule = scheduleQuery.data;
+  const backupSourceHeaders: Record<string, string> = schedule?.sourceEnvironment
+    ? { "X-LabTrax-Backup-Source": schedule.sourceEnvironment }
+    : {};
   const history = historyQuery.data?.runs ?? [];
   const hasSavedFrequency = schedule?.interval != null && schedule.unit != null;
   const savedFrequencyMinutes = intervalMinutes(schedule?.interval, schedule?.unit);
@@ -325,17 +353,28 @@ export default function BackupWebScreen() {
   async function startManualBackup() {
     setManualBusy(true);
     setManualError(null);
+    setManualPhase(null);
     setManualResult(null);
     try {
       if (manualDestination === "local") {
+        const selectedFile = await chooseBackupSaveFile();
         const headers = await getPlatformAdminSessionHeaders();
-        const response = await resilientFetch("/api/admin/backup/generate", { method: "POST", headers });
-        if (!response.ok) {
-          const errorBody = await response.json().catch(() => ({}));
-          throw apiError(errorBody, response.status);
+        const token = await refreshAndGetAccessToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const csrf = getCsrfToken();
+        if (csrf) headers["X-CSRF-Token"] = csrf;
+        const requestUrl = `${getApiUrl()}api/admin/backup/generate`;
+        const options = { method: "POST", credentials: "include" as const, headers: { ...headers, ...backupSourceHeaders } };
+        if (selectedFile) {
+          const size = await streamCompleteBackupToFile(requestUrl, options, await selectedFile.createWritable());
+          setManualResult({
+            size, completedAt: new Date().toISOString(), fileName: selectedFile.name,
+            viaBrowser: true,
+          });
+          return;
         }
-        const buffer = await response.arrayBuffer();
-        const disposition = response.headers.get("Content-Disposition") ?? "";
+        const { buffer, headers: responseHeaders } = await readBoundedBrowserBackup(requestUrl, options);
+        const disposition = responseHeaders.get("Content-Disposition") ?? "";
         const fileName = /filename="([^"]+)"/i.exec(disposition)?.[1] ?? "labtrax-backup.zip.enc";
         const url = URL.createObjectURL(new Blob([buffer], { type: "application/octet-stream" }));
         const anchor = document.createElement("a");
@@ -347,9 +386,16 @@ export default function BackupWebScreen() {
         URL.revokeObjectURL(url);
         setManualResult({ size: buffer.byteLength, completedAt: new Date().toISOString(), fileName, viaBrowser: true });
       } else {
-        const result = await runBackupNow(
-          { destination: manualDestination, path: manualPath.trim() },
-          { headers: await getPlatformAdminSessionHeaders() },
+        const headers = { ...await getPlatformAdminSessionHeaders(), ...backupSourceHeaders };
+        const runId = globalThis.crypto.randomUUID();
+        const result = await followManualBackup(
+          runId,
+          () => runBackupNow(
+            { destination: manualDestination, path: manualPath.trim(), runId, respondAsync: true },
+            { headers },
+          ),
+          () => getBackupRunStatus(runId, { headers }),
+          status => setManualPhase(status.phase),
         );
         setManualResult({
           size: result.size ?? 0,
@@ -365,6 +411,7 @@ export default function BackupWebScreen() {
       void queryClient.invalidateQueries({ queryKey: ["admin", "backup-history-web"] });
     } finally {
       setManualBusy(false);
+      setManualPhase(null);
     }
   }
 
@@ -376,14 +423,16 @@ export default function BackupWebScreen() {
         interval: scheduleFrequency.interval,
         unit: scheduleFrequency.unit,
         destination: scheduleDestination,
-        path: scheduleDestination === "onedrive" ? null : schedulePath.trim() || null,
+        path: scheduleDestination === "onedrive" || scheduleDestination === "google-drive"
+          ? null
+          : schedulePath.trim() || null,
         enabled: scheduleEnabled,
         staleAfterDays: Number(staleDays),
         staleAlertThresholdDays: Number(alertThreshold),
         staleAlertRateLimitDays: Number(alertRateLimit),
       };
       const headers = await getPlatformAdminSessionHeaders();
-      await saveBackupSchedule(payload as any, { headers });
+      await saveBackupSchedule(payload as any, { headers: { ...headers, ...backupSourceHeaders } });
       setScheduleMessage({ tone: "success", text: "Routine schedule saved. Off-site protection remains on its independent timer." });
       refreshBackupQueries();
     } catch (error) {
@@ -413,7 +462,9 @@ export default function BackupWebScreen() {
     setScheduleRunError(null);
     setScheduleRunResult(null);
     try {
-      const result = await jsonRequest<RunResult & { destination?: string }>("/schedule/run-now", { method: "POST" });
+      const result = await jsonRequest<RunResult & { destination?: string }>("/schedule/run-now", {
+        method: "POST", headers: backupSourceHeaders,
+      });
       setScheduleRunResult(result);
       refreshBackupQueries();
     } catch (error) {
@@ -585,12 +636,24 @@ export default function BackupWebScreen() {
     }
   }
 
+  function openGoogleDriveManage() {
+    if (googleDriveQuery.data?.manageUrl && Platform.OS === "web" && typeof window !== "undefined") {
+      window.open(googleDriveQuery.data.manageUrl, "_blank", "noopener,noreferrer");
+    }
+  }
+
   const oneDriveConnected = oneDriveQuery.data?.connected === true;
+  const googleDriveConnected = googleDriveQuery.data?.connected === true;
   const manualReady = !manualBusy && (
     manualDestination === "local" ||
-    (manualDestination === "onedrive" ? oneDriveConnected : manualPath.trim().startsWith("sftp://"))
+    (manualDestination === "onedrive" && oneDriveConnected) ||
+    (manualDestination === "google-drive" && googleDriveConnected) ||
+    (manualDestination === "network" && manualPath.trim().startsWith("sftp://"))
   );
-  const canRunSavedSchedule = schedule?.destination === "onedrive" || (schedule?.destination === "network" && schedule.path?.trim().startsWith("sftp://"));
+  const canRunSavedSchedule =
+    schedule?.destination === "onedrive" ||
+    schedule?.destination === "google-drive" ||
+    (schedule?.destination === "network" && schedule.path?.trim().startsWith("sftp://"));
   const newestSuccessfulRun = history.find((run) => run.status === "success");
   const latestPartialRun = newestSuccessfulRun?.partialFailure ? newestSuccessfulRun : null;
 
@@ -660,7 +723,7 @@ export default function BackupWebScreen() {
           <View style={styles.hud} testID="backup-server-status">
             <View style={styles.hudTop}>
               <Text style={[styles.hudEyebrow, { color: colors.textTertiary }]}>SERVER-REPORTED · LIVE VALUES</Text>
-              <Pressable onPress={() => { void scheduleQuery.refetch(); void oneDriveQuery.refetch(); void historyQuery.refetch(); }} testID="backup-refresh-status" style={styles.refreshButton}>
+              <Pressable onPress={() => { void scheduleQuery.refetch(); void oneDriveQuery.refetch(); void googleDriveQuery.refetch(); void historyQuery.refetch(); }} testID="backup-refresh-status" style={styles.refreshButton}>
                 <Ionicons name="refresh-outline" size={14} color={colors.tint} />
                 <Text style={[styles.refreshText, { color: colors.tint }]}>Refresh</Text>
               </Pressable>
@@ -765,7 +828,46 @@ export default function BackupWebScreen() {
         )}
       </SettingsSection>
 
+      <SettingsSection title="Google Drive connection">
+        {googleDriveQuery.isLoading ? (
+          <View style={styles.inlineLoading}><ActivityIndicator size="small" color={colors.tint} /><Text style={[styles.bodyText, { color: colors.textSecondary }]}>Checking Google Drive…</Text></View>
+        ) : googleDriveQuery.isError ? (
+          <View style={styles.stack}>
+            <Text style={[styles.bodyText, { color: colors.error }]} testID="google-drive-status-error">{(googleDriveQuery.error as Error)?.message ?? "Could not check Google Drive."}</Text>
+            <ActionButton label="Check again" icon="refresh-outline" onPress={() => void googleDriveQuery.refetch()} testID="google-drive-check-again-button" styles={styles} colors={colors} variant="secondary" />
+          </View>
+        ) : googleDriveConnected ? (
+          <View style={styles.stack} testID="google-drive-status-connected">
+            <View style={styles.connectionRow}><Badge text="CONNECTED" tone="success" styles={styles} colors={colors} /><Text style={[styles.bodyText, { color: colors.text }]}>{googleDriveQuery.data?.accountName ?? googleDriveQuery.data?.accountEmail ?? "Google account linked"}</Text></View>
+            {googleDriveQuery.data?.accountEmail && googleDriveQuery.data?.accountName ? <Text style={[styles.helperText, { color: colors.textSecondary }]}>{googleDriveQuery.data.accountEmail}</Text> : null}
+            <Text style={[styles.helperText, { color: colors.textSecondary }]}>Backup folder · <Text style={[styles.mono, { color: colors.text }]}>{googleDriveQuery.data?.folder ?? "—"}</Text></Text>
+            <View style={styles.buttonRow}>
+              {googleDriveQuery.data?.manageUrl ? <ActionButton label="Manage / reconnect" icon="open-outline" onPress={openGoogleDriveManage} testID="google-drive-reconnect-button" styles={styles} colors={colors} variant="secondary" /> : null}
+              <ActionButton label="Check again" icon="refresh-outline" onPress={() => void googleDriveQuery.refetch()} testID="google-drive-check-again-button" styles={styles} colors={colors} variant="secondary" />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.stack} testID="google-drive-status-disconnected">
+            <Text style={[styles.noticeTitle, { color: colors.warning }]}>Google Drive is not connected</Text>
+            <Text style={[styles.bodyText, { color: colors.textSecondary }]}>
+              {googleDriveQuery.data?.error ?? "Connect Google Drive in the LabTrax hosting workspace, then check again."}
+            </Text>
+            <View style={styles.buttonRow}>
+              {googleDriveQuery.data?.manageUrl ? <ActionButton label="Connect Google Drive" icon="open-outline" onPress={openGoogleDriveManage} testID="google-drive-connect-button" styles={styles} colors={colors} variant="secondary" /> : null}
+              <ActionButton label="Check again" icon="refresh-outline" onPress={() => void googleDriveQuery.refetch()} testID="google-drive-check-again-button" styles={styles} colors={colors} variant="secondary" />
+            </View>
+          </View>
+        )}
+      </SettingsSection>
+
       <SettingsSection title="Back up LabTrax data now">
+        <Text testID="backup-source-label" style={{ color: colors.text }}>
+          Database source: {schedule?.sourceEnvironment === "production" ? "Production" :
+            schedule?.sourceEnvironment === "development" ? "Development" : "Not confirmed by this server"}
+        </Text>
+        <Text style={{ color: colors.text }}>
+          Backups and schedules use this app's connected database and files. For development use the Replit preview; for production use the published app. Desktop uses its configured server. Changing a destination does not change the database source.
+        </Text>
         <Text style={[styles.bodyText, { color: colors.textSecondary }]}>Creates an encrypted archive of LabTrax records and available media attachments.</Text>
         <View style={styles.stack}>
           <Text style={[styles.label, { color: colors.textSecondary }]}>Destination</Text>
@@ -773,10 +875,11 @@ export default function BackupWebScreen() {
             { value: "local", label: "Local / USB" },
             { value: "network", label: "Network · SFTP" },
             { value: "onedrive", label: "OneDrive" },
+            { value: "google-drive", label: "Google Drive" },
           ]} value={manualDestination} onChange={(value: Destination) => { setManualDestination(value); setManualError(null); setManualResult(null); }} testID="manual-backup-destination" styles={styles} colors={colors} />
           {manualDestination === "local" ? (
             <Notice styles={styles} colors={colors} tone="info" testID="browser-local-backup-note">
-              Browser local / USB backup downloads the encrypted archive through your browser. It cannot write to an arbitrary folder, USB drive, or UNC/SMB share. Direct folder selection and scheduled local backups require LabTrax Desktop; Desktop must remain open for scheduled local jobs.
+              Browser local / USB backup downloads the encrypted archive through your browser. It cannot write to an arbitrary folder, USB drive, or UNC/SMB share. Direct folder selection requires LabTrax Desktop. When a local schedule is enabled, Desktop can keep its per-user background companion running from the system tray while its window is closed.
             </Notice>
           ) : null}
           {manualDestination === "network" ? (
@@ -791,6 +894,12 @@ export default function BackupWebScreen() {
               {oneDriveConnected ? `Manual run uploads to ${oneDriveQuery.data?.folder ?? "the connected OneDrive folder"}.` : "Connect OneDrive before running a manual backup."}
             </Notice>
           ) : null}
+          {manualDestination === "google-drive" ? (
+            <Notice styles={styles} colors={colors} tone={googleDriveConnected ? "success" : "warning"} testID="manual-google-drive-status">
+              {googleDriveConnected ? `Manual run uploads to ${googleDriveQuery.data?.folder ?? "the connected Google Drive folder"}.` : "Connect Google Drive before running a manual backup."}
+            </Notice>
+          ) : null}
+          {manualBusy && manualPhase ? <Text testID="manual-backup-progress" style={[styles.bodyText, { color: colors.textSecondary }]}>{manualPhase}</Text> : null}
           {manualError ? <Notice styles={styles} colors={colors} tone="error" testID="manual-backup-error">{manualError}</Notice> : null}
           {manualResult ? (
             <Notice styles={styles} colors={colors} tone={manualResult.partialFailure ? "warning" : "success"} testID="manual-backup-result">
@@ -844,20 +953,21 @@ export default function BackupWebScreen() {
                 { value: "local", label: "Local folder / USB" },
                 { value: "network", label: "Network · SFTP" },
                 { value: "onedrive", label: "OneDrive" },
+                { value: "google-drive", label: "Google Drive" },
               ]} value={scheduleDestination} onChange={setScheduleDestination} testID="schedule-destination" styles={styles} colors={colors} />
             </View>
-            {scheduleDestination !== "onedrive" ? (
+            {scheduleDestination !== "onedrive" && scheduleDestination !== "google-drive" ? (
               <View style={styles.stack}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>{scheduleDestination === "local" ? "Folder path" : "SFTP URL"}</Text>
                 <TextInput value={schedulePath} onChangeText={setSchedulePath} placeholder={scheduleDestination === "local" ? "C:\\Backups\\LabTrax" : "sftp://user@host/backups"} autoCapitalize="none" autoCorrect={false} testID="schedule-path" style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]} placeholderTextColor={colors.textTertiary} />
                 <Text style={[styles.helperText, { color: colors.textTertiary }]}>
                   {scheduleDestination === "local"
-                    ? "Local / USB schedules are executed by LabTrax Desktop while it is open. The browser does not run a background local scheduler."
+                     ? "Local / USB schedules are executed by the LabTrax Desktop background companion while your laptop account is signed in. Close the window to keep it in the system tray; sleep, sign-out, shutdown, or a disconnected drive pauses the run."
                     : "Server-side scheduled network backups support SFTP only. UNC/SMB is not writable from the server."}
                 </Text>
               </View>
             ) : (
-              <Text style={[styles.helperText, { color: colors.textSecondary }]}>OneDrive routine runs are server-side. This cadence remains independent from off-site protection.</Text>
+              <Text style={[styles.helperText, { color: colors.textSecondary }]}>{scheduleDestination === "onedrive" ? "OneDrive routine runs are server-side." : "Google Drive routine runs are server-side."} This cadence remains independent from off-site protection.</Text>
             )}
             <View style={styles.numberGrid}>
               <NumberField label="Overdue after" suffix="days" value={staleDays} onChange={setStaleDays} testID="schedule-stale-days" styles={styles} colors={colors} />
@@ -866,7 +976,7 @@ export default function BackupWebScreen() {
             </View>
             {scheduleMessage ? <Notice styles={styles} colors={colors} tone={scheduleMessage.tone} testID="schedule-save-message">{scheduleMessage.text}</Notice> : null}
             <View style={styles.buttonRow}>
-              <ActionButton label={scheduleBusy ? "Saving…" : "Save schedule"} busy={scheduleBusy} icon="save-outline" disabled={scheduleBusy || !schedule || (scheduleDestination !== "onedrive" && !schedulePath.trim())} onPress={() => void saveRoutineSchedule()} testID="schedule-save" styles={styles} colors={colors} />
+              <ActionButton label={scheduleBusy ? "Saving…" : "Save schedule"} busy={scheduleBusy} icon="save-outline" disabled={scheduleBusy || !schedule || ((scheduleDestination !== "onedrive" && scheduleDestination !== "google-drive") && !schedulePath.trim())} onPress={() => void saveRoutineSchedule()} testID="schedule-save" styles={styles} colors={colors} />
               {schedule?.enabled ? <ActionButton label="Disable routine" icon="pause-outline" disabled={scheduleBusy} onPress={() => void disableRoutineSchedule()} testID="schedule-disable" styles={styles} colors={colors} variant="secondary" /> : null}
             </View>
             <View style={[styles.runNowPanel, { backgroundColor: colors.background, borderColor: colors.border }]}>

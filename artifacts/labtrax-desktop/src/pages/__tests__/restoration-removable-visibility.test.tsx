@@ -204,7 +204,7 @@ describe('CaseDrawer "Add manually" form — removable type hides Tooth # / Rang
     );
 
     // Navigate to the Restorations tab.
-    const restoTab = await screen.findByRole("button", { name: /restorations/i });
+    const restoTab = await screen.findByRole("tab", { name: /restorations/i });
     fireEvent.click(restoTab);
 
     // Open the "Add manually" drawer form.
@@ -350,7 +350,7 @@ describe("CaseDrawer — catalog fetch returns non-200 error", () => {
       </Wrapper>,
     );
 
-    const restoTab = await screen.findByRole("button", { name: /restorations/i });
+    const restoTab = await screen.findByRole("tab", { name: /restorations/i });
     fireEvent.click(restoTab);
 
     const addManually = await screen.findByRole("button", { name: /add manually/i });

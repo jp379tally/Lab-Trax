@@ -1,3 +1,5 @@
+import { writeProductionObject } from "./production-media-object-write";
+import { writeProductionUpload } from "./production-media-local-write";
 /**
  * Durable, read-back-verified backups of a legacy case's ORIGINAL
  * `lab_cases.case_data` blob, taken immediately before the inline-media
@@ -168,7 +170,7 @@ export const defaultLegacyCaseDataBackupStore: LegacyCaseDataBackupStore = {
     const bytes = Buffer.byteLength(body, "utf8");
     const file = objectFile(runId, caseId);
     if (file) {
-      await file.save(Buffer.from(body, "utf8"), {
+      await writeProductionObject(file, `private-objects/legacy-case-data-backups/${runId}/${caseId}.json`, "legacy-case-data", Buffer.from(body, "utf8"), {
         contentType: "application/json",
         resumable: false,
       });
@@ -180,7 +182,7 @@ export const defaultLegacyCaseDataBackupStore: LegacyCaseDataBackupStore = {
     }
     const target = diskPath(runId, caseId);
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, body, "utf8");
+    await writeProductionUpload(target, body, "legacy-case-data");
     return { location: "disk", key: target, bytes };
   },
 

@@ -21,6 +21,7 @@ import {
   EMPTY_SELECTION,
   agingAsOf,
   buildPayableCustomers,
+  buildSelectablePayableCustomers,
   pruneSelection,
   savedSelectionsKey,
   selectedFigures,
@@ -120,7 +121,7 @@ function ReceivePaymentsScreen({
   const loadError = errorText(statementAccounts.error) ?? errorText(invoiceAccounts.error);
 
   const customers = useMemo(
-    () => buildPayableCustomers(statementAccounts.data, invoiceAccounts.data, agingAsOf()),
+    () => buildSelectablePayableCustomers(buildPayableCustomers(statementAccounts.data, invoiceAccounts.data, agingAsOf())),
     [statementAccounts.data, invoiceAccounts.data],
   );
   const liveById = useMemo(

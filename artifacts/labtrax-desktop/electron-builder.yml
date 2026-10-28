@@ -61,6 +61,9 @@ nsis:
 
 # ─── macOS ──────────────────────────────────────────────────────────────────
 mac:
+  # Keep the architecture in a stable position so release validation and
+  # App Storage update-payload lookup use an exact, versioned filename.
+  artifactName: "LabTrax-${version}-${arch}-mac.${ext}"
   target:
     # DMG for standard distribution; zip is used by the auto-updater.
     - target: dmg
@@ -98,25 +101,23 @@ dmg:
   sign: false
 
 # ─── Publish ─────────────────────────────────────────────────────────────────
-# Using the "generic" publish provider so electron-updater points at the
-# same App Storage-backed API server that already serves the installer ZIPs.
-# This replaces the GitHub Releases provider, which requires a GitHub remote
-# and GH_TOKEN — neither is available in the Replit environment where this
-# app is built and published.
+# Use the "generic" provider so electron-updater fetches platform manifests
+# from the App Storage-backed API server. Windows update payloads are served
+# from /downloads/LabTrax-Setup.exe; macOS update ZIPs are copied to App
+# Storage before the release workflow exposes their manifest.
 #
-# UPDATE_FEED_URL (set by scripts/desktop-build-publish.sh before calling
-# electron-builder) is expanded here and baked into resources/app-update.yml
-# inside the packaged app. Every installed copy reads that file to know where
-# to fetch latest.yml at runtime — no environment variable is required on
-# the end-user's machine.
+# The runtime update feed is recorded in build-stamp.json and selected by
+# electron/main.cjs. UPDATE_FEED_URL is also expanded here for electron-updater
+# compatibility and local feed tests. Direct installer builds use /downloads/;
+# the Replit-only portable build is marked as non-updatable and never publishes
+# an updater manifest.
 #
 # scripts/electron-build.mjs substitutes ${UPDATE_FEED_URL} into a generated
-# copy of this file (electron-builder.generated.yml) and builds from that when
-# UPDATE_FEED_URL is present, so ad-hoc test builds (local http-server feed —
-# see docs/auto-update-runbook.md) can point at a different URL without
-# modifying this file. Do NOT pass the override as a second `--config <json>`
-# CLI argument — electron-builder 26 treats the JSON as a file path and fails
-# with ENOENT before repacking app.asar.
+# copy of this file (electron-builder.generated.yml) when UPDATE_FEED_URL is
+# present, so ad-hoc test builds (local http-server feed — see docs/auto-update-runbook.md)
+# can point at a different URL without modifying this file. Do NOT pass the
+# override as a second `--config <json>` CLI argument — electron-builder 26
+# treats the JSON as a file path and fails with ENOENT before repacking app.asar.
 publish:
   provider: generic
   url: ${UPDATE_FEED_URL}

@@ -36,7 +36,9 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-intake"),
+  // Keep the owned synthetic workspace while using the real durable namespace.
+  // The production writer correctly refuses arbitrary unregistered folders.
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-intake", "case-media"),
   extractMediaFileName: () => null,
   extractMediaFilenamesFromText: () => [],
 }));
@@ -779,6 +781,24 @@ maybe("AI intake data carry-through (db integration)", () => {
           unitPrice: 0,
         },
       ];
+      const providerContactSnapshot = {
+        doctorName: "Dr. Reviewed",
+        providerOrganizationId: providerOrgId,
+        practiceName: "Reviewed Practice",
+        primaryAddress: "50 Intake Avenue, Springfield, IL 62701",
+        billingAddress: "PO Box 20, Springfield, IL 62702",
+        phone: "555-0188",
+        primaryEmail: "office@example.test",
+        billingEmail: "billing@example.test",
+      };
+      const reviewedRestorations = [{
+        toothNumber: "14",
+        restorationType: "Crown",
+        restorationSubtype: "restorative/crown_and_bridge/zirconia",
+        material: "Zirconia",
+        shade: "A2",
+        quantity: 1,
+      }];
       const submit = () =>
         request(appMod.default)
           .post("/api/cases/import-from-itero-rx")
@@ -795,7 +815,17 @@ maybe("AI intake data carry-through (db integration)", () => {
           .field("patientLastNameHint", "Hatcher")
           .field("caseTypeHint", "Crown")
           .field("materialHint", "Zirconia")
+          .field("shadeHint", "A2")
+          .field("toothIndicesHint", "14")
           .field("receivedAt", "2026-08-19")
+          .field("scanDateHint", "2026-08-18")
+          .field("rxDueDateHint", "2026-08-29")
+          .field("labDueDateHint", "2026-09-03")
+          .field("externalPatientIdHint", "itero-reviewed-identity")
+          .field("casePanBarcodeHint", "PAN-REVIEWED-1")
+          .field("providerContactSnapshot", JSON.stringify(providerContactSnapshot))
+          .field("invoiceNotesHint", "Please call when ready.")
+          .field("reviewedRestorationsHint", JSON.stringify(reviewedRestorations))
           .field("invoiceOverrideLines", JSON.stringify(reviewedLines))
           .field("confirmNewDoctor", "true");
 
@@ -807,12 +837,29 @@ maybe("AI intake data carry-through (db integration)", () => {
       expect(caseNumber).toBeTruthy();
       createdCaseIds.push(caseId);
 
-      const { db, cases: casesTable, invoices, invoiceLineItems } = dbMod as any;
+      const { db, cases: casesTable, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
       const [caseRow] = await db.select().from(casesTable).where(eq(casesTable.id, caseId));
       expect(caseRow.receivedAt).toBe("2026-08-19");
+      expect(caseRow.scanDate).toBe("2026-08-18");
+      expect(caseRow.prescriptionDueDate).toBe("2026-08-29");
+      expect(caseRow.externalPatientId).toBe("itero-reviewed-identity");
+      expect(caseRow.casePanBarcode).toBe("PAN-REVIEWED-1");
+      expect(caseRow.providerContactSnapshot).toEqual(providerContactSnapshot);
+      expect(new Date(caseRow.dueDate).toISOString()).toContain("2026-09-03");
+      const restorationRows = await db.select().from(caseRestorations)
+        .where(eq(caseRestorations.caseId, caseId));
+      expect(restorationRows).toHaveLength(1);
+      expect(restorationRows[0]).toMatchObject({
+        toothNumber: "14",
+        restorationType: "Crown",
+        restorationSubtype: "restorative/crown_and_bridge/zirconia",
+        material: "Zirconia",
+        shade: "A2",
+      });
 
       const [invoice] = await db.select().from(invoices).where(eq(invoices.caseId, caseId));
       expect(invoice.total).toBe("100.00");
+      expect(invoice.notes).toContain("Please call when ready.");
       const lines = await db
         .select()
         .from(invoiceLineItems)

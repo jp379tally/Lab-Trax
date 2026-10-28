@@ -1,3 +1,5 @@
+import { productionMediaDiskStorage } from "../lib/production-media-multipart";
+import { moveProductionUpload, writeProductionUpload } from "../lib/production-media-local-write";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -70,8 +72,9 @@ import { writeAuditLog, writeAuditLogTx } from "../lib/audit";
 import { isValidDueTime, resolveCaseDueDate } from "../lib/case-due-date";
 import { getCasesOverview } from "../lib/cases-overview";
 import caseDoctorReassignmentRouter from "./case-doctor-reassignment";
+import { caseToothChartRouter } from "./case-tooth-chart";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { syncInvoiceFromRestorations, syncInvoiceFromRestorationsDetailed, buildGroupedLineItemsForInvoice, toInvoiceLineItemValues, insertGroupedLineItemsWithChildren, sumGroupedLineItemsTotal } from "../lib/invoice-sync";
+import { syncInvoiceFromRestorations, syncInvoiceFromRestorationsDetailed, buildGroupedLineItemsForInvoice, toInvoiceLineItemValues, insertGroupedLineItemsWithChildren, sumGroupedLineItemsTotal, type InvoiceSyncExecutor } from "../lib/invoice-sync";
 import {
   addAlloyChargeToCase,
   removeAlloyChargeFromCase,
@@ -106,7 +109,8 @@ import {
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
 import { extractPgConstraintName, HttpError, ok, wrapDbError } from "../lib/http";
-import { pairPlyTextures } from "../lib/ply-texture";
+import { invoiceSharesNotesWithProvider } from "../lib/invoice-note-visibility";
+import { declaredPlyTexture, pairPlyTextures } from "../lib/ply-texture";
 import { pageRows, parsePagination } from "../lib/pagination";
 import { broadcastCaseUpdated, issueCaseWsTicket } from "../lib/case-events-ws";
 import {
@@ -355,6 +359,15 @@ router.use(asyncHandler(async (req, _res, next) => {
 // A provider plan gates only provider subjects; all lab/admin case routes
 // preserve their existing role authorization. Basic/Standard get only reads.
 router.use(caseDoctorReassignmentRouter);
+router.use(caseToothChartRouter({
+  access: assertCaseAccessOrPromote, broadcast: broadcastCaseUpdated,
+  calendarDate: parseCalendarDate,
+  applyHierarchy: async (req, body, executor) => {
+    const scopedRequest = Object.assign(Object.create(req), { body }) as Request;
+    const scopedResponse = { status() { return this; }, json() {} } as unknown as Response;
+    await updateCaseRestorationHierarchy(scopedRequest, scopedResponse, executor, true);
+  },
+}));
 
 // Derive the set of doctor names that "belong" to a given (lab, provider)
 // org pair so legacy `lab_cases` rows (which only carry a free-form
@@ -2894,6 +2907,158 @@ function visibleAttachmentsFor(
   );
 }
 
+const MAX_PLY_TEXTURE_HEADER_BYTES = 1024 * 1024;
+
+/**
+ * Read only the bounded PLY header from the server-owned case-media file.
+ * Attachment storage keys are reduced to a case-media basename first; they
+ * are never fetched as URLs.
+ */
+async function readPlyTextureHeader(storageKey: string): Promise<Buffer | null> {
+  const filename = extractMediaFileName(storageKey);
+  if (!filename) return null;
+  const mediaRoot = path.resolve(caseMediaDir);
+  const filePath = path.resolve(mediaRoot, filename);
+  if (!filePath.startsWith(`${mediaRoot}${path.sep}`)) return null;
+
+  try {
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      const header = Buffer.alloc(MAX_PLY_TEXTURE_HEADER_BYTES);
+      const { bytesRead } = await handle.read(
+        header,
+        0,
+        MAX_PLY_TEXTURE_HEADER_BYTES,
+        0,
+      );
+      return header.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") return null;
+  }
+
+  try {
+    const object = await openCaseMediaObjectStream(filename);
+    if (!object) return null;
+    const stream = object.stream as AsyncIterable<Uint8Array> & {
+      destroy?: () => void;
+    };
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk);
+      const remaining = MAX_PLY_TEXTURE_HEADER_BYTES - size;
+      if (remaining <= 0) break;
+      const accepted = bytes.subarray(0, remaining);
+      chunks.push(accepted);
+      size += accepted.length;
+      if (size >= MAX_PLY_TEXTURE_HEADER_BYTES) {
+        stream.destroy?.();
+        break;
+      }
+    }
+    return Buffer.concat(chunks, size);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pair direct-upload PLYs with exactly one matching image already registered
+ * on this same case. Linking is metadata-only; normal list/file authorization
+ * and visibility checks continue to control whether a viewer can load it.
+ */
+async function linkPlyTexturesForCase(caseId: string): Promise<void> {
+  const attachments = await db.query.caseAttachments.findMany({
+    where: and(
+      or(
+        eq(caseAttachments.caseId, caseId),
+        eq(caseAttachments.labCaseId, caseId),
+      ),
+      isNull(caseAttachments.deletedAt),
+    ),
+    columns: {
+      id: true,
+      fileName: true,
+      fileType: true,
+      storageKey: true,
+      textureAttachmentId: true,
+    },
+  });
+  const plyAttachments = attachments.filter((attachment: any) =>
+    String(attachment.fileName ?? "").toLowerCase().endsWith(".ply"),
+  );
+  if (plyAttachments.length === 0) return;
+
+  const imageAttachments = attachments.filter((attachment: any) =>
+    /^image\//i.test(String(attachment.fileType ?? "")),
+  );
+  if (imageAttachments.length === 0) return;
+
+  const plyEntries = await Promise.all(
+    plyAttachments.map(async (attachment: any) => ({
+      attachment,
+      data: await readPlyTextureHeader(attachment.storageKey),
+    })),
+  );
+  const entries = [
+    ...plyEntries.map(({ attachment, data }) => ({
+      name: attachment.fileName,
+      data: data ?? Buffer.alloc(0),
+      mimeType: attachment.fileType ?? "application/octet-stream",
+    })),
+    ...imageAttachments.map((attachment: any) => ({
+      name: attachment.fileName,
+      data: Buffer.alloc(0),
+      mimeType: attachment.fileType ?? "application/octet-stream",
+    })),
+  ];
+  const pairs = pairPlyTextures(entries);
+  const plysByName = new Map<string, any[]>();
+  const imagesByName = new Map<string, any[]>();
+  for (const attachment of plyAttachments) {
+    const rows = plysByName.get(attachment.fileName) ?? [];
+    rows.push(attachment);
+    plysByName.set(attachment.fileName, rows);
+  }
+  for (const attachment of imageAttachments) {
+    const rows = imagesByName.get(attachment.fileName) ?? [];
+    rows.push(attachment);
+    imagesByName.set(attachment.fileName, rows);
+  }
+
+  const readableDeclaredPlys = new Set(
+    plyEntries
+      .filter(({ data }) => data !== null && declaredPlyTexture(data) !== null)
+      .map(({ attachment }) => attachment.id),
+  );
+  const desiredTextureByPlyId = new Map<string, string>();
+  for (const [plyName, imageName] of pairs) {
+    const scans = plysByName.get(plyName) ?? [];
+    const images = imagesByName.get(imageName) ?? [];
+    if (scans.length !== 1 || images.length !== 1) continue;
+    desiredTextureByPlyId.set(scans[0]!.id, images[0]!.id);
+  }
+
+  for (const scan of plyAttachments) {
+    if (!readableDeclaredPlys.has(scan.id)) continue;
+    const desiredTextureId = desiredTextureByPlyId.get(scan.id) ?? null;
+    if (scan.textureAttachmentId === desiredTextureId) continue;
+    await db.update(caseAttachments)
+      .set({ textureAttachmentId: desiredTextureId })
+      .where(and(
+        eq(caseAttachments.id, scan.id),
+        or(
+          eq(caseAttachments.caseId, caseId),
+          eq(caseAttachments.labCaseId, caseId),
+        ),
+        isNull(caseAttachments.deletedAt),
+      ));
+  }
+}
+
 /**
  * Do not trust a persisted texture pointer as an authorization grant. Lists
  * only expose a pointer when the texture is live, belongs to the same case
@@ -3105,6 +3270,18 @@ function inferRemakeCategory(
 }
 
 const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
+function normalizeDueDateForInputServer(value: string): string | null {
+  const trimmed = value.trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? trimmed
+    : (() => {
+        const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(trimmed);
+        return match
+          ? `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`
+          : null;
+      })();
+  return iso && isValidCalendarDate(iso) ? iso : null;
+}
 function parseCalendarDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
   if (!isValidCalendarDate(value)) {
@@ -3190,7 +3367,11 @@ const createCaseSchema = z.object({
   // received, not the database insertion time (important for imports and
   // today's sales/worklist reporting).
   receivedAt: calendarDate.optional(),
+  scanDate: calendarDate.optional(),
+  prescriptionDueDate: calendarDate.optional(),
   dueDate: z.string().optional(),
+  providerContactSnapshot: z.record(z.string(), z.unknown()).optional(),
+  invoiceNotes: z.string().max(10_000).optional(),
   bridgeConnectors: z.string().max(1024).optional(),
   dueTime: z
     .union([z.string().refine(isValidDueTime, "Invalid due time"), z.null()])
@@ -5405,6 +5586,9 @@ router.post(
           status: input.status,
           priority: input.priority,
           receivedAt: parseCalendarDate(input.receivedAt),
+          scanDate: input.scanDate ?? null,
+          prescriptionDueDate: input.prescriptionDueDate ?? null,
+          providerContactSnapshot: input.providerContactSnapshot ?? null,
           dueDate: resolvedDueDate,
           dueTime: input.dueDate ? input.dueTime ?? null : null,
           expectedDeliveryDate: suppliedDueDate
@@ -5804,7 +5988,9 @@ router.post(
               displayMetadataJson: displayMetadata,
               createdByUserId: (req as any).auth.userId,
               updatedByUserId: (req as any).auth.userId,
-              ...(noChargeNote ? { notes: noChargeNote } : {}),
+              ...((noChargeNote || input.invoiceNotes?.trim())
+                ? { notes: [noChargeNote, input.invoiceNotes?.trim()].filter(Boolean).join("\n\n") }
+                : {}),
              }, createdCase.id, createdCase.labOrganizationId);
            if (!newInvoice.newlyCreated) return;
           if (newInvoice) {
@@ -8819,6 +9005,10 @@ router.get(
       invoiceId: invoiceRow?.id ?? null,
       invoiceNumber: invoiceRow?.invoiceNumber ?? null,
       invoiceLines,
+      invoiceNotes:
+        invoiceRow && invoiceSharesNotesWithProvider(invoiceRow.displayMetadataJson)
+          ? invoiceRow.notes ?? null
+          : null,
       invoiceTotal,
       invoiceBalanceDue: invoiceRow?.balanceDue ?? null,
       invoiceStatus,
@@ -9217,7 +9407,7 @@ router.post(
     const diskPath = path.resolve(caseMediaDir, storageFilename);
 
     // Write to disk
-    await fs.promises.writeFile(diskPath, file.buffer);
+    await writeProductionUpload(diskPath, file.buffer, "case-upload");
 
     // Mirror to object storage (best-effort)
     writeCaseMediaToObjectStorage(storageFilename, file.buffer, safeMime).catch(
@@ -11037,10 +11227,10 @@ router.patch(
 // trash folder (`uploads/case-media/.trash/`) so it can be recovered if the
 // deletion was accidental. Uses the same naming convention as the orphan-
 // cleanup job: `<iso-stamp>__<filename>`.
-function trashAttachmentFile(
+async function trashAttachmentFile(
   req: any,
   storageKey: string | null | undefined
-): void {
+): Promise<void> {
   if (!storageKey) return;
   try {
     const fileName = extractMediaFileName(storageKey);
@@ -11056,7 +11246,7 @@ function trashAttachmentFile(
     fs.mkdirSync(trashDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const trashedName = `${stamp}__${fileName}`;
-    fs.renameSync(resolved, path.resolve(trashDir, trashedName));
+    await moveProductionUpload(resolved, path.resolve(trashDir, trashedName), "case-upload");
   } catch (err: any) {
     req.log?.warn?.(
       { err: err?.message || String(err), storageKey },
@@ -11189,7 +11379,10 @@ router.post(
         return { attachment: legacyAttachment, replayed: false };
       });
       const legacyAttachment = registered.attachment;
-      if (registered.replayed) return ok(res, legacyAttachment);
+      if (registered.replayed) {
+        await linkPlyTexturesForCase(mobileRow.id);
+        return ok(res, legacyAttachment);
+      }
 
       // Register in legacy_case_media ledger so the file-serving route can
       // authorize the download (first-writer-wins, safe to re-insert).
@@ -11226,6 +11419,8 @@ router.post(
           ...(legacyInput.category ? { category: legacyInput.category } : {}),
         });
       });
+
+      await linkPlyTexturesForCase(mobileRow.id);
 
       await writeAuditLog({
         req,
@@ -11313,7 +11508,12 @@ router.post(
       return { attachment, replayed: false };
     });
     const { attachment } = registered;
-    if (registered.replayed) return ok(res, attachment);
+    if (registered.replayed) {
+      await linkPlyTexturesForCase(found.id);
+      return ok(res, attachment);
+    }
+
+    await linkPlyTexturesForCase(found.id);
 
     const attachmentActor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -11405,7 +11605,7 @@ router.delete(
         entityType: "case_attachment",
         beforeJson: attachment,
       });
-      trashAttachmentFile(req, attachment.storageKey);
+      await trashAttachmentFile(req, attachment.storageKey);
 
       const attachmentDeleter = (req as any).user;
       await db.insert(caseEvents).values({
@@ -11458,7 +11658,7 @@ router.delete(
         entityType: "case_attachment",
         beforeJson: attachment,
       });
-      trashAttachmentFile(req, attachment.storageKey);
+      await trashAttachmentFile(req, attachment.storageKey);
     }
 
     broadcastCaseUpdated(canonicalFound ? canonicalFound.id : req.params.caseId);
@@ -13557,12 +13757,12 @@ router.delete(
   })
 );
 
-router.patch(
-  "/:caseId/restorations/hierarchy",
-  asyncHandler(async (req, res) => {
+async function updateCaseRestorationHierarchy(
+  req: Request, res: Response, executor: InvoiceSyncExecutor = db, deferInvoice = false,
+) {
     const found = await assertCaseAccessOrPromote(
       (req as any).auth.userId,
-      req.params.caseId
+      String(req.params.caseId)
     );
     const membership = await requireMembership(
       (req as any).auth.userId,
@@ -13577,7 +13777,7 @@ router.patch(
       throw new HttpError(403, "Only admin or owner members can update the case step.");
     }
     const actor = (req as any).user;
-    const result = await db.transaction(async (tx) => {
+    const result = await executor.transaction(async (tx) => {
       const beforeRows = await tx
         .select()
         .from(caseRestorations)
@@ -13911,6 +14111,7 @@ router.patch(
       };
     });
 
+    if (deferInvoice) return res.json(result);
     let invoiceResult;
     try {
       invoiceResult = await syncInvoiceFromRestorationsDetailed({
@@ -13941,7 +14142,10 @@ router.patch(
           },
         })
       );
-  })
+}
+router.patch(
+  "/:caseId/restorations/hierarchy",
+  asyncHandler((req, res) => updateCaseRestorationHierarchy(req, res))
 );
 
 router.patch(
@@ -14295,7 +14499,7 @@ router.post(
     const input = z
       .object({
         submissionType: z.enum(["note", "photo", "video", "document"]),
-        payloadJson: z.record(z.any()),
+        payloadJson: z.record(z.string(), z.any()),
       })
       .parse(req.body);
 
@@ -14469,7 +14673,7 @@ router.post(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const iteroImportUpload = multer({
-  storage: multer.diskStorage({
+  storage: productionMediaDiskStorage({
     destination: (_req, _file, cb) => {
       try {
         fs.mkdirSync(caseMediaDir, { recursive: true });
@@ -14487,7 +14691,7 @@ const iteroImportUpload = multer({
           .slice(0, 60) || "rx";
       cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`);
     },
-  }),
+  }, "case-import"),
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
@@ -14759,6 +14963,8 @@ export interface ExtractedRxFields {
   shade?: string | null;
   teeth?: string | null;
   dueDate?: string | null;
+  scanDate?: string | null;
+  platformCaseIdentifier?: string | null;
   isRush?: boolean | null;
   /** ONLY doctor-typed Notes section text — no structured fields. */
   notes?: string | null;
@@ -14896,12 +15102,33 @@ const iteroImportBodySchema = z.object({
     priceOverridden: z.boolean().optional(),
   })).max(32).optional()),
   bridgeConnectors: z.string().max(1024).optional(),
+  reviewedRestorationsHint: z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { throw new HttpError(400, "Invalid reviewed restoration JSON."); }
+  }, z.array(z.object({
+    toothNumber: z.string().max(100),
+    restorationType: z.string().trim().min(1).max(100),
+    restorationSubtype: z.string().max(200).nullable().optional(),
+    arch: z.enum(["upper", "lower", "both"]).nullable().optional(),
+    material: z.string().max(200).nullable().optional(),
+    shade: z.string().max(100).nullable().optional(),
+    quantity: z.coerce.number().int().positive().default(1),
+  })).max(100).optional()),
   iteroOrderId: z.string().min(1, "iteroOrderId is required"),
   labOrganizationId: z.string().min(1, "labOrganizationId is required"),
   providerOrganizationId: z
     .string()
     .min(1, "providerOrganizationId is required"),
   receivedAt: calendarDate.optional(),
+  scanDateHint: z.union([calendarDate, z.literal("")]).optional(),
+  rxDueDateHint: z.string().optional(),
+  labDueDateHint: z.union([calendarDate, z.literal("")]).optional(),
+  externalPatientIdHint: z.string().max(500).optional(),
+  providerContactSnapshot: z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { throw new HttpError(400, "Invalid provider contact snapshot JSON."); }
+  }, z.record(z.string(), z.unknown()).optional()),
+  invoiceNotesHint: z.string().max(10_000).optional(),
   // Optional client hints — used as fallbacks when AI fails to extract them.
   // The drop zone pre-extracts these via analyze-prescription (vision API) and
   // sends them so the case is always fully populated even when the server-side
@@ -14915,6 +15142,10 @@ const iteroImportBodySchema = z.object({
   toothIndicesHint: z.string().optional(),
   materialHint: z.string().optional(),
   caseTypeHint: z.string().optional(),
+  removableSubtypeHint: z.union([
+    z.enum(["partial", "denture", "flipper", "repair_partial", "repair_denture", "repair"]),
+    z.literal(""),
+  ]).optional(),
   archHint: z.string().optional(),
   notesHint: z.string().optional(),
   invoiceOverrideLines: multipartReviewedInvoiceLines,
@@ -15099,24 +15330,29 @@ router.post(
       }
     }
 
-    // Merge client-provided clinical hints as fallbacks when AI extraction is
-    // incomplete or unavailable. The drop zone pre-extracts these via
-    // analyze-prescription (vision API) before the user clicks "Create case";
-    // sending them here ensures the case is always fully populated even when
-    // the server-side openai.files.create() PDF path is blocked (e.g. Replit
-    // AI proxy does not support that endpoint).
-    if (!extracted.dueDate && body.dueDateHint) extracted.dueDate = body.dueDateHint;
-    if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
-    if (!extracted.teeth && body.toothIndicesHint) extracted.teeth = body.toothIndicesHint;
-    if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
-    if (!extracted.caseType && body.caseTypeHint) extracted.caseType = body.caseTypeHint;
-    if (!extracted.arch && body.archHint) extracted.arch = body.archHint;
-    if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
+    // Client fields are the reviewed values, not fallback guesses. When
+    // present they take precedence over the server's independent AI extraction,
+    // including empty values that intentionally clear a field.
+    // Older clients supplied one dueDateHint for both fields. Preserve that
+    // contract while explicit new prescription/lab fields, including clears,
+    // remain authoritative and the AI's requested date stays separate.
+    const reviewedPrescriptionDueDate = body.rxDueDateHint !== undefined
+      ? body.rxDueDateHint : body.dueDateHint;
+    if (reviewedPrescriptionDueDate !== undefined) extracted.dueDate = reviewedPrescriptionDueDate;
+    if (body.scanDateHint !== undefined) extracted.scanDate = body.scanDateHint || null;
+    if (body.externalPatientIdHint !== undefined) extracted.platformCaseIdentifier = body.externalPatientIdHint;
+    if (body.shadeHint !== undefined) extracted.shade = body.shadeHint;
+    if (body.toothIndicesHint !== undefined) extracted.teeth = body.toothIndicesHint;
+    if (body.materialHint !== undefined) extracted.material = body.materialHint;
+    if (body.caseTypeHint !== undefined) extracted.caseType = body.caseTypeHint;
+    if (body.removableSubtypeHint !== undefined) extracted.removableSubtype = body.removableSubtypeHint || null;
+    if (body.archHint !== undefined) extracted.arch = body.archHint || null;
+    if (body.notesHint !== undefined) extracted.notes = body.notesHint;
     // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
     // rules) BEFORE it is stored and before price resolution, so the lab-slip
     // material and the invoice price always agree.
     extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
-    if (!extracted.isRush && body.isRushHint === "true") extracted.isRush = true;
+    if (body.isRushHint !== undefined) extracted.isRush = body.isRushHint === "true";
 
     const patientFirstName =
       (extracted.patientFirstName?.trim() || body.patientFirstNameHint?.trim() ||
@@ -15281,9 +15517,16 @@ router.post(
     }
     const noChargeRemake = !!remakeOriginal && remakeChargedFlag === false;
 
-    const iteroAutoSuppliedDate: Date | null = extracted.dueDate
-      ? (Number.isNaN(new Date(extracted.dueDate).getTime()) ? null : new Date(extracted.dueDate))
+    const reviewedLabDueDate = body.labDueDateHint !== undefined
+      ? body.labDueDateHint
+      : body.rxDueDateHint === undefined ? body.dueDateHint : undefined;
+    const labDueDateText = reviewedLabDueDate?.trim();
+    const parsedLabDueDate = labDueDateText
+      ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(labDueDateText)
+          ? `${labDueDateText}T12:00:00` : labDueDateText)
       : null;
+    const iteroAutoSuppliedDate = parsedLabDueDate && !Number.isNaN(parsedLabDueDate.getTime())
+      ? parsedLabDueDate : null;
     const iteroAutoLabOrg = await db.query.organizations.findFirst({
       where: eq(organizations.id, body.labOrganizationId),
       columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
@@ -15338,6 +15581,7 @@ router.post(
       priceSourceId: string | null;
       priceSourceName: string | null;
       priceKey: string | null;
+      quantity?: number;
     }> = [];
 
     // Bucket the AI-extracted caseType into one of the four restorative
@@ -15512,6 +15756,37 @@ router.post(
       }
       prebuiltRestorations = mergedRestorations;
     }
+    if (body.reviewedRestorationsHint) {
+      prebuiltRestorations = await Promise.all(body.reviewedRestorationsHint.map(async (restoration) => {
+        const price = await resolveServerPriceWithSource({
+          labOrganizationId: body.labOrganizationId,
+          doctorName: effectiveDoctorName,
+          providerOrganizationId: effectiveProviderOrgId,
+        }, restoration.material ?? null, restoration.restorationType, restoration.restorationSubtype ?? null);
+        return {
+          toothNumber: restoration.toothNumber,
+          restorationType: restoration.restorationType,
+          restorationSubtype: restoration.restorationSubtype ?? null,
+          arch: restoration.arch === "both"
+            ? normalizeArch("both")
+            : restoration.arch ?? iteroArch,
+          material: restoration.material ?? null,
+          shade: restoration.shade ?? null,
+          unitPrice: (price?.amount ?? 0).toFixed(2),
+          priceSource: price?.source ?? null,
+          priceSourceId: price?.sourceId ?? null,
+          priceSourceName: price?.sourceName ?? null,
+          priceKey: price?.key ?? null,
+          quantity: restoration.quantity,
+        };
+      }));
+    }
+    const connectorRestorations = body.toothAssignments ??
+      body.reviewedRestorationsHint?.filter((restoration) => /^(Crown|Pontic)$/.test(restoration.restorationType));
+    if (body.bridgeConnectors && connectorRestorations) {
+      const validation = validateToothConnectors(body.bridgeConnectors, connectorRestorations as any);
+      if (!validation.valid) throw new HttpError(400, validation.errors.join(" "));
+    }
     const user = (req as any).user;
     const storageKey = buildIteroAttachmentUrl(req, req.file.filename);
 
@@ -15611,14 +15886,23 @@ router.post(
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
           receivedAt: parseCalendarDate(body.receivedAt),
+          scanDate: body.scanDateHint !== undefined
+            ? body.scanDateHint || null
+            : (extracted.scanDate ? normalizeDueDateForInputServer(extracted.scanDate) : null),
+          prescriptionDueDate: extracted.dueDate ? normalizeDueDateForInputServer(extracted.dueDate) : null,
           dueDate,
           expectedDeliveryDate: iteroAutoSuppliedDate
             ? null
             : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,
           aiImportSource: "itero",
-          bridgeConnectors: body.toothAssignments ? serializeConnectorState(withPonticConnectorSuggestions(body.bridgeConnectors, body.toothAssignments)) || null : null,
-          externalPatientId: body.iteroOrderId,
+          bridgeConnectors: connectorRestorations
+            ? serializeConnectorState(withPonticConnectorSuggestions(body.bridgeConnectors, connectorRestorations as any)) || null
+            : null,
+          externalPatientId: body.externalPatientIdHint !== undefined
+            ? body.externalPatientIdHint.trim() || null
+            : body.iteroOrderId,
+          providerContactSnapshot: body.providerContactSnapshot ?? null,
           rxNotes: extracted.notes?.trim() || null,
           shade: normalizeIteroShade(extracted.shade),
           step: normalizeIteroStage(extracted.stage) ?? null,
@@ -15719,7 +16003,7 @@ router.post(
             material: r.material,
             shade: r.shade,
             notes: null,
-            quantity: 1,
+            quantity: r.quantity ?? 1,
             unitPrice: r.unitPrice,
             priceSource: r.priceSource,
             priceSourceId: r.priceSourceId,
@@ -15874,7 +16158,9 @@ router.post(
             dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
-            ...(noChargeNote ? { notes: noChargeNote } : {}),
+            ...((noChargeNote || body.invoiceNotesHint?.trim())
+              ? { notes: [noChargeNote, body.invoiceNotesHint?.trim()].filter(Boolean).join("\n\n") }
+              : {}),
           }, createdCase.id, createdCase.labOrganizationId);
 
         if (autoInvoice.newlyCreated) {
@@ -16599,7 +16885,7 @@ router.post(
       .slice(0, 60) || "rx";
     const rxDiskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${rxSafe}${rxExt}`;
     const rxDiskPath = path.join(caseMediaDir, rxDiskName);
-    await fs.promises.writeFile(rxDiskPath, rxBuffer);
+    await writeProductionUpload(rxDiskPath, rxBuffer, "case-import");
     // Mirror to persistent object storage so the file survives server restarts
     // and re-deployments (best-effort — a failure here does not abort the import).
     writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, rxMimeType).catch(
@@ -17273,7 +17559,7 @@ router.post(
           .slice(0, 60) || "file";
         const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
         const diskPath = path.join(caseMediaDir, diskName);
-        await fs.promises.writeFile(diskPath, entry.data);
+        await writeProductionUpload(diskPath, entry.data, "case-import");
         // Mirror to persistent object storage (best-effort).
         writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch(
           (err: unknown) => {
@@ -17501,7 +17787,7 @@ async function repairIteroTextures(
     const safe = path.basename(image.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "texture";
     const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
     await fs.promises.mkdir(caseMediaDir, { recursive: true });
-    await fs.promises.writeFile(path.join(caseMediaDir, diskName), image.data);
+        await writeProductionUpload(path.join(caseMediaDir, diskName), image.data, "case-import");
     writeCaseMediaToObjectStorage(diskName, image.data, image.mimeType).catch((err: unknown) => {
       req.log?.warn({ err, caseId }, "iTero texture repair: object storage mirror failed");
     });
@@ -17667,7 +17953,7 @@ async function processOneIteroZipFile(
   const rxSafe = path.basename(rxOriginalName, rxExt).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "rx";
   const rxDiskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${rxSafe}${rxExt}`;
   const rxDiskPath = path.join(caseMediaDir, rxDiskName);
-  await fs.promises.writeFile(rxDiskPath, rxBuffer);
+    await writeProductionUpload(rxDiskPath, rxBuffer, "case-import");
   writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, rxMimeType).catch((err: unknown) => {
     req.log?.warn({ err }, "iTero ZIP batch: failed to mirror Rx file to object storage");
   });
@@ -18143,7 +18429,7 @@ async function processOneIteroZipFile(
       const safe = path.basename(entry.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "file";
       const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
       const diskPath = path.join(caseMediaDir, diskName);
-      await fs.promises.writeFile(diskPath, entry.data);
+        await writeProductionUpload(diskPath, entry.data, "case-import");
       writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch((err: unknown) => {
         req.log?.warn({ err, name: entry.name }, "iTero ZIP batch: failed to mirror .ply to object storage");
       });
@@ -18747,7 +19033,7 @@ router.post(
             const safe = path.basename(entry.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "file";
             const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
             const diskPath = path.join(caseMediaDir, diskName);
-            await fs.promises.writeFile(diskPath, entry.data);
+      await writeProductionUpload(diskPath, entry.data, "case-import");
             writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch((err: unknown) => {
               req.log?.warn({ err, name: entry.name }, "Generic ZIP bundle: failed to mirror to object storage");
             });

@@ -72,6 +72,7 @@ vi.mock("pdfjs-dist", () => ({
 
 // pdfjs-dist/build/pdf.worker.min.mjs?url is a Vite virtual module. Stub it.
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs", () => ({ default: "stub-worker" }));
+vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?worker&url", () => ({ default: "stub-worker" }));
 
 // ─── FileReader class-based mock ─────────────────────────────────────────────
 // vi.fn() Proxies are not usable as constructors (new FileReader() throws).
@@ -262,6 +263,137 @@ describe("DashboardDropZone — AI analyze path", () => {
     );
   });
 
+  it("keeps the optional chart and assignment summary in separate responsive review regions", async () => {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
+      if (path.startsWith("/organizations"))
+        return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
+      if (path === "/cases/doctor-directory") return Promise.resolve([]);
+      if (path === "/analyze-prescription")
+        return Promise.resolve(VALID_RX_RESPONSE);
+      return Promise.reject(new Error(`Unexpected: ${path}`));
+    });
+
+    const { container } = renderDropZone();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    await act(async () => {
+      triggerFileInput(container, [makeJpegFile()]);
+      await new Promise((r) => setTimeout(r, 300));
+    });
+
+    const review = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>('[data-testid="rx-review-container"]');
+      expect(panel).toBeTruthy();
+      return panel!;
+    });
+    const grid = review.querySelector<HTMLElement>(".rx-review-assignment-grid");
+    const chartRegion = grid?.querySelector(".rx-review-chart-region");
+    const summary = screen.getByRole("complementary", {
+      name: "AI tooth assignment summary",
+    });
+
+    expect(grid).toBeTruthy();
+    expect(chartRegion).toContainElement(
+      screen.getByRole("group", {
+        name: "Dental tooth chart, Universal tooth numbering",
+      }),
+    );
+    expect(grid).toContainElement(summary);
+    expect(summary.parentElement).toBe(grid);
+    expect(review.textContent).toContain("Optional: use the chart to correct extracted tooth roles");
+    expect(summary.textContent).toContain(
+      "Extracted prescription details remain the baseline.",
+    );
+  });
+
+  it("projects explicit bridge roles and removable arch/tooth evidence without adding teeth", async () => {
+    const explicitBridge = {
+      ...VALID_RX_RESPONSE,
+      caseType: "Crown & Bridge",
+      toothIndices: "2,3,4",
+      toothAssignments: [
+        { toothNumber: "2", role: "prepared_crown", roleEvidence: "crown on tooth #2", material: "Zirconia", shade: "A2", requiresReview: false },
+        { toothNumber: "3", role: "pontic", roleEvidence: "pontic on tooth #3", material: "Zirconia", shade: "A2", requiresReview: false },
+        { toothNumber: "4", role: "prepared_crown", roleEvidence: "crown on tooth #4", material: "Zirconia", shade: "A2", requiresReview: false },
+      ],
+      bridgeConnectors: "2-3,3-4",
+    };
+    const scenarios = [
+      {
+        response: explicitBridge,
+        verify: (container: HTMLElement) => {
+          expect(container.querySelector('[data-tooth-id="2"]')?.getAttribute("data-tooth-role")).toBe("crown");
+          expect(container.querySelector('[data-tooth-id="3"]')?.getAttribute("data-tooth-role")).toBe("pontic");
+          expect(container.querySelector('[data-tooth-id="4"]')?.getAttribute("data-tooth-role")).toBe("crown");
+          expect(container.querySelector('[data-connector="2-3"]')?.getAttribute("aria-pressed")).toBe("true");
+          expect(container.querySelector('[data-connector="3-4"]')?.getAttribute("aria-pressed")).toBe("true");
+        },
+      },
+      {
+        response: {
+          ...VALID_RX_RESPONSE,
+          caseType: "Denture",
+          material: "Acrylic",
+          arch: "upper",
+          removableSubtype: "denture",
+          toothIndices: "",
+        },
+        verify: (container: HTMLElement) => {
+          const review = container.querySelector('[data-testid="rx-review-container"]')!;
+          expect(review.textContent).toContain("Upper arch");
+          expect(review.textContent).toContain("Denture");
+          expect(container.querySelectorAll('[data-tooth-selected="true"]')).toHaveLength(0);
+        },
+      },
+      {
+        response: {
+          ...VALID_RX_RESPONSE,
+          caseType: "Removable",
+          material: "Acrylic",
+          arch: "upper",
+          removableSubtype: "partial",
+          toothIndices: "2,4",
+        },
+        verify: (container: HTMLElement) => {
+          expect(container.querySelector('[data-tooth-id="2"]')?.getAttribute("data-tooth-selected")).toBe("true");
+          expect(container.querySelector('[data-tooth-id="4"]')?.getAttribute("data-tooth-selected")).toBe("true");
+          expect(container.querySelector('[data-tooth-id="3"]')?.getAttribute("data-tooth-selected")).not.toBe("true");
+          expect(container.querySelectorAll('[data-tooth-selected="true"]')).toHaveLength(2);
+          const chartHud = container.querySelector("svg [data-chart-hud]");
+          expect(chartHud?.textContent).toContain("Type: Removable");
+          expect(chartHud?.textContent).toContain("Material: Acrylic");
+        },
+      },
+    ];
+
+    for (const [scenarioIndex, scenario] of scenarios.entries()) {
+      // The component intentionally keeps manual review overrides for the same
+      // source image; give each case distinct bytes so these exercise fresh Rx
+      // analyses rather than that same-source correction path.
+      _mockDataUrl = `data:image/jpeg;base64,scenario-${scenarioIndex}`;
+      mockApiFetch.mockImplementation((path: string) => {
+        if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
+        if (path.startsWith("/organizations"))
+          return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+        if (path === "/cases/doctor-names") return Promise.resolve([]);
+        if (path === "/cases/doctor-directory") return Promise.resolve([]);
+        if (path === "/analyze-prescription") return Promise.resolve(scenario.response);
+        return Promise.reject(new Error(`Unexpected: ${path}`));
+      });
+
+      const { container, unmount } = renderDropZone();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+      await act(async () => {
+        triggerFileInput(container, [makeJpegFile()]);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      });
+      await waitFor(() => expect(container.querySelector('[data-testid="rx-review-container"]')).toBeTruthy());
+      scenario.verify(container);
+      unmount();
+    }
+  }, 20000);
+
   it("sends imageBase64 field (not raw bytes) to /analyze-prescription for a JPEG", async () => {
     let capturedBody: any = null;
 
@@ -311,8 +443,10 @@ describe("DashboardDropZone — AI analyze path", () => {
 
   it("calls /analyze-prescription for a PDF (PDF-to-image conversion path)", async () => {
     let analyzeCalled = false;
+    let capturedBody: Record<string, unknown> | null = null;
+    pdfFixture.pages = 2;
 
-    mockApiFetch.mockImplementation((path: string) => {
+    mockApiFetch.mockImplementation((path: string, opts?: any) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path.startsWith("/organizations"))
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
@@ -320,6 +454,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/cases/doctor-directory") return Promise.resolve([]);
       if (path === "/analyze-prescription") {
         analyzeCalled = true;
+        capturedBody = JSON.parse(opts?.body ?? "{}");
         return Promise.resolve(VALID_RX_RESPONSE);
       }
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -335,7 +470,14 @@ describe("DashboardDropZone — AI analyze path", () => {
 
     await waitFor(() => {
       expect(analyzeCalled).toBe(true);
+      expect(capturedBody).not.toBeNull();
     }, { timeout: 4000 });
+    expect(pdfFixture.getPage).toHaveBeenCalledTimes(2);
+    expect(capturedBody).toMatchObject({
+      imageBase64: expect.stringMatching(/^data:image\/jpeg;base64,/),
+      additionalImages: [expect.stringMatching(/^data:image\/jpeg;base64,/)],
+      desktopReader: true,
+    });
   });
 
   it("shows accurate-reader progress while the analysis request is pending", async () => {

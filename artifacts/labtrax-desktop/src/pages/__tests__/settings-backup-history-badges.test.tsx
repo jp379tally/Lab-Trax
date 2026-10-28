@@ -66,8 +66,7 @@ const PARTIAL_RUN = {
   mediaFileCount: 10,
   attachmentRowCount: 10,
   partialFailure: true,
-  warnings:
-    "OneDrive upload of the full backup failed; retried and succeeded without the 2 profile photo(s).",
+  warnings: "Missing file references: 526. This archive is not a complete recovery point.",
 };
 
 const CLEAN_RUN = {

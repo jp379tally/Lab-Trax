@@ -1,6 +1,7 @@
 import { deriveCaseHierarchy, encodeRestorationSubtype } from "./taxonomy";
+import { indicationCatalogContext, isToothIndication } from "./tooth-indications";
 
-export type ToothAssignmentRole = "crown" | "pontic";
+export type ToothAssignmentRole = "crown" | "pontic" | "veneer";
 export interface ToothAssignmentProvenance {
   origin: "manual" | "ai_explicit";
   roleEvidence?: string;
@@ -360,8 +361,8 @@ export function validateToothConnectors(
   const byTooth = new Map<string, ToothAssignmentUnit>();
   for (const unit of units) {
     const role = normalized(unit.restorationType);
-    if (role !== "crown" && role !== "pontic") {
-      if (/^(bridge|implant|veneer|inlay|onlay)$/i.test(role) && expandToothAssignmentIdentifiers(unit.toothNumber).length) {
+    if (role !== "crown" && role !== "pontic" && role !== "veneer") {
+      if (/^(bridge|implant|inlay|onlay)$/i.test(role) && expandToothAssignmentIdentifiers(unit.toothNumber).length) {
         errors.push(`Review legacy restoration #${unit.toothNumber}: confirm explicit per-tooth crown or pontic roles before billing.`);
       }
       continue;
@@ -392,6 +393,10 @@ export function validateToothConnectors(
       errors.push(`Connector #${a}–#${b} has an unassigned tooth.`);
       continue;
     }
+    if (normalized(left.restorationType) === "veneer" || normalized(right.restorationType) === "veneer") {
+      errors.push(`Connector #${a}–#${b} cannot connect a veneer; bridges require crowns or pontics.`);
+      continue;
+    }
     if (
       left.arch &&
       right.arch &&
@@ -406,6 +411,28 @@ export function validateToothConnectors(
     }
   }
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
+}
+
+/** Returns adjacent, assigned adult-tooth pairs that are blocked from connecting. */
+export function incompatibleToothConnectorPairs(units: ToothAssignmentUnit[]): Set<string> {
+  const byTooth = new Map<string, ToothAssignmentUnit[]>();
+  for (const unit of units) {
+    if (!["crown", "pontic", "veneer"].includes(normalized(unit.restorationType))) continue;
+    for (const tooth of assignmentTeeth(unit)) {
+      const current = byTooth.get(tooth) ?? [];
+      current.push(unit);
+      byTooth.set(tooth, current);
+    }
+  }
+  const blocked = new Set<string>();
+  for (let tooth = 1; tooth < 32; tooth++) {
+    const left = String(tooth);
+    const right = String(tooth + 1);
+    if (!areUniversalTeethAdjacent(left, right) || !byTooth.has(left) || !byTooth.has(right)) continue;
+    const pair = connectorPairKey(left, right);
+    if (!validateToothConnectors(pair, [...byTooth.get(left)!, ...byTooth.get(right)!]).valid) blocked.add(pair);
+  }
+  return blocked;
 }
 
 export function connectedToothGroups(value?: string | null): string[][] {
@@ -438,23 +465,43 @@ export function connectedToothGroups(value?: string | null): string[][] {
 export function toothAssignmentSummary(units: ToothAssignmentUnit[], connectors?: string | null) {
   const crowns = new Set<string>();
   const pontics = new Set<string>();
+  const veneers = new Set<string>();
   const materials = new Map<string, number>();
+  let otherUnits = 0;
   for (const unit of units) {
     const role = normalized(unit.restorationType);
-    if (role !== "crown" && role !== "pontic") continue;
+    if (role !== "crown" && role !== "pontic" && role !== "veneer") {
+      if (isToothIndication(unit.restorationType)) {
+        const count = indicationCatalogContext(unit.restorationType).archBased
+          ? Number(unit.quantity ?? 1)
+          : expandToothAssignmentIdentifiers(unit.toothNumber).length;
+        otherUnits += count;
+        const material = unit.material?.trim() || "Material needs review";
+        materials.set(material, (materials.get(material) ?? 0) + count);
+      }
+      continue;
+    }
     const teeth = expandToothAssignmentIdentifiers(unit.toothNumber);
-    for (const tooth of teeth) (role === "crown" ? crowns : pontics).add(tooth);
+    for (const tooth of teeth) (role === "crown" ? crowns : role === "pontic" ? pontics : veneers).add(tooth);
     const material = unit.material?.trim() || "Material needs review";
     materials.set(material, (materials.get(material) ?? 0) + teeth.length);
   }
-  const groups = connectedToothGroups(connectors);
+  // Keep invalid persisted choices available to the editor for review, but
+  // never present their endpoints as a valid bridge in the clinical summary.
+  const validPairs = [...parseConnectorState(connectors).active].filter((pair) => {
+    const endpoints = new Set(pair.split("-"));
+    const members = units.filter((unit) => assignmentTeeth(unit).some((tooth) => endpoints.has(tooth)));
+    return validateToothConnectors(pair, members).valid;
+  });
+  const groups = connectedToothGroups(validPairs.join(","));
   const unresolvedPontics = [...pontics].filter((tooth) =>
     !groups.some((group) => group.includes(tooth) && group.some((member) => crowns.has(member))),
   );
   return {
     crowns: crowns.size,
     pontics: pontics.size,
-    units: new Set([...crowns, ...pontics]).size,
+    veneers: veneers.size,
+    units: new Set([...crowns, ...pontics, ...veneers]).size + otherUnits,
     groups,
     materials: [...materials].map(([material, count]) => ({ material, count })),
     unresolvedPontics,
@@ -492,19 +539,29 @@ export function updateConnectorChoices(state: ConnectorState, nextPairs: Set<str
   return serializeConnectorState(next);
 }
 
+/** Clinical display only: never derives prices or changes persisted assignments. */
+export function toothBridgeLabels(units: ToothAssignmentUnit[], connectors?: string | null): string[] {
+  return toothAssignmentSummary(units, connectors).groups.map((group) => {
+    const member = units.find((unit) => assignmentTeeth(unit).includes(group[0]));
+    const material = member?.material?.trim() || "Material needs review";
+    return `${material} bridge #${group[0]}–${group[group.length - 1]} | ${group.length} units`;
+  });
+}
+
 export function describeToothAssignments(units: ToothAssignmentUnit[], connectors?: string | null): string {
-  const assigned = units.filter((unit) => ["crown", "pontic"].includes(normalized(unit.restorationType)));
+  const assigned = units.filter((unit) => ["crown", "pontic", "veneer"].includes(normalized(unit.restorationType)));
   if (!assigned.length) return "";
   const summary = toothAssignmentSummary(assigned, connectors);
   const roles = assigned.map((unit) =>
-    `#${unit.toothNumber} ${normalized(unit.restorationType) === "crown" ? "prepared crown" : "pontic"}` +
+    `#${unit.toothNumber} ${normalized(unit.restorationType) === "crown" ? "prepared crown" : normalized(unit.restorationType) === "veneer" ? "veneer" : "pontic"}` +
     (unit.material ? `, ${unit.material}` : ", material needs review") +
     (unit.shade ? `, shade ${unit.shade}` : ""),
   );
   return [
-    `${summary.units} unit${summary.units === 1 ? "" : "s"} (${summary.crowns} prepared crowns, ${summary.pontics} pontics)`,
+    `${summary.units} unit${summary.units === 1 ? "" : "s"} (${summary.crowns} prepared crowns, ${summary.pontics} pontics${summary.veneers ? `, ${summary.veneers} veneer${summary.veneers === 1 ? "" : "s"}` : ""})`,
     ...roles,
     ...summary.groups.map((group) => `Connected: ${group.map((tooth) => `#${tooth}`).join("–")}`),
+    ...toothBridgeLabels(assigned, connectors),
     summary.unresolvedPontics.length
       ? `Review: unconnected pontics ${summary.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")}`
       : "",

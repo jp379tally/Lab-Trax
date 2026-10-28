@@ -598,6 +598,7 @@ async function scanOneAndReachConfirm(
   utils: Awaited<ReturnType<typeof render>>,
   barcode: string,
   patientName: string,
+  stationId = "loc-in-design",
 ) {
   await simulateScannerLayout(utils);
   triggerMockBarcodeScan(barcode, null);
@@ -607,16 +608,15 @@ async function scanOneAndReachConfirm(
   vi.useRealTimers();
   await waitFor(() => expect(utils.getByText(patientName)).toBeTruthy());
 
-  // Advance to the station-selection step.
+  // Advance to the station-selection step and choose the requested destination.
   await fireEvent.press(utils.getByTestId("batch-locate-continue"));
 
-  // Wait for the lab's locations to load, then pick "In Design". Station rows
-  // are keyed by location id (not status) so two same-status custom locations
-  // stay independently selectable.
+  // Station rows are keyed by location id (not status) so two same-status
+  // custom locations stay independently selectable.
   await waitFor(() =>
-    expect(utils.getByTestId("batch-locate-station-loc-in-design")).toBeTruthy(),
+    expect(utils.getByTestId(`batch-locate-station-${stationId}`)).toBeTruthy(),
   );
-  await fireEvent.press(utils.getByTestId("batch-locate-station-loc-in-design"));
+  await fireEvent.press(utils.getByTestId(`batch-locate-station-${stationId}`));
 
   // Advance to confirming step.
   await fireEvent.press(utils.getByTestId("batch-locate-next"));
@@ -957,7 +957,9 @@ describe("BatchLocateScreen — retry path", () => {
 
   it("retrying a failed case that now succeeds updates the result to 'All Done!'", async () => {
     const utils = await renderScanner();
-    await scanOneAndReachConfirm(utils, "PAN-RETRY-001", "Diana Drake");
+    // Polishing Bench and Glaze Oven are distinct custom stations mapped to
+    // qc. The exact station selected here must also be used by retry.
+    await scanOneAndReachConfirm(utils, "PAN-RETRY-001", "Diana Drake", "loc-polish");
 
     // First attempt — the case fails.
     await fireEvent.press(utils.getByTestId("batch-locate-confirm"));
@@ -973,7 +975,15 @@ describe("BatchLocateScreen — retry path", () => {
       expect(utils.getByText("All Done!")).toBeTruthy();
     });
     // succeededIds = [original successes (none)] + [retry success] = 1
-    expect(utils.getByText(/1 case moved to In Design/)).toBeTruthy();
+    expect(utils.getByText(/1 case moved to Polishing Bench/)).toBeTruthy();
+    expect(mockUpdateCaseMutateAsync).toHaveBeenNthCalledWith(1, {
+      caseId: "case-retry-001",
+      data: { status: "qc", labLocationId: "loc-polish" },
+    });
+    expect(mockUpdateCaseMutateAsync).toHaveBeenNthCalledWith(2, {
+      caseId: "case-retry-001",
+      data: { status: "qc", labLocationId: "loc-polish" },
+    });
   });
 
   it("retrying a failed case that fails again keeps 'Partial Success' with updated counts", async () => {

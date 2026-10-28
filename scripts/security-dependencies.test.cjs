@@ -2,10 +2,14 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createRequire } = require("node:module");
 const { generateKeyPairSync } = require("node:crypto");
-const { readFileSync } = require("node:fs");
+const { readFileSync, readdirSync } = require("node:fs");
 const { join } = require("node:path");
 const { createServer, get } = require("node:http");
 const { once } = require("node:events");
+const { spawnSync } = require("node:child_process");
+const { runInNewContext } = require("node:vm");
+const { pathToFileURL } = require("node:url");
+const { EventEmitter } = require("node:events");
 
 // Exercise installed transitive packages, not the temporary patch sources.
 const root = join(__dirname, "..");
@@ -14,6 +18,122 @@ const requireHoistedDependency = createRequire(
 );
 const requireApi = createRequire(join(root, "artifacts/api-server/package.json"));
 const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+const { evaluateAuditReport, auditCommandCompleted } = require("./check-dependency-audit.cjs");
+
+test("node-forge audit exception cannot accept failed or incomplete audit commands", () => {
+  const result = { status: 1, signal: null, stderr: "" };
+  const report = {
+    actions: [],
+    advisories: { forge: { severity: "high" } },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0 } },
+  };
+  assert.equal(auditCommandCompleted(result, report), true);
+  assert.equal(auditCommandCompleted({ ...result, status: 0 }, report), false);
+  for (const failure of [
+    { status: 2 }, { status: null, signal: "SIGTERM" },
+    { error: new Error("registry unavailable") }, { stderr: "registry request failed" },
+  ]) {
+    assert.equal(auditCommandCompleted({ ...result, ...failure }, report), false);
+  }
+  for (const incomplete of [
+    {}, { ...report, metadata: undefined }, { ...report, actions: undefined },
+    { ...report, error: { code: "ERR_PNPM_AUDIT_BAD_RESPONSE" } },
+    { ...report, errors: ["registry unavailable"] },
+    { ...report, advisories: {} },
+    { ...report, metadata: { vulnerabilities: { high: 1 } } },
+  ]) {
+    assert.equal(auditCommandCompleted(result, incomplete), false);
+  }
+  assert.equal(auditCommandCompleted({ ...result, status: 0 }, {
+    ...report, advisories: {},
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0 } },
+  }), true);
+});
+
+test("audit policy accepts only the installed, regression-tested node-forge source patch", () => {
+  const advisory = {
+    github_advisory_id: "GHSA-86w9-cpqp-85rv",
+    module_name: "node-forge",
+    severity: "high",
+    vulnerable_versions: "<=1.4.0",
+    patched_versions: "<0.0.0",
+    findings: [{ version: "1.4.0", paths: ["mobile>@expo/cli>node-forge"] }],
+  };
+  const evidence = {
+    workspace: "node-forge@1.4.0: patches/node-forge@1.4.0.patch",
+    lockfile: "node-forge@1.4.0(patch_hash=abc):",
+    patch: "synthetic source patch",
+    regressions: "node-forge rejects extra DigestAlgorithm elements and invalid NULL parameters",
+  };
+  assert.equal(evaluateAuditReport({ advisories: { accepted: advisory } }, evidence).ok, true);
+  assert.equal(evaluateAuditReport({
+    advisories: {
+      accepted: advisory,
+      unknown: { ...advisory, github_advisory_id: "GHSA-unknown", module_name: "other-package" },
+    },
+  }, evidence).ok, false);
+  assert.equal(
+    evaluateAuditReport({ advisories: { accepted: advisory } }, { ...evidence, patch: "" }).ok,
+    false,
+  );
+  assert.equal(evaluateAuditReport({
+    advisories: { nowFixable: { ...advisory, patched_versions: ">=1.4.1" } },
+  }, evidence).ok, false);
+});
+
+test("bounded Zod collections reject oversized input before validating elements", async () => {
+  const zodConsumers = [
+    requireApi("zod").z,
+    createRequire(join(root, "artifacts/labtrax/package.json"))("zod").z,
+  ];
+  for (const z of zodConsumers) {
+    let visited = 0;
+    const item = z.string().refine(() => { visited++; return true; });
+    for (const [schema, value] of [
+      [z.array(item).max(2), ["a", "b", "c"]],
+      [z.array(item).length(2), ["a", "b", "c"]],
+      [z.set(item).max(2), new Set(["a", "b", "c"])],
+      [z.map(item, item).max(2), new Map([["a", "a"], ["b", "b"], ["c", "c"]])],
+    ]) {
+      assert.equal(schema.safeParse(value).success, false);
+      assert.equal((await schema.safeParseAsync(value)).success, false);
+    }
+    assert.equal(visited, 0, "oversized values must not allocate per-element validation work");
+    assert.deepEqual(z.array(item).max(2).parse(["a", "b"]), ["a", "b"]);
+  }
+});
+
+test("compressed JSON with trailing bytes cannot crash the request parser", { timeout: 12000 }, () => {
+  const child = spawnSync(process.execPath, ["-e", `
+    const http = require('node:http');
+    const { gzipSync } = require('node:zlib');
+    const parse = require(process.argv[1]).json();
+    const deadline = setTimeout(() => process.exit(2), 8000);
+    process.on('uncaughtException', () => process.exit(3));
+    const server = http.createServer((req, res) => {
+      if (req.url === '/health') { res.end('alive'); return; }
+      parse(req, res, error => { res.statusCode = error ? 400 : 200; res.end(); });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const data = Buffer.concat([gzipSync(Buffer.from('{"ok":true}')), Buffer.from('trailing bytes')]);
+      const req = http.request({ host: '127.0.0.1', port: server.address().port,
+        method: 'POST', headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': data.length }
+      }, res => { res.resume(); res.on('end', verify); });
+      req.on('error', verify);
+      req.end(data);
+    });
+    let checked = false;
+    function verify() {
+      if (checked) return;
+      checked = true;
+      setTimeout(() => http.get({ host: '127.0.0.1', port: server.address().port, path: '/health' }, res => {
+        let text = ''; res.on('data', b => { text += b; });
+        res.on('end', () => { clearTimeout(deadline); server.close(() => process.exit(text === 'alive' ? 0 : 4)); });
+      }).on('error', () => process.exit(5)), 50);
+    }
+  `, requireApi.resolve("body-parser")], { encoding: "utf8", timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr || "parser process failed to remain healthy");
+});
 const patchedVersions = {
   braces: "3.0.3",
   "node-forge": "1.4.0",
@@ -37,6 +157,95 @@ function requireDependency(name) {
     ? require(patchedPackagePath(name))
     : requireHoistedDependency(name);
 }
+
+test("braces and node-forge have no unpatched dependency snapshots", () => {
+  const snapshots = lockfile.split("\nsnapshots:\n")[1];
+  for (const name of ["braces", "node-forge"]) {
+    const version = patchedVersions[name];
+    const entries = snapshots.split("\n").filter(line => line.startsWith(`  ${name}@`));
+    assert.ok(entries.length > 0, `${name} must remain installed, not be removed`);
+    for (const entry of entries) {
+      assert.match(entry, new RegExp(
+        `^  ${name}@${version.replaceAll(".", "\\.")}\\(patch_hash=[a-f0-9]+\\):(?: \\{\\})?$`,
+      ), `${name} must resolve exclusively to the tracked source patch`);
+    }
+  }
+});
+
+async function installedMocker(consumer) {
+  const consumerRequire = createRequire(join(root, consumer, "package.json"));
+  const vitestRequire = createRequire(consumerRequire.resolve("vitest/package.json"));
+  assert.equal(vitestRequire("./package.json").version, "4.1.12");
+  assert.equal(vitestRequire("@vitest/mocker/package.json").version, "4.1.12");
+  return import(pathToFileURL(vitestRequire.resolve("@vitest/mocker/node")).href);
+}
+
+test("all test consumers resolve the patched Vitest and mocker family", async () => {
+  for (const consumer of [
+    "artifacts/api-server", "artifacts/labtrax", "artifacts/labtrax-desktop",
+    "lib/account-number", "lib/ai-knowledge", "lib/calendar-date",
+    "lib/case-taxonomy", "lib/item-name-match", "lib/scan-viewer", "scripts",
+  ]) {
+    await installedMocker(consumer);
+  }
+  assert.ok(!lockfile.includes("@vitest/mocker@4.1.11"));
+});
+
+test("manual mock source treats malicious URLs and export names as data", async () => {
+  const { createManualModuleSource } = await installedMocker("artifacts/labtrax-desktop");
+  const url = 'x"); globalThis.__mockInjected = true; void("';
+  const exportName = 'quote"\\\nexport';
+  let requested;
+  // Execute the installed generator's ESM output, including quoted export names.
+  globalThis.__securityTestMocker = {
+    getFactoryModule(value) {
+      requested = value;
+      return { default: 42, [exportName]: 73 };
+    },
+  };
+  try {
+    const source = createManualModuleSource(url, ["default", exportName], '"__securityTestMocker"');
+    const result = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+    assert.equal(requested, url);
+    assert.equal(result.default, 42);
+    assert.equal(result[exportName], 73);
+    assert.equal(globalThis.__mockInjected, undefined);
+  } finally {
+    delete globalThis.__securityTestMocker;
+    delete globalThis.__mockInjected;
+  }
+});
+
+test("redirect registration normalizes Windows traversal before the real Vite allowlist", async () => {
+  const { interceptorPlugin } = await installedMocker("artifacts/labtrax-desktop");
+  const plugin = interceptorPlugin();
+  const ws = new EventEmitter();
+  ws.send = () => {};
+  // Windows separators exercise the actual plugin/allowlist on Linux;
+  // this is not a native Windows filesystem integration test.
+  const config = {
+    root: "/security-test/root",
+    server: { fs: { strict: true, allow: ["/security-test/root"] } },
+    fsDenyGlob: () => false,
+    safeModulePaths: new Set(),
+  };
+  plugin.configureServer({ config, ws });
+  for (const [index, path] of ["../secret.txt", "..\\secret.txt", "nested/..\\..\\secret.txt"].entries()) {
+    const id = `/blocked-${index}`;
+    ws.emit("vitest:interceptor:register", {
+      type: "redirect", raw: id, id, url: id, redirect: `traversal:${path}`,
+    });
+    assert.equal(await plugin.load.handler(id), undefined, path);
+  }
+  // A permitted redirect is still registered and normalized, not dropped.
+  const event = {
+    type: "redirect", raw: "/safe", id: "/safe", url: "/safe",
+    redirect: "traversal:nested\\safe.js",
+  };
+  ws.emit("vitest:interceptor:register", event);
+  assert.equal(event.redirect, "/security-test/root/nested/safe.js");
+  await assert.rejects(plugin.load.handler("/safe"), { code: "ENOENT" });
+});
 
 test("dependency consumers resolve the lockfile-pinned source patches", () => {
   for (const [consumer, version, dependency] of [
@@ -66,6 +275,8 @@ test("lockfile retains patched releases, native binaries, and all source patches
     sharp: "0.35.5",
     "fast-copy": "4.1.2",
     "postcss-selector-parser": "7.1.6",
+    "follow-redirects": "1.16.1",
+    "markdown-it": "14.3.3",
   })) {
     assert.ok(lockfile.includes(`  ${name}@${version}:`), `${name} patched version`);
   }
@@ -78,6 +289,137 @@ test("lockfile retains patched releases, native binaries, and all source patches
   assert.ok(!snapshots.includes("  sprintf-js@1.1.3:"), "no unpatched sprintf snapshot");
   assert.match(lockfile, /'@img\/sharp-linux-x64': 0\.35\.5/);
   assert.match(lockfile, /'@img\/sharp-libvips-linux-x64': 1\.3\.4/);
+});
+
+test("follow-redirects strips credentials across origins with object and array headers", { timeout: 10000 }, async (t) => {
+  // Resolve through axios, the API's actual redirect consumer.
+  const twilioRequire = createRequire(requireApi.resolve("twilio"));
+  const axiosRequire = createRequire(twilioRequire.resolve("axios"));
+  const redirects = axiosRequire("follow-redirects");
+  assert.equal(axiosRequire("follow-redirects/package.json").version, "1.16.1");
+  const collector = createServer((req, res) => res.end(JSON.stringify(req.headers)));
+  collector.listen(0, "127.0.0.1");
+  await once(collector, "listening");
+  const destination = `127.0.0.1:${collector.address().port}`;
+  let originalHeaders;
+  const origin = createServer((req, res) => {
+    originalHeaders = req.headers;
+    res.writeHead(302, { Location: `http://${destination}/` });
+    res.end();
+  });
+  t.after(() => {
+    for (const server of [origin, collector]) {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+  origin.listen(0, "127.0.0.1");
+  await once(origin, "listening");
+  const headers = {
+    Host: `127.0.0.1:${origin.address().port}`,
+    Authorization: "Bearer synthetic-test",
+    "Proxy-Authorization": "Basic synthetic-test",
+    Cookie: "session=synthetic-test",
+    "X-Api^Key": "synthetic-test",
+    "X-Token|Secret": "synthetic-test",
+    "X-Control-Key": "synthetic-test",
+    "X-Token": "public-value",
+    Secret: "public-value",
+  };
+  for (const input of [headers, Object.entries(headers).flat()]) {
+    const received = await new Promise((resolve, reject) => {
+      const request = redirects.http.get({
+        hostname: "127.0.0.1", port: origin.address().port, path: "/",
+        headers: Array.isArray(input) ? [...input] : { ...input },
+        sensitiveHeaders: ["X-Api^Key", "X-Token|Secret", "X-Control-Key"],
+      }, async (res) => {
+        try {
+          const chunks = [];
+          for await (const chunk of res) chunks.push(chunk);
+          resolve(JSON.parse(Buffer.concat(chunks).toString()));
+        } catch (error) { reject(error); }
+      });
+      request.once("error", reject);
+      request.setTimeout(3000, () => request.destroy(new Error("redirect timed out")));
+      t.after(() => request.destroy());
+    });
+    for (const name of [
+      "authorization", "proxy-authorization", "cookie", "x-api^key",
+      "x-token|secret", "x-control-key",
+    ]) {
+      assert.equal(originalHeaders[name], headers[
+        Object.keys(headers).find(key => key.toLowerCase() === name)
+      ], "credentials must reach the intended origin");
+      assert.equal(received[name], undefined, `${name} must not reach the redirect`);
+    }
+    assert.equal(received.host, destination);
+    assert.equal(received["x-token"], "public-value", "regex alternatives must not strip unrelated headers");
+    assert.equal(received.secret, "public-value");
+  }
+});
+
+test("markdown-it bounds all reported pathological scans and preserves normal rendering", () => {
+  const MarkdownIt = requireDependency("markdown-it");
+  assert.equal(requireDependency("markdown-it/package.json").version, "14.3.3");
+  const md = new MarkdownIt({ html: true, typographer: true });
+  assert.equal(md.render('[link][a]\n\n[a]: /target "title"\n'),
+    '<p><a href="/target" title="title">link</a></p>\n');
+  assert.equal(md.render('"hello"'), "<p>“hello”</p>\n");
+  assert.equal(md.render("x <!--closed-->"), "<p>x <!--closed--></p>\n");
+  // A child-process deadline actually interrupts synchronous parser hangs.
+  // The vulnerable reference/HTML implementations take tens of seconds here.
+  for (const variant of ["quotes", "title", "label", "<!--", "<?x", "<!A", "<![CDATA["]) {
+    const result = spawnSync(process.execPath, ["-e", `
+      const MarkdownIt = require(${JSON.stringify(requireHoistedDependency.resolve("markdown-it"))});
+      const variant = process.argv[1];
+      const src = variant === "quotes" ? '"a '.repeat(256000) + "b' ".repeat(256000)
+        : variant === "title" ? '[a]: /u "' + 'x\\n'.repeat(200000)
+        : variant === "label" ? '[' + 'a\\n'.repeat(100000)
+        : 'x ' + variant.repeat(128000);
+      const html = new MarkdownIt({ html: true, typographer: true }).render(src);
+      if (!html.length) throw new Error("missing output");
+    `, variant], { timeout: 10000, encoding: "utf8" });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${variant}: ${result.stderr}`);
+  }
+});
+
+test("Vite bundles the patched Windows command and WSL filename handling", () => {
+  const desktopRequire = createRequire(join(root, "artifacts/labtrax-desktop/package.json"));
+  assert.equal(desktopRequire("vite/package.json").version, "7.3.7");
+  assert.ok(!lockfile.includes("vite@7.3.6"), "no vulnerable Vite snapshot remains");
+  const { dirname, resolve } = require("node:path");
+  const bundle = readFileSync(join(dirname(desktopRequire.resolve("vite")), "chunks/config.js"), "utf8");
+  // Exercise the bundled CommonJS modules without spawning a real editor.
+  function bundledModule(name, globals = {}) {
+    const start = bundle.indexOf(`/node_modules/launch-editor/${name}\n`);
+    assert.ok(start > 0, `missing bundled ${name}`);
+    const section = bundle.slice(start).split("\n}));")[0];
+    const body = section.slice(section.indexOf("=> {") + 4);
+    const module = { exports: {} };
+    runInNewContext(body, { module, exports: module.exports, __require: require, process, ...globals });
+    return module.exports;
+  }
+  const command = bundledModule("construct-windows-launch-command.js");
+  for (const filename of ["file%ENV%.ts", "file\r.ts", "file\n.ts"]) {
+    assert.throws(() => command("code.cmd", [filename]));
+  }
+  assert.ok(command("code.cmd", ["normal.ts"]).includes("normal.ts"));
+  const parseWindowsFile = bundledModule("parse-file.js", {
+    __require: name => name === "path" ? require("node:path").win32 : require(name),
+  });
+  assert.equal(
+    parseWindowsFile("C:\\project\\crafted%ENV%\\..:1:1").fileName,
+    "C:\\project",
+    "line suffixes must be removed before resolving parent-directory components",
+  );
+  const getArgs = bundledModule("get-args.js", {
+    process: { platform: "linux", env: {} },
+    __require: name => name === "os" ? { release: () => "Microsoft WSL" } : require(name),
+  });
+  assert.equal(getArgs("vim", "+command", 0)[0], resolve("+command"));
+  const wslName = getArgs("vim", "/mnt/c/+command", 0)[0];
+  assert.ok(wslName.startsWith("./"), "WSL paths must not become editor flags");
 });
 
 test("proxy-addr rejects IPv4 matching overly broad IPv6 trust ranges", () => {
@@ -493,6 +835,60 @@ test("roarr rejects malicious precision through its real logging consumer and re
   assert.deepEqual(messages.map(message => message.message), ["amount 1.23", "amount 1.23"]);
   assert.equal(messages[1].context.source, "test");
   assert.equal(calls, 2);
+});
+
+test("node-forge rejects forged DigestAlgorithm signatures through every installed consumer", () => {
+  const snapshots = requireHoistedDependency("yaml").parse(lockfile).snapshots;
+  const store = join(root, "node_modules/.pnpm");
+  const installed = readdirSync(store);
+  const expectedPath = require.resolve(patchedPackagePath("node-forge"));
+  const pair = generateKeyPairSync("rsa", {
+    modulusLength: 1024, publicExponent: 3,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "pkcs1", format: "pem" },
+  });
+  let consumers = 0;
+  for (const [snapshot, entry] of Object.entries(snapshots)) {
+    const dependency = entry.dependencies?.["node-forge"] ||
+      entry.optionalDependencies?.["node-forge"];
+    if (!dependency) continue;
+    assert.match(dependency, /^1\.4\.0\(patch_hash=[a-f0-9]+\)$/);
+    const [, name, version] = snapshot.match(/^(@[^/]+\/[^@]+|[^@]+)@([^(:]+)/);
+    const prefix = `${name.replace("/", "+")}@${version}`;
+    const directories = installed.filter(dir => dir === prefix || dir.startsWith(`${prefix}_`));
+    assert.ok(directories.length > 0, `${snapshot} must remain installed`);
+    for (const directory of directories) {
+      const manifest = join(store, directory, "node_modules", name, "package.json");
+      const consumerRequire = createRequire(manifest);
+      assert.equal(JSON.parse(readFileSync(manifest, "utf8")).version, version);
+      assert.equal(consumerRequire.resolve("node-forge"), expectedPath,
+        `${snapshot} must resolve the tracked security patch`);
+      const forge = consumerRequire("node-forge");
+      const privateKey = forge.pki.privateKeyFromPem(pair.privateKey);
+      const publicKey = forge.pki.publicKeyFromPem(pair.publicKey);
+      const md = forge.md.sha256.create().update("consumer signature regression");
+      const digest = md.digest().getBytes();
+      const signature = privateKey.sign(md);
+      assert.equal(publicKey.verify(digest, signature), true);
+      assert.equal(publicKey.verify(forge.md.sha256.create().update("tampered").digest().getBytes(),
+        signature), false);
+      const a = forge.asn1;
+      const element = (type, constructed, value) =>
+        a.create(a.Class.UNIVERSAL, type, constructed, value);
+      const malformed = a.toDer(element(a.Type.SEQUENCE, true, [
+        element(a.Type.SEQUENCE, true, [
+          element(a.Type.OID, false, a.oidToDer(forge.oids.sha256).getBytes()),
+          element(a.Type.NULL, false, ""),
+          element(a.Type.OCTETSTRING, false, "attacker-controlled padding"),
+        ]),
+        element(a.Type.OCTETSTRING, false, digest),
+      ])).getBytes();
+      assert.throws(() => publicKey.verify(digest, privateKey.sign(malformed, "NONE")),
+        /DigestInfo/, `${snapshot} must reject nested padding`);
+    }
+    consumers++;
+  }
+  assert.ok(consumers > 0, "node-forge consumers must not silently disappear");
 });
 
 test("node-forge rejects extra DigestAlgorithm elements and invalid NULL parameters", () => {

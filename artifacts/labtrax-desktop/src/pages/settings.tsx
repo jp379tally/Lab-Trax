@@ -1,3 +1,8 @@
+import {
+  followManualBackup,
+  type ManualBackupStatus,
+  type DatabaseProtectionRetentionSchedule,
+} from "@workspace/api-client-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useSearch, Redirect } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,10 +27,12 @@ import {
 import { apiFetch, apiFetchArrayBuffer, apiDownloadBackupToFolder, apiFetchDownloadResponse, readBoundedBackupBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, createRestoreUploadSession, sendRestoreUploadChunk } from "@/lib/api";
 import {
   executeLocalBackup,
-  verifyCompleteBackupHeaders,
+  streamVerifiedBackupToWritable,
+  verifyRequestedBackupHeaders,
   verifyStreamedBackup,
   watchBackupLiveStatus,
   type LocalBackupLiveStatus,
+  type BrowserBackupSaveHandle,
 } from "@/lib/local-backup-execution";
 import {
   getScheduledLocalBackupProgress,
@@ -35,6 +42,15 @@ import {
   backupLiveProgressText,
   formatBackupSize,
 } from "@/lib/local-backup-progress";
+import {
+  applyManualBackupLiveStatus,
+  getManualBackupProgress,
+  loadManualBackupIdentity,
+  resetManualBackupProgress,
+  saveManualBackupIdentity,
+  subscribeManualBackupProgress,
+  updateManualBackupProgress,
+} from "@/lib/manual-backup-progress";
 import { toast } from "@/hooks/use-toast";
 import { AuthedImage } from "@/components/AuthedMedia";
 import { ProfilePhotoControl } from "@/components/ProfilePhotoControl";
@@ -50,6 +66,7 @@ import {
 } from "@/pages/practices";
 import type { LabCase, Invoice, Organization } from "@/lib/types";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
+import { AdminSettingsPinGate, requiresAdminSettingsPin } from "@/lib/admin-settings-gate";
 import { haltPollingIfForbidden, retryUnlessForbidden } from "@/lib/platform-admin-query";
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone, formatDate, formatDateTime } from "@/lib/format";
@@ -65,6 +82,7 @@ import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
 import { StatementLayoutPanel } from "@/pages/statement-layout-panel";
 import { CorrespondenceLayoutPanel } from "@/pages/correspondence-layout-panel";
 import { formatAccountNumberForDisplay } from "@workspace/account-number";
+import { UpdateSettingsPanel } from "@/components/UpdateSettingsPanel";
 import {
   formatBackupAge,
   type BackupAlertAttempt,
@@ -82,20 +100,41 @@ interface AdminUser {
   practiceName?: string | null;
   lastLoginAt?: string | null;
 }
-type TabKey = "profile" | "password" | "sessions" | "users" | "backup" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "payment-receipt" | "card-authorization" | "autopay-authorization" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant" | "doctor-practice-memory" | "closed-days" | "employee-hours" | "permission-outline" | "lab-preferences";
+type TabKey = "profile" | "password" | "sessions" | "users" | "backup" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "payment-receipt" | "card-authorization" | "autopay-authorization" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant" | "doctor-practice-memory" | "closed-days" | "employee-hours" | "permission-outline" | "lab-preferences" | "updates";
 
 // NOTE: "users" is intentionally omitted here so the old `?tab=users` deep link
 // falls back to the default Profile section instead of opening the now-hidden
 // Users panel. The "users" TabKey + UsersPanel are kept intact for easy restore.
 // "desktop" is also omitted: the Settings → Desktop app section was removed in
 // favour of the standalone /download page, so the stale deep link lands on Profile.
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "backup", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "payment-receipt", "card-authorization", "autopay-authorization", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant", "doctor-practice-memory", "closed-days", "employee-hours", "permission-outline", "lab-preferences"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "backup", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "payment-receipt", "card-authorization", "autopay-authorization", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant", "doctor-practice-memory", "closed-days", "employee-hours", "permission-outline", "lab-preferences", "updates"];
+
+function hasDesktopUpdateBridge() {
+  if (typeof window === "undefined") return false;
+  const api = (window as Window & {
+    electronAPI?: {
+      getAppVersion?: unknown;
+      getUpdateState?: unknown;
+      checkForUpdates?: unknown;
+      installUpdate?: unknown;
+      onUpdateState?: unknown;
+    };
+  }).electronAPI;
+  return Boolean(
+    api?.getAppVersion &&
+      api.getUpdateState &&
+      api.checkForUpdates &&
+      api.installUpdate &&
+      api.onUpdateState,
+  );
+}
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
   try {
     const search = new URLSearchParams(window.location.search);
     const requested = search.get("tab") as TabKey | null;
+    if (requested === "updates" && !hasDesktopUpdateBridge()) return "profile";
     if (requested && VALID_TAB_KEYS.includes(requested)) return requested;
   } catch {
     /* ignore */
@@ -106,6 +145,8 @@ function readInitialTab(): TabKey {
 export default function SettingsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  useSessionSecretVersion();
+  const settingsPinUnlocked = !!getSessionSecret();
   const isOwner = user?.role === "owner";
   const backupMembershipsQuery = useQuery<MeResponse>({
     queryKey: ["auth", "me"],
@@ -127,6 +168,7 @@ export default function SettingsPage() {
   // selects its first child instead of rendering an empty pane.
   const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean; parentKey?: TabKey; groupOnly?: boolean }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
+    { key: "updates", label: "Software updates", icon: Download, show: hasDesktopUpdateBridge() },
     { key: "password", label: "Password", icon: KeyRound, show: true, parentKey: "profile" },
     { key: "sessions", label: "Active sessions", icon: Monitor, show: true, parentKey: "profile" },
     { key: "notifications", label: "Notifications", icon: Monitor, show: true, parentKey: "profile" },
@@ -159,7 +201,7 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>(readInitialTab);
 
   const backupScheduleQuery = useQuery<{ lastSuccessfulBackupAt?: string | null; staleAfterDays?: number }>({
-    enabled: isAdmin,
+    enabled: isAdmin && settingsPinUnlocked,
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch("/admin/backup/schedule"),
     retry: retryUnlessForbidden,
@@ -232,7 +274,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="px-8 py-7 max-w-[1100px] mx-auto">
+    <div className={`${tab === "backup" ? "px-4 sm:px-8" : "px-8"} py-7 max-w-[1100px] mx-auto`}>
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Admin Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -240,14 +282,24 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex gap-6">
-        <nav className="w-48 shrink-0">
+      <div
+        className={tab === "backup"
+          ? "flex min-w-0 flex-col gap-4 md:flex-row md:gap-6"
+          : "flex gap-6"}
+        data-testid="settings-layout"
+      >
+        <nav className={tab === "backup" ? "w-full min-w-0 md:w-48 md:shrink-0" : "w-48 shrink-0"}>
           <ul className="space-y-1">
             {tabs.filter((t) => t.show && !t.parentKey).map((t) => renderNavEntry(t, 0))}
           </ul>
         </nav>
         <div className="flex-1 min-w-0 bg-card border border-border rounded-xl">
+          {requiresAdminSettingsPin(tab, isAdmin) && !settingsPinUnlocked ? (
+            <AdminSettingsPinGate />
+          ) : (
+          <>
           {tab === "profile" && <ProfilePanel />}
+          {tab === "updates" && <UpdateSettingsPanel />}
           {tab === "password" && <PasswordPanel />}
           {tab === "sessions" && <SessionsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
@@ -276,6 +328,8 @@ export default function SettingsPage() {
           {tab === "closed-days" && isAdmin && <ClosedDaysPanel />}
           {tab === "employee-hours" && isAdmin && <EmployeeHoursPanel />}
           {tab === "permission-outline" && (isAdmin || isOwner) && <PermissionOutlinePanel />}
+          </>
+          )}
         </div>
       </div>
     </div>
@@ -2495,6 +2549,8 @@ type GoogleDriveStatusData = GoogleDriveBackupStatusResult;
 type BackupIntervalUnit = "minutes" | "hours";
 
 interface BackupScheduleData {
+  sourceEnvironment?: "development" | "production";
+  allowedScheduleIntervalsMinutes?: number[];
   interval: number | null;
   unit: BackupIntervalUnit | null;
   destination: BackupDestinationType | null;
@@ -2509,8 +2565,26 @@ interface BackupScheduleData {
   effectiveDestination?: BackupDestinationType | null;
   /** The editable schedule row's own interval, which may be slower. */
   scheduleIntervalMinutes?: number | null;
+  databaseRetention?: DatabaseProtectionRetentionSchedule;
   /** The independent off-site protection job on the deployed server. */
   offsite?: {
+    databaseProtection?: {
+      mode: "incremental-storage-fresh-export" | "incremental-records-and-media";
+      scope: "production-database-and-media";
+      coverage: "complete" | "partial";
+      mediaFiles: number;
+      mediaBytes: number;
+      missingFiles: number;
+      state: "not_started" | "running" | "verified" | "partial" | "skipped_busy" | "failed";
+      stage: string;
+      lastVerifiedAt: string | null;
+      lastDestinationCheckAt: string | null;
+      dumpBytes: number;
+      newChunks: number;
+      newBytes: number;
+      reusedChunks: number;
+      error: string | null;
+    };
     enabled: boolean;
     running: boolean;
     intervalMinutes: number;
@@ -2519,7 +2593,7 @@ interface BackupScheduleData {
     stale?: boolean;
     ageMinutes?: number | null;
     windowMinutes?: number;
-    source?: "onedrive" | "database" | "none";
+    source?: "onedrive" | "google-drive" | "database" | "none";
     reason?: string | null;
     destinationUnreadable?: boolean;
   } | null;
@@ -2600,10 +2674,46 @@ function isBackupStale(lastSuccessfulBackupAt: string | null, staleDays: number 
 
 const INTERVAL_OPTIONS: Array<{ interval: number; unit: BackupIntervalUnit; label: string }> = [
   { interval: 5, unit: "minutes", label: "Every 5 minutes" },
-  { interval: 10, unit: "minutes", label: "Every 10 minutes" },
   { interval: 15, unit: "minutes", label: "Every 15 minutes" },
+  { interval: 20, unit: "minutes", label: "Every 20 minutes" },
+  { interval: 30, unit: "minutes", label: "Every 30 minutes" },
   { interval: 1, unit: "hours", label: "Every hour" },
+  { interval: 6, unit: "hours", label: "Every 6 hours" },
+  { interval: 24, unit: "hours", label: "Every 24 hours" },
 ];
+
+function scheduleIntervalOptions(
+  sourceEnvironment?: BackupScheduleData["sourceEnvironment"],
+  allowedMinutes?: number[],
+): Array<{ interval: number; unit: BackupIntervalUnit; label: string }> {
+  const intervals = allowedMinutes?.length
+    ? allowedMinutes
+    : sourceEnvironment === "production"
+      ? [5, 15, 20, 30, 60, 360, 1440]
+      : sourceEnvironment === "development"
+        ? [5, 15, 20, 30, 60, 360, 1440, 48 * 60, 72 * 60]
+        : null;
+  if (!intervals) return INTERVAL_OPTIONS;
+  return intervals.map((minutes) => {
+    const unit: BackupIntervalUnit = minutes % 60 === 0 ? "hours" : "minutes";
+    const interval = unit === "hours" ? minutes / 60 : minutes;
+    return {
+      interval,
+      unit,
+      label: minutes === 60 ? "Every hour" : `Every ${interval} ${unit === "hours"
+        ? interval === 1 ? "hour" : "hours"
+        : interval === 1 ? "minute" : "minutes"}`,
+    };
+  });
+}
+
+function defaultScheduleIntervalKey(
+  sourceEnvironment?: BackupScheduleData["sourceEnvironment"],
+): string {
+  return sourceEnvironment === "development"
+    ? intervalKey(48, "hours")
+    : intervalKey(15, "minutes");
+}
 
 function intervalKey(interval: number, unit: BackupIntervalUnit): string {
   return `${interval}_${unit}`;
@@ -2830,21 +2940,35 @@ function BackupPanel({ labOnly }: { labOnly: boolean }) {
 }
 
 function PlatformBackupPanel() {
+  const { user } = useAuth();
   const queryClient = useQueryClient();
+  function backupSourceHeaders(): Record<string, string> {
+    return scheduleQuery.data?.sourceEnvironment
+      ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {};
+  }
   const scheduledBackupProgress = useSyncExternalStore(
     subscribeScheduledLocalBackupProgress,
     getScheduledLocalBackupProgress,
     getScheduledLocalBackupProgress,
   );
+  const manualProgress = useSyncExternalStore(
+    subscribeManualBackupProgress,
+    getManualBackupProgress,
+    getManualBackupProgress,
+  );
   const [scheduledElapsedSeconds, setScheduledElapsedSeconds] = useState(0);
   const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
+  const [nowArchiveKind, setNowArchiveKind] = useState<"full" | "database-only">("full");
   const [nowPath, setNowPath] = useState("");
-  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null } | null>(null);
+  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null; databaseOnly?: boolean } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
   const [backupPhase, setBackupPhase] = useState("");
-  const [backupStartedAt, setBackupStartedAt] = useState(0);
   const [backupElapsedSeconds, setBackupElapsedSeconds] = useState(0);
   const [backupLiveStatus, setBackupLiveStatus] = useState<LocalBackupLiveStatus | null>(null);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [resumeDeliveryPending, setResumeDeliveryPending] = useState(false);
+  const [manualReconnectUnconfirmed, setManualReconnectUnconfirmed] = useState(false);
+  const rehydratedManualRunRef = useRef<string | null>(null);
 
   const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(15, "minutes"));
   const [schedDest, setSchedDest] = useState<BackupDestinationType>("local");
@@ -2857,6 +2981,7 @@ function PlatformBackupPanel() {
   const [schedSuccess, setSchedSuccess] = useState(false);
   const [schedRunNowResult, setSchedRunNowResult] = useState<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null } | null>(null);
   const [schedRunNowError, setSchedRunNowError] = useState<string | null>(null);
+  const [retentionApprovalOpen, setRetentionApprovalOpen] = useState(false);
 
   const [selectedRestoreRunId, setSelectedRestoreRunId] = useState<number | null>(null);
   const [restoreFromHistoryLoading, setRestoreFromHistoryLoading] = useState(false);
@@ -2867,7 +2992,33 @@ function PlatformBackupPanel() {
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch("/admin/backup/schedule"),
     retry: retryUnlessForbidden,
+    refetchInterval: query => query.state.data?.sourceEnvironment === "production" ? 5000 : false,
   });
+
+  useEffect(() => {
+    if (!user?.id || manualProgress.runId) return;
+    const identity = loadManualBackupIdentity(user.id);
+    const identityKey = identity ? `${user.id}:${identity.runId}` : null;
+    if (!identity || !identityKey || rehydratedManualRunRef.current === identityKey) return;
+    rehydratedManualRunRef.current = identityKey;
+    setManualReconnectUnconfirmed(true);
+    setNowDest(identity.destination);
+    setNowArchiveKind(identity.archiveKind);
+    setNowPath(identity.path);
+    resetManualBackupProgress(identity.runId, "Reconnecting to your manual backup", identity.startedAt);
+    void apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+      `/admin/backup/status/${encodeURIComponent(identity.runId)}`,
+    ).then(status => {
+      if (status.runId !== identity.runId) throw new Error("The saved run identity did not match the server response.");
+      applyManualBackupLiveStatus(status);
+      setManualReconnectUnconfirmed(false);
+    }).catch(() => {
+      updateManualBackupProgress({
+        state: "stale",
+        error: "Could not reconnect to this backup. Check Recent backups before starting another run.",
+      });
+    });
+  }, [user?.id, manualProgress.runId]);
 
   // Where the server says archives are actually being written, which is not
   // necessarily the destination saved in this form: off-site protection keeps
@@ -2982,9 +3133,10 @@ function PlatformBackupPanel() {
       if (interval !== null && unit !== null) {
         setSchedIntervalKey(intervalKey(interval, unit));
       } else {
-        setSchedIntervalKey(intervalKey(15, "minutes"));
+        setSchedIntervalKey(defaultScheduleIntervalKey(scheduleQuery.data.sourceEnvironment));
       }
-      setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "local");
+      setSchedDest(scheduleQuery.data.sourceEnvironment === "production"
+        ? "onedrive" : (scheduleQuery.data.destination as BackupDestinationType | null) ?? "local");
       setSchedPath(scheduleQuery.data.path ?? "");
       setSchedEnabled(scheduleQuery.data.enabled);
       setStaleThresholdDays(scheduleQuery.data.staleAlertThresholdDays ?? 7);
@@ -2993,62 +3145,172 @@ function PlatformBackupPanel() {
     }
   }, [scheduleQuery.data]);
 
+  async function deliverStagedManualBackup(
+    runId: string,
+    archiveKind: "full" | "database-only",
+    browserSaveHandle?: BrowserBackupSaveHandle,
+  ) {
+    const response = await apiFetchDownloadResponse(
+      `/admin/backup/download/${encodeURIComponent(runId)}`,
+      { method: "GET", headers: backupSourceHeaders() },
+    );
+    if (!response.ok) {
+      let message = `Backup download failed (${response.status}).`;
+      try {
+        const body = await response.json() as { error?: string; message?: string };
+        message = body.error ?? body.message ?? message;
+      } catch { /* Keep the status-based message. */ }
+      throw new Error(message);
+    }
+    verifyRequestedBackupHeaders(response.headers, archiveKind);
+    const fileName = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1]
+      ?? "labtrax-backup.zip.enc";
+    const missingFileCount = Number(response.headers.get("x-backup-missing-file-count") ?? 0);
+    let size: number;
+    let savedTo: string | null = null;
+    let viaBrowser = false;
+    if (browserSaveHandle) {
+      const writable = await browserSaveHandle.createWritable();
+      size = await streamVerifiedBackupToWritable(response, writable, archiveKind);
+      savedTo = browserSaveHandle.name ?? fileName;
+    } else {
+      const buffer = await readBoundedBackupBuffer(response);
+      verifyStreamedBackup(buffer, response.headers);
+      size = buffer.byteLength;
+      const url = URL.createObjectURL(new Blob([buffer], { type: "application/octet-stream" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      viaBrowser = true;
+    }
+    const report = await apiFetch<{ rejected?: boolean; warning?: string; completedAt?: string }>(
+      "/admin/backup/desktop-run-report",
+      {
+        method: "POST",
+        headers: backupSourceHeaders(),
+        body: JSON.stringify({
+          status: "success",
+          source: "manual",
+          fileName,
+          sizeBytes: size,
+          path: savedTo ?? fileName,
+          downloadRunId: runId,
+        }),
+      },
+    );
+    if (report.rejected) throw new Error(report.warning ?? "The server rejected the saved backup.");
+    return {
+      size,
+      completedAt: report.completedAt ?? new Date().toISOString(),
+      fileName,
+      savedTo,
+      viaBrowser,
+      partialFailure: missingFileCount > 0,
+      warnings: missingFileCount > 0
+        ? `${missingFileCount} original files unavailable; see missing-files.json. Not a complete recovery point.`
+        : null,
+    };
+  }
+
   const backupNowMutation = useMutation({
-    mutationFn: async (): Promise<{ size: number; completedAt: string; fileName: string; savedTo: string | null; viaBrowser: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }> => {
-      setBackupStartedAt(Date.now());
+    mutationFn: async (browserSaveHandle?: BrowserBackupSaveHandle): Promise<{ size: number; completedAt: string; fileName: string; savedTo: string | null; viaBrowser: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }> => {
+      const startedAt = Date.now();
       setBackupElapsedSeconds(0);
       setBackupLiveStatus(null);
-      setBackupPhase(
-        nowDest === "onedrive"
+      const initialPhase =
+        nowArchiveKind === "database-only" ? "Preparing an encrypted database-only backup — media is excluded" : nowDest === "onedrive"
           ? "Preparing, uploading and verifying the full archive in OneDrive"
           : nowDest === "google-drive"
             ? "Preparing, uploading and verifying the encrypted archive in Google Drive"
-            : "Generating and downloading the full archive",
-      );
+            : "Generating and downloading the full archive";
+      const runId = crypto.randomUUID();
+      resetManualBackupProgress(runId, initialPhase, startedAt);
+      if (user?.id) {
+        saveManualBackupIdentity(user.id, {
+          runId,
+          destination: nowDest,
+          archiveKind: nowArchiveKind,
+          path: nowPath,
+          startedAt,
+        });
+      }
+      setBackupPhase(initialPhase);
       if (nowDest === "onedrive" || nowDest === "google-drive") {
         const provider = nowDest === "onedrive" ? "OneDrive" : "Google Drive";
-        const runId = crypto.randomUUID();
-        const stopWatching = watchBackupLiveStatus(
-          runId,
-          (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
-          (status) => {
-            setBackupLiveStatus(status);
-            setBackupPhase(backupLivePhaseLabel(status.phase));
-          },
-        );
+        let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
+        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+          `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
+        ).finally(() => { pendingStatus = null; });
+        const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
+          ...status,
+          state: status.state as LocalBackupLiveStatus["state"],
+          elapsedMs: status.elapsedMs ?? 0,
+          metrics: status.metrics ?? {},
+        });
+        // Older installed servers hold the POST open. Keep their progress
+        // observer alive until acknowledgement too, without duplicate reads.
+        const stopWatching = watchBackupLiveStatus(runId, readStatus, updateStatus);
         try {
-          const res = await apiFetch<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }>("/admin/backup/run", {
+        const res = await followManualBackup(
+          runId,
+          () => apiFetch("/admin/backup/run", {
             method: "POST",
-            body: JSON.stringify({ destination: nowDest, runId }),
-          });
+            headers: backupSourceHeaders(),
+            body: JSON.stringify({ destination: nowDest, runId, respondAsync: true,
+              ...(nowArchiveKind === "database-only" ? { archiveKind: nowArchiveKind } : {}) }),
+          }),
+          readStatus, updateStatus,
+        );
+          if (nowArchiveKind === "database-only" && res.archiveKind !== "database-only") {
+            throw new Error("The server did not confirm a database-only backup. No complete recovery is claimed; update the server before using this option.");
+          }
           return { ...res, savedTo: provider, viaBrowser: false };
         } finally {
           stopWatching();
         }
       }
       const isNetworkSftp = nowDest === "network" && nowPath.trim().startsWith("sftp://");
+      if (isNetworkSftp && nowArchiveKind === "database-only") {
+        throw new Error("Database-only backups support download/local USB, OneDrive or Google Drive. SFTP requires a complete backup.");
+      }
       if (isNetworkSftp) {
-        const runId = crypto.randomUUID();
+        let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
+        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+          `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
+        ).finally(() => { pendingStatus = null; });
+        const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
+          ...status,
+          state: status.state as LocalBackupLiveStatus["state"],
+          elapsedMs: status.elapsedMs ?? 0,
+          metrics: status.metrics ?? {},
+        });
         const stopWatching = watchBackupLiveStatus(
           runId,
-          (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
-          (status) => {
-            setBackupLiveStatus(status);
-            setBackupPhase(backupLivePhaseLabel(status.phase));
-          },
+          () => readStatus(),
+          updateStatus,
         );
         try {
-          const res = await apiFetch<{ size: number; completedAt: string; fileName: string; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null }>("/admin/backup/run", {
-            method: "POST",
-            body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined, runId }),
-          });
+          const res = await followManualBackup(
+            runId,
+            () => apiFetch("/admin/backup/run", {
+              method: "POST",
+              body: JSON.stringify({ destination: nowDest, path: nowPath.trim(), runId, respondAsync: true }),
+              headers: backupSourceHeaders(),
+            }),
+            readStatus,
+            updateStatus,
+          );
           return { ...res, savedTo: nowPath.trim(), viaBrowser: false };
         } finally {
           stopWatching();
         }
       }
       const electronAPI = (window as ElectronWindow).electronAPI;
-      const wantsPath = !!nowPath.trim();
+      const wantsPath = !!nowPath.trim() && (nowDest !== "local" || !!electronAPI);
       if (wantsPath && !electronAPI?.saveBackupToFolder && !electronAPI?.downloadBackupToFolder) {
         // Running in a regular browser — we cannot write to an arbitrary
         // filesystem path. Refuse instead of silently downloading to the
@@ -3061,78 +3323,220 @@ function PlatformBackupPanel() {
       if (wantsPath && (electronAPI?.saveBackupToFolder || electronAPI?.downloadBackupToFolder)) {
         const result = await executeLocalBackup({
           apiFetch, apiFetchArrayBuffer,
+          sourceHeaders: backupSourceHeaders(),
           saveBackupToFolder: electronAPI.saveBackupToFolder,
           downloadBackupToFolder: electronAPI.downloadBackupToFolder ? apiDownloadBackupToFolder : undefined,
+          runId,
           onDownloadRunId: electronAPI.onBackupRunId,
-          getLiveStatus: (runId) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`),
-          onLiveStatus: (status) => {
-            setBackupLiveStatus(status);
-            setBackupPhase(backupLivePhaseLabel(status.phase));
-          },
-          onPhase: setBackupPhase,
-        }, nowPath.trim(), "manual");
-        return { size: result.sizeBytes, completedAt: result.completedAt, fileName: result.fileName, savedTo: result.path, viaBrowser: false };
+          getLiveStatus: (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
+          onLiveStatus: applyManualBackupLiveStatus,
+          onPhase: (phase) => updateManualBackupProgress({ phase }),
+        }, nowPath.trim(), "manual", nowArchiveKind);
+        return { size: result.sizeBytes, completedAt: result.completedAt, fileName: result.fileName, savedTo: result.path, viaBrowser: false,
+          partialFailure: result.partialFailure, warnings: result.warnings };
       }
-      const runId = crypto.randomUUID();
-      const stopWatching = watchBackupLiveStatus(
-        runId,
-        (id) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(id)}`),
-        (status) => {
-          setBackupLiveStatus(status);
-          setBackupPhase(backupLivePhaseLabel(status.phase));
-        },
+      const readStatus = (id: string) => apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        `/admin/backup/status/${encodeURIComponent(id)}`,
+        { headers: backupSourceHeaders() },
       );
+      const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
+        ...status,
+        state: status.state as LocalBackupLiveStatus["state"],
+        elapsedMs: status.elapsedMs ?? 0,
+        metrics: status.metrics ?? {},
+      });
+      const stopWatching = watchBackupLiveStatus(runId, readStatus, updateStatus);
       try {
-        const response = await apiFetchDownloadResponse(
-          `/admin/backup/generate?runId=${encodeURIComponent(runId)}`,
-          { method: "POST" },
-        );
-        if (!response.ok) {
-          let message = `Backup download failed (${response.status}).`;
-          try {
-            const body = await response.json() as { error?: string; message?: string };
-            message = body.error ?? body.message ?? message;
-          } catch { /* Keep the status-based message. */ }
-          throw new Error(message);
+        await apiFetch("/admin/backup/run", {
+          method: "POST",
+          headers: backupSourceHeaders(),
+          body: JSON.stringify({
+            destination: "browser",
+            runId,
+            archiveKind: nowArchiveKind,
+            respondAsync: true,
+          }),
+        });
+        const until = Date.now() + 2 * 60 * 60 * 1000;
+        while (Date.now() < until) {
+          const status = await readStatus(runId);
+          updateStatus(status);
+          if (status.delivery) return deliverStagedManualBackup(runId, nowArchiveKind, browserSaveHandle);
+          if (status.state === "cancelled") throw new Error(status.error ?? "Backup cancelled. Incomplete output was discarded.");
+          if (status.state === "failed" || status.state === "stale") {
+            throw new Error(status.error ?? "Backup generation failed. Check Recent backups.");
+          }
+          await new Promise(resolve => window.setTimeout(resolve, 1500));
         }
-        verifyCompleteBackupHeaders(response.headers);
-        const buffer = await readBoundedBackupBuffer(response);
-        verifyStreamedBackup(buffer, response.headers);
-        const fileName = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? "labtrax-backup.zip.enc";
-        const size = buffer.byteLength;
-        const completedAt = new Date().toISOString();
-        const blob = new Blob([buffer], { type: "application/octet-stream" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        return { size, completedAt, fileName, savedTo: null, viaBrowser: true };
+        throw new Error("Backup generation is still running. Return to this section to reconnect before starting another backup.");
       } finally {
         stopWatching();
       }
     },
     onSuccess: (data) => {
-      setBackupResult(data);
+      const result = { ...data, databaseOnly: nowArchiveKind === "database-only" };
+      setBackupResult(result);
       setBackupError(null);
+      updateManualBackupProgress({
+        state: "completed",
+        phase: "backup complete",
+        result,
+        liveStatus: getManualBackupProgress().liveStatus
+          ? { ...getManualBackupProgress().liveStatus!, state: "completed", phase: "backup complete", overallProgress: 100 }
+          : null,
+      });
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
     },
     onError: (err: Error) => {
       setBackupResult(null);
       setBackupError(err.message || "Backup failed.");
+      const current = getManualBackupProgress();
+      if (current.state === "cancelled") return;
+      if (current.liveStatus?.delivery && current.liveStatus.state === "awaiting_verification") {
+        // Delivery is retryable from the staged archive; do not convert a
+        // transport interruption into a failed backup run.
+        updateManualBackupProgress({ state: "running", error: err.message || "Download interrupted. Retry from the same backup run." });
+        return;
+      }
+      updateManualBackupProgress({
+        state: "failed",
+        phase: "backup failed",
+        error: err.message || "Backup failed.",
+        liveStatus: getManualBackupProgress().liveStatus
+          ? { ...getManualBackupProgress().liveStatus!, state: "failed", phase: "backup failed" }
+          : null,
+      });
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
     },
   });
 
   useEffect(() => {
-    if (!backupNowMutation.isPending || !backupStartedAt) return;
-    const timer = window.setInterval(() => setBackupElapsedSeconds(Math.floor((Date.now() - backupStartedAt) / 1000)), 1000);
+    setBackupPhase(manualProgress.liveStatus
+      ? backupLivePhaseLabel(manualProgress.liveStatus.phase)
+      : manualProgress.phase);
+    setBackupLiveStatus(manualProgress.liveStatus);
+    if (manualProgress.result) setBackupResult(manualProgress.result);
+    else if (manualProgress.state === "running" || manualProgress.state === "failed") setBackupResult(null);
+    setBackupError(manualProgress.error);
+  }, [manualProgress]);
+
+  // The external store is module-scoped, so Settings can unmount while a run
+  // continues. A later visit resumes polling that same opaque run identity.
+  useEffect(() => {
+    if (manualProgress.state !== "running" || !manualProgress.runId || backupNowMutation.isPending) return;
+    return watchBackupLiveStatus(
+      manualProgress.runId,
+      (runId) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
+        headers: backupSourceHeaders(),
+      }),
+      applyManualBackupLiveStatus,
+    );
+  }, [manualProgress.runId, manualProgress.state, backupNowMutation.isPending]);
+
+  async function resumeStagedDelivery() {
+    if (!manualProgress.runId || !manualProgress.liveStatus?.delivery || resumeDeliveryPending) return;
+    setResumeDeliveryPending(true);
+    setBackupError(null);
+    try {
+      const result = await deliverStagedManualBackup(manualProgress.runId, nowArchiveKind);
+      const completed = { ...result, databaseOnly: nowArchiveKind === "database-only" };
+      setBackupResult(completed);
+      updateManualBackupProgress({
+        state: "completed",
+        phase: "backup complete",
+        result: completed,
+        liveStatus: { ...manualProgress.liveStatus, state: "completed", phase: "backup complete", overallProgress: 100 },
+        error: null,
+      });
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "Could not download the staged backup. Retry this run.");
+    } finally {
+      setResumeDeliveryPending(false);
+    }
+  }
+
+  async function retryManualBackupReconnect() {
+    const runId = manualProgress.runId;
+    if (!runId || !user?.id) return;
+    setManualReconnectUnconfirmed(true);
+    try {
+      const status = await apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        `/admin/backup/status/${encodeURIComponent(runId)}`,
+        { headers: backupSourceHeaders() },
+      );
+      if (status.runId !== runId) throw new Error("The saved run identity did not match the server response.");
+      applyManualBackupLiveStatus(status);
+      setManualReconnectUnconfirmed(false);
+      setBackupError(null);
+    } catch {
+      setBackupError("Could not reconnect to this backup. Check your connection and retry before starting another run.");
+    }
+  }
+
+  async function cancelManualBackup() {
+    const runId = manualProgress.runId;
+    if (!runId || cancelPending || manualProgress.state !== "running") return;
+    setCancelPending(true);
+    try {
+      await apiFetch(`/admin/backup/cancel/${encodeURIComponent(runId)}`, {
+        method: "POST",
+        headers: backupSourceHeaders(),
+      });
+      updateManualBackupProgress({
+        state: "cancelled",
+        phase: "backup cancelled",
+        error: "Backup cancelled. Incomplete output was discarded; no successful backup was recorded.",
+        liveStatus: manualProgress.liveStatus
+          ? { ...manualProgress.liveStatus, state: "cancelled", phase: "backup cancelled" }
+          : null,
+      });
+      setManualReconnectUnconfirmed(false);
+      setBackupResult(null);
+      setBackupError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "This backup could not be cancelled.");
+      void apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
+        headers: backupSourceHeaders(),
+      }).then(applyManualBackupLiveStatus).catch(() => {});
+    } finally {
+      setCancelPending(false);
+    }
+  }
+
+  const choosingBackupFile = useRef(false);
+  async function runManualBackup() {
+    if (user?.id && !manualProgress.runId && loadManualBackupIdentity(user.id)) return;
+    if (backupNowMutation.isPending || getManualBackupProgress().state === "running" ||
+        choosingBackupFile.current || gate.blocked) return;
+    const picker = (window as Window & {
+      showSaveFilePicker?: (options: { suggestedName: string }) => Promise<BrowserBackupSaveHandle>;
+    }).showSaveFilePicker;
+    if (nowDest !== "local" || electron?.saveBackupToFolder || electron?.downloadBackupToFolder || !picker) {
+      backupNowMutation.mutate(undefined);
+      return;
+    }
+    choosingBackupFile.current = true;
+    try {
+      const handle = await picker.call(window, { suggestedName: "labtrax-backup.zip.enc" });
+      backupNowMutation.mutate(handle);
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) {
+        setBackupError(error instanceof Error ? error.message : "Could not select a backup file.");
+      }
+    } finally {
+      choosingBackupFile.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (manualProgress.state !== "running" || !manualProgress.startedAt) return;
+    const timer = window.setInterval(() =>
+      setBackupElapsedSeconds(Math.floor((Date.now() - manualProgress.startedAt) / 1000)), 1000);
     return () => window.clearInterval(timer);
-  }, [backupNowMutation.isPending, backupStartedAt]);
+  }, [manualProgress.state, manualProgress.startedAt]);
 
   useEffect(() => {
     if (!scheduledBackupProgress) {
@@ -3151,6 +3555,8 @@ function PlatformBackupPanel() {
       const parsed = parseIntervalKey(schedIntervalKey) ?? { interval: 1, unit: "hours" as BackupIntervalUnit };
       return apiFetch("/admin/backup/schedule", {
         method: "PUT",
+        headers: scheduleQuery.data?.sourceEnvironment
+          ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {},
         body: JSON.stringify({
           interval: parsed.interval,
           unit: parsed.unit,
@@ -3175,7 +3581,7 @@ function PlatformBackupPanel() {
   });
 
   const disableScheduleMutation = useMutation({
-    mutationFn: () => apiFetch("/admin/backup/schedule", { method: "DELETE" }),
+    mutationFn: () => apiFetch("/admin/backup/schedule", { method: "DELETE", headers: backupSourceHeaders() }),
     onSuccess: () => {
       setSchedEnabled(false);
       setSchedError(null);
@@ -3186,9 +3592,36 @@ function PlatformBackupPanel() {
     },
   });
 
+  const databaseRetentionMutation = useMutation({
+    mutationFn: (enabled: boolean) => {
+      const policy = scheduleQuery.data?.databaseRetention;
+      return apiFetch("/admin/backup/database-retention", {
+        method: "PUT",
+        headers: backupSourceHeaders(),
+        body: JSON.stringify({
+          enabled,
+          keepAllWithinHours: policy?.keepAllWithinHours ?? 24,
+          keepHourlyWithinDays: policy?.keepHourlyWithinDays ?? 7,
+          keepDailyWithinDays: policy?.keepDailyWithinDays ?? 30,
+          safetyGraceHours: policy?.safetyGraceHours ?? 48,
+          ...(enabled ? { confirmation: "APPROVE_DATABASE_RETENTION" } : {}),
+        }),
+      });
+    },
+    onSuccess: (_result, enabled) => {
+      setRetentionApprovalOpen(false);
+      toast({
+        title: enabled ? "Database retention approved" : "Database retention paused",
+        description: enabled ? "Old unreferenced objects will be removed after a fresh safety scan." : "No further database objects will be removed.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+    },
+  });
+
   const schedRunNowMutation = useMutation({
-    mutationFn: () => apiFetch("/admin/backup/schedule/run-now", { method: "POST" }),
+    mutationFn: () => apiFetch("/admin/backup/schedule/run-now", { method: "POST", headers: backupSourceHeaders() }),
     onSuccess: (data: {
+      accepted?: boolean;
       size: number;
       completedAt: string;
       fileName: string;
@@ -3196,6 +3629,13 @@ function PlatformBackupPanel() {
       warnings?: string | null;
       warningMessage?: string | null;
     }) => {
+      if (data.accepted) {
+        setSchedRunNowResult(null);
+        setSchedRunNowError(null);
+        toast({ title: "Production records and media protection requested", description: "Watch its status for verified coverage or missing-original warnings." });
+        queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+        return;
+      }
       setSchedRunNowResult(data);
       setSchedRunNowError(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
@@ -3226,10 +3666,16 @@ function PlatformBackupPanel() {
     saveScheduleMutation.error,
     disableScheduleMutation.error,
     schedRunNowMutation.error,
+    databaseRetentionMutation.error,
   ]);
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
-  const hasCurrentIntervalChoice = INTERVAL_OPTIONS.some(
+  const manualBackupRunning = backupNowMutation.isPending || manualProgress.state === "running";
+  const scheduleIntervalChoices = scheduleIntervalOptions(
+    scheduleQuery.data?.sourceEnvironment,
+    scheduleQuery.data?.allowedScheduleIntervalsMinutes,
+  );
+  const hasCurrentIntervalChoice = scheduleIntervalChoices.some(
     (option) => intervalKey(option.interval, option.unit) === schedIntervalKey,
   );
   const legacyIntervalChoice = !hasCurrentIntervalChoice
@@ -3256,12 +3702,12 @@ function PlatformBackupPanel() {
   );
 
   const oneDriveNotice = oneDriveStatusQuery.isPending ? (
-    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 break-words text-[11px] text-muted-foreground">
       <Loader2 size={11} className="animate-spin" />
       Checking OneDrive connection…
     </div>
   ) : oneDriveStatusQuery.isError ? (
-    <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-error">
+    <div className="break-words rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-error">
       <p className="font-semibold mb-0.5">Could not check OneDrive</p>
       <p>
         {oneDriveStatusQuery.error instanceof Error
@@ -3272,7 +3718,7 @@ function PlatformBackupPanel() {
       <div className="mt-1.5">{oneDriveRefreshButton}</div>
     </div>
   ) : oneDriveStatusQuery.data?.connected ? (
-    <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success" data-testid="onedrive-status-connected">
+    <div className="break-words rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success" data-testid="onedrive-status-connected">
       OneDrive connected
       {oneDriveStatusQuery.data.accountName || oneDriveStatusQuery.data.accountEmail
         ? ` as ${oneDriveStatusQuery.data.accountName ?? ""}${oneDriveStatusQuery.data.accountEmail ? ` (${oneDriveStatusQuery.data.accountEmail})` : ""}`
@@ -3291,7 +3737,7 @@ function PlatformBackupPanel() {
       <div className="mt-1.5">{oneDriveRefreshButton}</div>
     </div>
   ) : (
-    <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-disconnected">
+    <div className="break-words rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300" data-testid="onedrive-status-disconnected">
       <p className="font-semibold mb-0.5">OneDrive is not connected</p>
       <p>
         {oneDriveStatusQuery.data?.userMessage ?? "OneDrive is not connected. Connect the Microsoft integration or reconnect the account, then check again."}{" "}
@@ -3305,7 +3751,7 @@ function PlatformBackupPanel() {
           <p className="mt-1 whitespace-pre-wrap break-words">{oneDriveStatusQuery.data.diagnostic}</p>
         </details>
       )}
-      <div className="mt-1.5 flex items-center gap-3">
+      <div className="mt-1.5 flex flex-wrap items-center gap-3">
         {oneDriveStatusQuery.data?.manageUrl && (
           <button
             type="button"
@@ -3334,13 +3780,13 @@ function PlatformBackupPanel() {
   );
 
   const googleDriveNotice = googleDriveStatusQuery.isPending ? (
-    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 break-words text-[11px] text-muted-foreground">
       <Loader2 size={11} className="animate-spin" />
       Checking Google Drive connection…
     </div>
   ) : googleDriveStatusQuery.isError ? (
     <div
-      className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+      className="break-words rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
       data-testid="google-drive-status-error"
     >
       <p className="font-semibold mb-0.5">Could not check Google Drive</p>
@@ -3354,7 +3800,7 @@ function PlatformBackupPanel() {
     </div>
   ) : googleDriveStatusQuery.data?.connected ? (
     <div
-      className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success"
+      className="break-words rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px] leading-snug text-success"
       data-testid="google-drive-status-connected"
     >
       Google Drive connected
@@ -3376,7 +3822,7 @@ function PlatformBackupPanel() {
     </div>
   ) : (
     <div
-      className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+      className="break-words rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
       data-testid="google-drive-status-disconnected"
     >
       <p className="font-semibold mb-0.5">Google Drive is not connected</p>
@@ -3387,7 +3833,7 @@ function PlatformBackupPanel() {
           ? "Use Connect Google Drive to open the LabTrax hosting workspace and link a Google account (Integrations → Google Drive), then check again here. A desktop browser may not complete account linking."
           : "Connect the Google Drive integration in the LabTrax hosting workspace (Replit → Integrations → Google Drive), then check again."}
       </p>
-      <div className="mt-1.5 flex items-center gap-3">
+      <div className="mt-1.5 flex flex-wrap items-center gap-3">
         {googleDriveStatusQuery.data?.manageUrl && (
           <button
             type="button"
@@ -3427,24 +3873,30 @@ function PlatformBackupPanel() {
   const lastLocalError = lastLocalRun?.status === "error" ? lastLocalRun : null;
 
   return (
-    <PanelShell title="Backup" subtitle="Download an encrypted backup of a lab you administer.">
-      <div data-testid="backup-page-content" className="flex min-w-0 flex-col gap-4">
+    <PanelShell title="Backup & Recovery" subtitle="Manage encrypted backups and recovery destinations.">
+      <div data-testid="backup-page-content" className="flex min-w-0 flex-col gap-3">
       {!gate.blocked && (
         <section
           data-testid="backup-summary"
           aria-label="Backup status summary"
-          className="rounded-lg border border-border bg-card p-3.5 shadow-sm"
+          className="rounded-lg border border-border bg-card p-3"
         >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
+            <div className="min-w-0">
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Recovery readiness</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">Verified backup status and the next protection window.</p>
+              <p data-testid="backup-source-label" className="mt-1 text-sm font-semibold">
+                Database source: {scheduleQuery.data?.sourceEnvironment === "production" ? "Production" :
+                  scheduleQuery.data?.sourceEnvironment === "development" ? "Development" : "Not confirmed by this server"}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Backups use this server's database and files. Changing destinations does not switch the source.
+              </p>
             </div>
             <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
               (scheduleQuery.data?.enabled || scheduleQuery.data?.offsite?.enabled) && !stale
                 ? "bg-success/10 text-success"
                 : "bg-warning/15 text-amber-800 dark:text-amber-300"
-            }`} data-testid="backup-summary-health">
+            } max-w-full flex-wrap whitespace-normal`} data-testid="backup-summary-health">
               <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${(scheduleQuery.data?.enabled || scheduleQuery.data?.offsite?.enabled) && !stale ? "bg-success" : "bg-warning"}`} />
               {scheduleQuery.isLoading
                 ? "Checking status"
@@ -3469,10 +3921,12 @@ function PlatformBackupPanel() {
                       : "No confirmed off-site backup"
                     : lastBackupAt
                       ? formatDateTime(lastBackupAt)
-                      : "No successful backup"}
+                      : "No successful complete backup"}
               </p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
-                {confirmedArchiveAgeMinutes == null ? "No complete recovery point confirmed" : `Confirmed ${formatBackupAge(confirmedArchiveAgeMinutes)} ago`}
+                {confirmedArchiveAgeMinutes == null
+                  ? (scheduleQuery.data?.offsite?.databaseProtection ? "No production records/media point confirmed" : "No complete recovery point confirmed")
+                  : `${scheduleQuery.data?.offsite?.databaseProtection ? "Production point verified (check coverage)" : "Confirmed"} ${formatBackupAge(confirmedArchiveAgeMinutes)} ago`}
               </p>
             </div>
             <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-3 py-2.5" data-testid="backup-summary-upcoming">
@@ -3498,14 +3952,152 @@ function PlatformBackupPanel() {
             </div>
             <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-3 py-2.5" data-testid="backup-summary-destination">
               <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Backup destination</p>
-              <p className="mt-1 truncate text-sm font-semibold text-foreground">
+              <p className="mt-1 break-words text-sm font-semibold text-foreground">
                 {scheduleQuery.isLoading ? "Checking…" : describeBackupDestination(serverDestination)}
               </p>
-              <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={scheduleQuery.data?.path ?? undefined}>
+              <p className="mt-0.5 break-words text-[11px] text-muted-foreground" title={scheduleQuery.data?.path ?? undefined}>
                 {scheduleQuery.data?.path || (serverDestination === "onedrive" ? "Off-site recovery storage" : serverDestination === "google-drive" ? "Connected Google Drive storage" : "Destination path not configured")}
               </p>
             </div>
           </div>
+          {!scheduleQuery.isLoading && stale && (
+            <div className="mt-2 flex flex-wrap items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1 text-xs leading-snug space-y-0.5">
+                <p className="font-semibold" data-testid="backup-stale-headline">
+                  {confirmedArchiveAgeMinutes === null
+                    ? "No backup archive has been confirmed"
+                    : `No backup confirmed for ${formatBackupAge(confirmedArchiveAgeMinutes)}`}
+                </p>
+                <p className="text-amber-700 dark:text-amber-400">
+                  {offsiteFreshness?.reason ??
+                    (lastBackupAt
+                      ? "The last successful backup on record is older than the allowed window."
+                      : "A successful backup has never been run for this lab.")}
+                </p>
+                {offsiteWatched && offsiteFreshness?.source === "database" && (
+                  <p className="text-amber-700/80 dark:text-amber-400/80">
+                    This is based on the last run recorded here — the backup folder itself could not
+                    be read.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void runManualBackup()}
+                disabled={manualBackupRunning || (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder)}
+                className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-amber-200 hover:bg-amber-300 text-amber-900 dark:bg-amber-800 dark:hover:bg-amber-700 dark:text-amber-100 disabled:opacity-60 transition-colors"
+              >
+                {backupNowMutation.isPending
+                  ? <><Loader2 size={11} className="animate-spin" />Backing up…</>
+                  : <><Download size={11} />Run backup now</>}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {scheduleQuery.data?.offsite?.databaseProtection && (
+        <section className="rounded-md border bg-card p-4 space-y-2" data-testid="database-protection-status">
+          <h3 className="font-semibold text-sm">Production records and media · OneDrive · every 15 minutes</h3>
+          <p className="text-xs text-muted-foreground">
+            {scheduleQuery.data.offsite.databaseProtection.mode === "incremental-records-and-media"
+              ? "Protects changed records and files after a verified baseline, retaining previous versions."
+              : "Fresh consistent database exports plus encrypted content reuse for pictures, attachments, videos and other production files."}
+            No development database or application source is uploaded. A long verification skips overlapping intervals.
+          </p>
+          <p className="text-sm font-medium">
+            {scheduleQuery.data.offsite.stale && scheduleQuery.data.offsite.databaseProtection.state === "verified"
+              ? "Overdue — prior point verified" : scheduleQuery.data.offsite.databaseProtection.state.replaceAll("_", " ")}
+            {" · "}{scheduleQuery.data.offsite.databaseProtection.stage}
+            {" · "}{scheduleQuery.data.offsite.databaseProtection.coverage === "partial" ? "Partial protection — missing originals" : "Complete coverage"}
+          </p>
+          <p className="text-xs">
+            Last verified production point: {scheduleQuery.data.offsite.databaseProtection.lastVerifiedAt
+              ? formatDateTime(scheduleQuery.data.offsite.databaseProtection.lastVerifiedAt) : "None"}.
+            {" "}Last dependency check: {scheduleQuery.data.offsite.databaseProtection.lastDestinationCheckAt
+              ? formatDateTime(scheduleQuery.data.offsite.databaseProtection.lastDestinationCheckAt) : "Not confirmed"}.
+            {" "}New chunks: {scheduleQuery.data.offsite.databaseProtection.newChunks};
+            {" "}reused chunks: {scheduleQuery.data.offsite.databaseProtection.reusedChunks};
+            {" "}new encrypted bytes: {scheduleQuery.data.offsite.databaseProtection.newBytes.toLocaleString()}.
+            {" "}Media files: {scheduleQuery.data.offsite.databaseProtection.mediaFiles};
+            {" "}missing originals: {scheduleQuery.data.offsite.databaseProtection.missingFiles}.
+          </p>
+          {scheduleQuery.data.offsite.databaseProtection.error && (
+            <p role="alert" className="text-xs text-destructive">{scheduleQuery.data.offsite.databaseProtection.error}</p>
+          )}
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            A verified partial point preserves records and readable files but is not complete recovery.
+            Missing-original inventories remain inside the encrypted recovery point. Full records/media recovery points and their dependencies remain retained.
+            Approved database-only retention applies to legacy standalone database points, preserving the newest two verified points, every chunk referenced by retained manifests,
+            {` ${scheduleQuery.data.databaseRetention?.keepAllWithinHours ?? 24} hours of points, hourly points for ${scheduleQuery.data.databaseRetention?.keepHourlyWithinDays ?? 7} days, daily points for ${scheduleQuery.data.databaseRetention?.keepDailyWithinDays ?? 30} days, and all objects inside a ${scheduleQuery.data.databaseRetention?.safetyGraceHours ?? 48}-hour safety grace period.`}
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <span className="text-xs text-muted-foreground" data-testid="database-retention-status">
+              Retention cleanup: <strong>{scheduleQuery.data.databaseRetention?.enabled ? "approved and enabled" : "disabled"}</strong>
+              {scheduleQuery.data.databaseRetention?.status && (
+                <> · {scheduleQuery.data.databaseRetention.status.state.replaceAll("_", " ")}
+                  {scheduleQuery.data.databaseRetention.status.pendingObjects > 0
+                    ? ` · ${scheduleQuery.data.databaseRetention.status.pendingObjects} objects remaining`
+                    : ""}
+                </>
+              )}
+            </span>
+            {scheduleQuery.data.databaseRetention?.enabled ? (
+              <button
+                type="button"
+                onClick={() => databaseRetentionMutation.mutate(false)}
+                disabled={databaseRetentionMutation.isPending || gate.blocked}
+                className="h-8 rounded-md border border-border px-3 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                data-testid="button-pause-database-retention"
+              >
+                {databaseRetentionMutation.isPending ? "Pausing…" : "Pause cleanup"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setRetentionApprovalOpen(true)}
+                disabled={databaseRetentionMutation.isPending || gate.blocked}
+                className="h-8 rounded-md border border-amber-500/50 px-3 text-xs font-medium text-amber-800 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30 disabled:opacity-60"
+                data-testid="button-enable-database-retention"
+              >
+                Approve and enable cleanup
+              </button>
+            )}
+            {databaseRetentionMutation.error && (
+              <span role="alert" className="text-xs text-destructive">
+                {databaseRetentionMutation.error.message}
+              </span>
+            )}
+            {scheduleQuery.data.databaseRetention?.status?.error && (
+              <span role="alert" className="text-xs text-destructive">
+                {scheduleQuery.data.databaseRetention.status.error}
+              </span>
+            )}
+          </div>
+          <AlertDialog open={retentionApprovalOpen} onOpenChange={setRetentionApprovalOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Approve database retention cleanup?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes only old objects not referenced by retained verified database points. It keeps the newest two points,
+                  {` ${scheduleQuery.data.databaseRetention?.keepAllWithinHours ?? 24} hours of points, hourly history for ${scheduleQuery.data.databaseRetention?.keepHourlyWithinDays ?? 7} days, daily history for ${scheduleQuery.data.databaseRetention?.keepDailyWithinDays ?? 30} days, and objects younger than ${scheduleQuery.data.databaseRetention?.safetyGraceHours ?? 48} hours.`}
+                  {" "}This does not change ZIP backup retention or media backups.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={databaseRetentionMutation.isPending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(event) => { event.preventDefault(); databaseRetentionMutation.mutate(true); }}
+                  disabled={databaseRetentionMutation.isPending || gate.blocked}
+                  className="bg-amber-700 text-white hover:bg-amber-800"
+                  data-testid="button-confirm-database-retention"
+                >
+                  {databaseRetentionMutation.isPending ? "Approving…" : "Approve and enable"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </section>
       )}
 
@@ -3515,11 +4107,11 @@ function PlatformBackupPanel() {
           data-testid="local-backup-error-banner"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
-          <div className="flex-1 text-xs leading-snug space-y-0.5">
+          <div className="min-w-0 flex-1 break-words text-xs leading-snug space-y-0.5">
             <p className="font-semibold">Local folder backup failed</p>
             {lastLocalError.path && (
               <p className="text-[11px] opacity-80">
-                Path: <code className="font-mono">{lastLocalError.path}</code>
+                Path: <code className="break-words font-mono">{lastLocalError.path}</code>
               </p>
             )}
             <p className="text-[11px] opacity-80 mt-0.5">
@@ -3538,41 +4130,6 @@ function PlatformBackupPanel() {
         </div>
       )}
 
-      {!gate.blocked && !scheduleQuery.isLoading && stale && (
-        <div className="flex items-center gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-          <div className="flex-1 text-xs leading-snug space-y-0.5">
-            <p className="font-semibold" data-testid="backup-stale-headline">
-              {confirmedArchiveAgeMinutes === null
-                ? "No backup archive has been confirmed"
-                : `No backup confirmed for ${formatBackupAge(confirmedArchiveAgeMinutes)}`}
-            </p>
-            <p className="text-amber-700 dark:text-amber-400">
-              {offsiteFreshness?.reason ??
-                (lastBackupAt
-                  ? "The last successful backup on record is older than the allowed window."
-                  : "A successful backup has never been run for this lab.")}
-            </p>
-            {offsiteWatched && offsiteFreshness?.source === "database" && (
-              <p className="text-amber-700/80 dark:text-amber-400/80">
-                This is based on the last run recorded here — the backup folder itself could not
-                be read.
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => backupNowMutation.mutate()}
-            disabled={backupNowMutation.isPending || (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder)}
-            className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-amber-200 hover:bg-amber-300 text-amber-900 dark:bg-amber-800 dark:hover:bg-amber-700 dark:text-amber-100 disabled:opacity-60 transition-colors"
-          >
-            {backupNowMutation.isPending
-              ? <><Loader2 size={11} className="animate-spin" />Backing up…</>
-              : <><Download size={11} />Run backup now</>}
-          </button>
-        </div>
-      )}
-
       {/* An alert nobody could receive is its own failure — show it here
           rather than leaving it in the server log, where the last one sat. */}
       {!gate.blocked && undeliveredAlert && (
@@ -3581,7 +4138,7 @@ function PlatformBackupPanel() {
           data-testid="backup-alert-undelivered-notice"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="M8.7 3A6 6 0 0 1 18 8c0 2.3.4 4 1 5"/><path d="M6 8a6 6 0 0 1 .5-2.5"/><path d="M4 19h12"/><path d="m2 2 20 20"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
-          <div className="flex-1 text-xs leading-snug space-y-0.5">
+          <div className="min-w-0 flex-1 break-words text-xs leading-snug space-y-0.5">
             <p className="font-semibold">A backup alert could not be delivered</p>
             <p className="text-[11px] opacity-80">
               The {undeliveredAlert.channel === "email" ? "email" : "in-app"} alert raised by{" "}
@@ -3596,12 +4153,13 @@ function PlatformBackupPanel() {
 
       {gate.blocked && <PlatformAdminSetupNotice />}
 
+      <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-2">
       {/* ── Schedule ── */}
-      <div data-testid="backup-schedule-section" className="min-w-0 border border-border rounded-lg p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock size={14} className="text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Schedule automatic backups</h3>
+      <div data-testid="backup-schedule-section" className="min-w-0 border border-border rounded-lg p-3.5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Clock size={14} className="shrink-0 text-muted-foreground" />
+            <h3 className="min-w-0 break-words text-base font-bold">Schedule Automatic Backups</h3>
           </div>
           {scheduleQuery.data?.enabled && (
             <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-success/15 text-success">
@@ -3609,10 +4167,28 @@ function PlatformBackupPanel() {
             </span>
           )}
         </div>
-        <p className="text-xs text-muted-foreground">
-          Production protection requires a complete database-and-files recovery point in OneDrive every 15 minutes.
-          Database-only, partial and historical narrower archives do not satisfy this requirement.
+        <p className="break-words text-xs text-muted-foreground" data-testid="backup-schedule-cadence-guidance">
+          {scheduleQuery.data?.sourceEnvironment === "production"
+            ? "Choose the destination and interval for production backups. Google Drive and OneDrive run on the server and reuse verified encrypted records and media. Local folder / USB uses LabTrax Desktop on the selected computer; network server uses SFTP. A busy run finishes before one coalesced catch-up starts."
+            : scheduleQuery.data?.sourceEnvironment === "development"
+              ? "This schedule protects the Development database only. Choose its destination and interval independently of Production; Development files stay in their separate backup folder."
+              : "The server has not confirmed which database this schedule would affect. Confirm the environment before changing its cadence."}
+          {scheduleQuery.data?.sourceEnvironment === "production" && (
+            <> Only a complete, authenticated database-and-media recovery point advances complete protection. Missing-file warnings remain visible.</>
+          )}
         </p>
+        {legacyIntervalChoice && (
+          <p
+            className="break-words rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+            data-testid="backup-schedule-legacy-cadence"
+          >
+            {scheduleQuery.data?.enabled
+              ? "The enabled schedule is still set to "
+              : "The saved interval is still set to "}
+            {legacyIntervalChoice.interval} {legacyIntervalChoice.unit}. Select a cadence allowed for this database
+            {scheduleQuery.data?.enabled ? " and save to update it. The current schedule continues until then." : " before enabling it."}
+          </p>
+        )}
 
         {/*
           Read back from the server rather than from this form's state: the
@@ -3622,7 +4198,7 @@ function PlatformBackupPanel() {
         */}
         {!scheduleQuery.isLoading && scheduleQuery.data && (
           <div
-            className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed"
+            className="break-words rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-[11px] leading-relaxed"
             data-testid="backup-server-status"
           >
             <div className="flex flex-wrap gap-x-4 gap-y-0.5">
@@ -3644,7 +4220,7 @@ function PlatformBackupPanel() {
                   )}
                 </span>
               </span>
-              {serverDestination === "onedrive" &&
+              {!scheduleQuery.data.offsite?.databaseProtection && serverDestination === "onedrive" &&
                 describeIntervalMinutes(scheduleQuery.data.fullArchiveIntervalMinutes) && (
                   <span data-testid="backup-full-archive-interval">
                     <span className="text-muted-foreground">Full backup (with media): </span>
@@ -3654,11 +4230,11 @@ function PlatformBackupPanel() {
                   </span>
                 )}
             </div>
-            {serverDestination === "onedrive" && (
+            {(serverDestination === "onedrive" || serverDestination === "google-drive") && (
               <div className="mt-1" data-testid="backup-newest-archive">
                 {scheduleQuery.data.newestArchiveError ? (
                   <div className="text-destructive dark:text-red-400">
-                    <span>{scheduleQuery.data.newestArchiveErrorMessage ?? "LabTrax could not check the OneDrive backup folder, so a complete recovery point could not be confirmed. Check the OneDrive connection and review the details below."}</span>
+                    <span>{scheduleQuery.data.newestArchiveErrorMessage ?? `LabTrax could not verify ${describeBackupDestination(serverDestination)}. A complete recovery point could not be confirmed.`}</span>
                     {scheduleQuery.data.newestArchiveErrorDiagnostic && (
                       <details className="mt-1">
                         <summary className="cursor-pointer">Failure details</summary>
@@ -3668,7 +4244,7 @@ function PlatformBackupPanel() {
                   </div>
                 ) : scheduleQuery.data.newestArchive ? (
                   <>
-                    <span className="text-muted-foreground">Newest archive in OneDrive: </span>
+                    <span className="text-muted-foreground">Newest recovery point in {describeBackupDestination(serverDestination)}: </span>
                     <span className="font-semibold">
                       {describeAgeMinutes(scheduleQuery.data.newestArchive.ageMinutes)}
                     </span>
@@ -3683,7 +4259,7 @@ function PlatformBackupPanel() {
                   </>
                 ) : (
                   <span className="text-destructive dark:text-red-400">
-                    No archives found in the OneDrive backup folder.
+                    No complete recovery point confirmed in {describeBackupDestination(serverDestination)}.
                   </span>
                 )}
               </div>
@@ -3701,18 +4277,19 @@ function PlatformBackupPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Interval">
                 <select
                   value={schedIntervalKey}
                   onChange={(e) => setSchedIntervalKey(e.target.value)}
+                  disabled={!scheduleQuery.data?.sourceEnvironment}
                   className={inputCls}
                   data-testid="backup-schedule-interval"
                 >
                   {legacyIntervalChoice && legacyIntervalLabel && (
                     <option value={schedIntervalKey}>{legacyIntervalLabel}</option>
                   )}
-                  {INTERVAL_OPTIONS.map((opt) => (
+                  {scheduleIntervalChoices.map((opt) => (
                     <option key={intervalKey(opt.interval, opt.unit)} value={intervalKey(opt.interval, opt.unit)}>
                       {opt.label}
                     </option>
@@ -3722,11 +4299,12 @@ function PlatformBackupPanel() {
               <Field label="Destination">
                 <select
                   value={schedDest}
+                  data-testid="backup-schedule-destination"
                   onChange={(e) => setSchedDest(e.target.value as BackupDestinationType)}
                   className={inputCls}
                 >
                   <option value="local">Local folder / USB</option>
-                  <option value="network">Network server</option>
+                  <option value="network">Local server / network (SFTP)</option>
                   <option value="onedrive">OneDrive</option>
                   <option value="google-drive">Google Drive</option>
                 </select>
@@ -3735,8 +4313,8 @@ function PlatformBackupPanel() {
 
             {needsPath(schedDest) && (
               <div className="space-y-1.5">
-                <div className="flex gap-2 items-end">
-                  <div className="flex-1">
+                <div className="flex min-w-0 gap-2 items-end">
+                  <div className="min-w-0 flex-1">
                     <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                       {schedDest === "local" ? "Folder path" : "Network path (SFTP URL)"}
                     </label>
@@ -3773,17 +4351,17 @@ function PlatformBackupPanel() {
               </div>
             )}
 
-            {/* Local-folder schedules run from this desktop app while it is open */}
+            {/* Local-folder schedules run from the per-user Desktop companion */}
             {schedDest === "local" && (
-              <div className="flex items-start gap-2.5 rounded-md border border-border bg-secondary/50 px-3.5 py-3" data-testid="sched-local-desktop-notice">
+              <div className="flex min-w-0 items-start gap-2.5 rounded-md border border-border bg-secondary/50 px-3.5 py-3" data-testid="sched-local-desktop-notice">
                 <ShieldCheck size={13} className="shrink-0 mt-0.5 text-muted-foreground" />
-                <div className="text-xs leading-snug space-y-1">
-                  <p className="font-semibold">Runs from this desktop app</p>
+                <div className="min-w-0 break-words text-xs leading-snug space-y-1">
+                  <p className="font-semibold">Runs from this computer's backup companion</p>
                   <p className="text-muted-foreground">
-                    Local folder / USB backups are written by the LabTrax Desktop app on this computer, so the app must be
-                    open when a scheduled backup is due. If the app is closed at that time, the backup runs the next time
-                    you open it. For backups that run 24/7 without the app open, choose <strong>OneDrive</strong>, <strong>Google Drive</strong>, or an
-                    SFTP network destination.
+                    Local folder / USB backups are written by LabTrax Desktop on this computer. When this schedule is
+                    enabled, Desktop stays in the system tray after its window closes and can start with your laptop
+                    account. Runs pause while the laptop is asleep, shut down, signed out, or the selected folder is
+                    missing or not writable. Create and connect the destination folder before the scheduled time.
                   </p>
                 </div>
               </div>
@@ -3791,9 +4369,9 @@ function PlatformBackupPanel() {
 
             {/* Warn when the scheduled destination can't be reached from the server */}
             {schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://") && (
-              <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+              <div className="flex min-w-0 items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
                 <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                <div className="text-xs leading-snug space-y-1">
+                <div className="min-w-0 break-words text-xs leading-snug space-y-1">
                   <p className="font-semibold">Scheduled backups can't write to this destination</p>
                   <p className="text-amber-700 dark:text-amber-400">
                     UNC/SMB network paths (\\server\share) exist on your Windows network, but scheduled backups run on the server (Linux) where those paths aren't mounted.
@@ -3874,6 +4452,7 @@ function PlatformBackupPanel() {
               scheduleQuery.isLoading ||
               gate.blocked ||
               (schedEnabled && needsPath(schedDest) && !schedPath.trim()) ||
+              (schedEnabled && schedDest === "google-drive" && !googleDriveStatusQuery.data?.connected) ||
               (schedEnabled && schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))
             }
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
@@ -3947,16 +4526,16 @@ function PlatformBackupPanel() {
       </div>
 
       {/* ── Back up now ── */}
-      <div data-testid="backup-manual-section" className="min-w-0 border border-border rounded-lg p-4 space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
+      <div data-testid="backup-manual-section" className="min-w-0 border border-border rounded-lg p-3.5 space-y-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <ShieldCheck size={14} className="text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Manual backup</h3>
-          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold text-success">
+          <h3 className="min-w-0 break-words text-base font-bold">Manual Backup</h3>
+          <span className="ml-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold text-success">
             <ShieldCheck size={11} />
             Encrypted archive
           </span>
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="break-words text-xs text-muted-foreground">
           Creates a full backup ZIP containing all cases, patients, doctors, invoices, payments, bank transactions, pricing, and media attachments.
         </p>
 
@@ -3985,11 +4564,55 @@ function PlatformBackupPanel() {
             )}
           </div>
         )}
-        {backupError && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
-        {backupNowMutation.isPending && (
+        <label className="block text-xs font-medium">
+          Backup contents
+          <select aria-label="Backup contents" value={nowArchiveKind}
+            disabled={manualBackupRunning}
+            onChange={(event) => { setNowArchiveKind(event.target.value as "full" | "database-only"); setBackupResult(null); }}
+            className="mt-1 block h-9 w-full rounded-md border border-border bg-background px-2">
+            <option value="full">Database and readable files — report missing originals</option>
+            <option value="database-only">Database only — no media; not complete recovery</option>
+          </select>
+        </label>
+        {nowArchiveKind === "full" && (
+          <p role="note" className="break-words text-xs text-muted-foreground">
+            Unavailable originals are listed in the encrypted archive. A backup with missing files completes with warnings and is not a complete recovery point.
+          </p>
+        )}
+        {nowArchiveKind === "database-only" && (
+          <p role="note" className="break-words text-xs text-amber-700">
+            Preserves database records and file references, but excludes file bytes. Missing originals remain unresolved.
+            This does not establish complete recovery or reset complete-backup freshness. Normal in-app restore refuses database-only archives.
+          </p>
+        )}
+        {backupResult?.databaseOnly && (
+          <Alert tone="warning">Database-only backup delivered. Media is excluded; complete recovery is not verified.</Alert>
+        )}
+        {manualProgress.state === "cancelled" && !gate.blocked && (
+          <Alert tone="warning">Backup cancelled. Incomplete output was discarded; no successful backup was recorded.</Alert>
+        )}
+        {backupError && manualProgress.state !== "cancelled" && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
+        {manualReconnectUnconfirmed && manualProgress.runId && !gate.blocked && (
+          <button
+            type="button"
+            onClick={() => void retryManualBackupReconnect()}
+            className="h-8 px-3 rounded-md border border-border text-xs font-medium hover:bg-muted/50"
+          >
+            Retry backup reconnection
+          </button>
+        )}
+        {manualBackupRunning && (
           <div role="status" className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1" data-testid="backup-live-progress">
-            <p>{backupPhase} — {backupElapsedSeconds}s elapsed. Keep this window open.</p>
+            <div className="flex items-center justify-between font-medium text-foreground">
+              <span>Overall progress</span>
+              <span data-testid="backup-overall-percent">
+                {backupLiveStatus?.state === "completed"
+                  ? 100
+                  : Math.max(0, Math.min(99, backupLiveStatus?.overallProgress ?? 0))}%
+              </span>
+            </div>
             <BackupProgressBar status={backupLiveStatus} />
+            <p>{backupPhase || "Processing backup"} — {backupElapsedSeconds}s elapsed.</p>
             {backupLiveStatus && (
               <p className="flex flex-wrap gap-x-3 gap-y-1" data-testid="backup-live-metrics">
                 {backupLiveProgressText(backupLiveStatus)}
@@ -3998,9 +4621,31 @@ function PlatformBackupPanel() {
             )}
           </div>
         )}
+        {manualProgress.state === "running" && manualProgress.liveStatus?.delivery && !gate.blocked && (
+          <button
+            type="button"
+            onClick={() => void resumeStagedDelivery()}
+            disabled={resumeDeliveryPending || backupNowMutation.isPending}
+            className="h-9 px-3 rounded-md border border-primary/40 bg-primary/5 text-primary text-xs font-medium hover:bg-primary/10 disabled:opacity-60"
+            data-testid="resume-manual-backup-download"
+          >
+            {resumeDeliveryPending ? "Preparing download…" : "Download this backup"}
+          </button>
+        )}
+        {manualBackupRunning && manualProgress.liveStatus?.state !== "finalizing" && !gate.blocked && (
+          <button
+            type="button"
+            onClick={() => void cancelManualBackup()}
+            disabled={cancelPending}
+            className="h-9 px-3 rounded-md border border-destructive/40 text-destructive text-xs font-medium hover:bg-destructive/5 disabled:opacity-60"
+            data-testid="cancel-manual-backup"
+          >
+            {cancelPending ? "Cancelling…" : "Cancel backup"}
+          </button>
+        )}
         {backupResult && (
           <Alert tone={backupResult.partialFailure ? "warning" : "success"}>
-            {backupResult.partialFailure ? "Backup completed with warnings" : "Backup complete."} —{" "}
+            {backupResult.databaseOnly ? "Database-only backup delivered; media excluded." : backupResult.partialFailure ? "Backup completed with warnings" : "Backup complete."} —{" "}
             {formatBackupSize(backupResult.size)}{" "}
             {backupResult.viaBrowser ? (
               <>
@@ -4037,7 +4682,7 @@ function PlatformBackupPanel() {
         <div className="space-y-3">
           <div>
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Destination</div>
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div className="grid min-w-0 grid-cols-2 gap-2 2xl:grid-cols-4" data-testid="backup-destination-choices">
               {(["local", "network", "onedrive", "google-drive"] as const).map((d) => (
                 <label key={d} className={`flex min-h-10 min-w-0 items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium cursor-pointer transition-colors ${
                   nowDest === d ? "border-primary bg-primary/5 text-foreground ring-1 ring-primary/20" : "border-border bg-background text-muted-foreground hover:bg-muted/40"
@@ -4050,19 +4695,25 @@ function PlatformBackupPanel() {
                     onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
                     className="shrink-0 accent-primary"
                   />
-                  {d === "local"
+                  <span className="min-w-0 break-words">{d === "local"
                     ? "Local folder / USB"
                     : d === "network"
                       ? "Network server"
                       : d === "onedrive"
                         ? "OneDrive"
-                        : "Google Drive"}
+                        : "Google Drive"}</span>
                 </label>
               ))}
             </div>
           </div>
 
-          {needsPath(nowDest) && (
+          {nowDest === "local" && !electron?.saveBackupToFolder && !electron?.downloadBackupToFolder && (
+            <p className="text-xs text-muted-foreground">
+              Choose your USB drive in the browser's save dialog. If that dialog is unavailable,
+              the file downloads through your browser. Scheduled USB backups require the signed-in Desktop app.
+            </p>
+          )}
+          {needsPath(nowDest) && (nowDest !== "local" || !!electron?.saveBackupToFolder || !!electron?.downloadBackupToFolder) && (
             <div className="space-y-1.5">
               {!electron?.saveBackupToFolder && nowDest === "local" && (
                 <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300">
@@ -4073,8 +4724,8 @@ function PlatformBackupPanel() {
                   through your browser instead.
                 </div>
               )}
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
+              <div className="flex min-w-0 gap-2 items-end">
+                <div className="min-w-0 flex-1">
                   <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                     {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
                   </label>
@@ -4116,9 +4767,11 @@ function PlatformBackupPanel() {
 
         <button
           type="button"
-          onClick={() => backupNowMutation.mutate()}
+          onClick={() => void runManualBackup()}
           disabled={
-            backupNowMutation.isPending ||
+            manualBackupRunning ||
+            manualReconnectUnconfirmed ||
+            (!!user?.id && !manualProgress.runId && !!loadManualBackupIdentity(user.id)) ||
             gate.blocked ||
             (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder) ||
             (nowDest === "onedrive" && (
@@ -4134,17 +4787,19 @@ function PlatformBackupPanel() {
           }
           className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
         >
-          {backupNowMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          {backupNowMutation.isPending ? "Backing up…" : "Back up now"}
+          {manualBackupRunning ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {manualBackupRunning ? "Backing up…" : "Back up now"}
         </button>
       </div>
 
+      </div>
+
       {/* ── Recent backups ── */}
-      <div data-testid="backup-history-section" className="min-w-0 border border-border rounded-lg p-4 space-y-3">
+      <div data-testid="backup-history-section" className="min-w-0 border border-border rounded-lg p-3.5 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <History size={14} className="text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Recent backups</h3>
+            <h3 className="text-base font-bold">Recent Backups</h3>
           </div>
           <button
             type="button"
@@ -4355,7 +5010,7 @@ function PlatformBackupPanel() {
                       <td className="py-1.5 pr-3 align-top capitalize">
                         {run.destination === "google-drive" ? "Google Drive" : run.destination}
                         {run.path && (
-                          <span className="block text-[10px] text-muted-foreground font-mono truncate max-w-[140px]" title={run.path}>
+                          <span className="block max-w-[240px] break-words whitespace-normal text-[10px] text-muted-foreground font-mono" title={run.path}>
                             {run.path}
                           </span>
                         )}
@@ -11577,37 +12232,19 @@ function DoctorPracticeMemoryPanel() {
   );
 }
 
-function measuredBackupPhaseProgress(status: LocalBackupLiveStatus | null): {
-  completed: number;
-  total: number;
-} | null {
-  if (!status || (status.state !== "running" && status.state !== "awaiting_verification")) return null;
-  const metrics = status.metrics;
-  const pair = status.phase === "case-media transfer into archive"
-    ? [metrics.completedBytes, metrics.totalBytes]
-    : status.phase === "OneDrive transfer"
-      ? [metrics.uploadedBytes, metrics.uploadTotalBytes]
-      : status.phase === "SFTP transfer" || status.phase === "local download" || status.phase === "archive assembly/encryption and local transfer"
-        ? [metrics.transferredBytes, metrics.transferTotalBytes]
-        : null;
-  if (!pair || !Number.isFinite(pair[0]) || !Number.isFinite(pair[1]) || pair[1]! <= 0) return null;
-  return { completed: Math.min(pair[0]!, pair[1]!), total: pair[1]! };
-}
-
 function BackupProgressBar({ status }: { status: LocalBackupLiveStatus | null }) {
-  const progress = measuredBackupPhaseProgress(status);
-  const percent = progress ? Math.floor((progress.completed / progress.total) * 100) : null;
-  const description = percent === null
-    ? "Backup is running; this phase does not report a measurable percentage."
-    : `${percent}% of the current backup phase complete.`;
+  const percent = status?.state === "completed"
+    ? 100
+    : Math.max(0, Math.min(99, Math.floor(status?.overallProgress ?? 0)));
+  const description = `${percent}% of the whole backup complete.`;
   return (
     <div className="flex items-center gap-2" data-testid="manual-backup-progress">
       <div
         role="progressbar"
         aria-label="Backup progress"
-        aria-valuemin={progress ? 0 : undefined}
-        aria-valuemax={progress ? 100 : undefined}
-        aria-valuenow={percent ?? undefined}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
         aria-valuetext={description}
         data-testid="manual-backup-progress-bar"
         className="h-2 flex-1 overflow-hidden rounded-full bg-blue-100 dark:bg-blue-950/60"
@@ -11615,12 +12252,11 @@ function BackupProgressBar({ status }: { status: LocalBackupLiveStatus | null })
         <div
           className="h-full rounded-full bg-blue-600 backup-progress-stripes"
           style={{
-            width: `${percent ?? 100}%`,
+            width: `${percent}%`,
             backgroundImage: "repeating-linear-gradient(45deg,rgba(255,255,255,.32) 0,rgba(255,255,255,.32) 6px,transparent 6px,transparent 12px)",
           }}
         />
       </div>
-      {percent !== null && <span className="min-w-9 text-right text-[11px] tabular-nums text-blue-700 dark:text-blue-300">{percent}%</span>}
     </div>
   );
 }

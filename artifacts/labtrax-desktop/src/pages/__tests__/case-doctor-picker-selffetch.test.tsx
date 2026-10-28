@@ -151,7 +151,7 @@ describe("CaseDrawer doctor picker self-fetch", () => {
 
     // Enter edit mode, then open the DoctorNamePicker (its toggle shows the
     // case's current doctor name while the dropdown is closed).
-    fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
+    fireEvent.click(await screen.findByTestId("case-details-edit"));
     fireEvent.click(await screen.findByRole("button", { name: fakeCase.doctorName }));
 
     // Self-fetched doctor names appear as options instead of "No doctors found."

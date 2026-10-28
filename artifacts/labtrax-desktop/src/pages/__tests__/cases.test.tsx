@@ -219,7 +219,7 @@ describe("CasesPage smoke render", () => {
     ).not.toBeInTheDocument();
 
     fireEvent.click(row as HTMLElement);
-    fireEvent.click(await screen.findByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Lab Slip" }));
     await waitFor(() => {
       const onHoldBadges = screen
         .getAllByText("On Hold")
@@ -285,7 +285,7 @@ describe("case location rendered refresh contract", () => {
     render(<Wrapper>{withAiPanel(<CaseDrawer labCase={detail as unknown as LabCase} onClose={() => {}} />)}</Wrapper>);
     await waitFor(() => expect(screen.queryByTestId("locate-case-select")).not.toBeInTheDocument());
     for (const tab of ["Lab Slip", "History", "Notes"]) {
-      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${tab}`) }));
+      fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${tab}`) }));
       expect(screen.getAllByTestId("case-header-location")).toHaveLength(1);
       expect(within(screen.getByTestId("case-header-location")).getByText("Received")).toBeInTheDocument();
       expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
@@ -294,7 +294,7 @@ describe("case location rendered refresh contract", () => {
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
-  it("routes a same-status sibling by exact station id and retains selection after refusal for retry", async () => {
+  it("routes a same-status sibling on selection and lets users reselect after refusal", async () => {
     let detail = locationCase("same-status-location", "26-SAME");
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -312,6 +312,7 @@ describe("case location rendered refresh contract", () => {
       }
       if (path.endsWith("/locations")) return json([
         { id: "station-received", code: "RECV", status: "received", name: "Received" },
+        { id: "station-intake-custom", code: "INTAKE_CUSTOM", status: "received", name: "Custom Intake Bench" },
         { id: "station-model", code: "MODEL", status: "received", name: "Model Bench" },
       ]);
       return json([]);
@@ -322,16 +323,16 @@ describe("case location rendered refresh contract", () => {
     });
     render(<Wrapper>{withAiPanel(<CaseDrawer labCase={detail as unknown as LabCase} onClose={() => {}} />)}</Wrapper>);
     await screen.findByRole("option", { name: "Model Bench" });
+    expect(screen.getByRole("option", { name: "Custom Intake Bench" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Received (current)" })).toBeDisabled();
     expect(screen.getByRole("option", { name: "Model Bench" })).not.toBeDisabled();
     const select = screen.getByTestId("locate-case-select");
     fireEvent.change(select, { target: { value: "station-model" } });
-    fireEvent.click(screen.getByRole("button", { name: /^History/ }));
-    fireEvent.click(screen.getByTestId("locate-case-submit"));
     expect(await screen.findByText("Route refused.")).toBeInTheDocument();
-    expect(select).toHaveValue("station-model");
+    expect(select).toHaveValue("");
     expect(screen.queryByText("Case located successfully.")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("locate-case-submit"));
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "station-model" } });
     expect(await screen.findByText("Case located successfully.")).toBeInTheDocument();
     expect(bodies).toEqual([
       { status: "received", labLocationId: "station-model" },
@@ -403,6 +404,7 @@ describe("case location rendered refresh contract", () => {
     const select = await screen.findByTestId("locate-case-select");
     const location = screen.getByTestId("case-header-location");
     expect(screen.getAllByTestId("locate-case-select")).toHaveLength(1);
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
     expect(location.closest("header")).toContainElement(screen.getByTestId("case-header-patient"));
     expect(location.closest("header")?.nextElementSibling).not.toBe(location);
     expect(screen.queryByTestId("case-details-location")).not.toBeInTheDocument();
@@ -410,8 +412,11 @@ describe("case location rendered refresh contract", () => {
     await screen.findByRole("option", { name: "Design Bench" });
     expect(screen.getByRole("option", { name: "Received (current)" })).toBeDisabled();
     fireEvent.change(select, { target: { value: "station-design" } });
+    // A repeated selection while the write and authoritative refresh are still
+    // pending must not enqueue a second PATCH.
+    fireEvent.change(select, { target: { value: "station-design" } });
     for (const tab of ["History", "Notes", "Lab Slip"]) {
-      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${tab}`) }));
+      fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${tab}`) }));
       expect(screen.getAllByTestId("locate-case-select")).toHaveLength(1);
       expect(screen.getByTestId("locate-case-select")).toBe(select);
       expect(select).toHaveValue("station-design");
@@ -421,8 +426,6 @@ describe("case location rendered refresh contract", () => {
     expect(screen.getByTestId("locate-case-select")).toBe(select);
     expect(select).toHaveValue("station-design");
     expect(screen.getByPlaceholderText("Patient first name")).toBeInTheDocument();
-    fireEvent.change(select, { target: { value: "station-design" } });
-    fireEvent.click(screen.getByTestId("locate-case-submit"));
 
     await waitFor(() => {
       expect(patchBodies).toEqual([
@@ -437,7 +440,7 @@ describe("case location rendered refresh contract", () => {
     expect(
       await screen.findByRole("option", { name: "Design Bench (current)" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /History/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /History/i }));
     expect(screen.getAllByTestId("locate-case-select")).toHaveLength(1);
     expect(await screen.findByText("Location Changed")).toBeInTheDocument();
   }, 20000);
@@ -478,8 +481,8 @@ describe("case location rendered refresh contract", () => {
             moved
               ? locationCase(detailRow.id, detailRow.caseNumber, {
                   status: "in_design",
-                  labLocationId: "station-design",
-                  labLocationName: "Design Bench",
+                  labLocationId: "station-design-custom",
+                  labLocationName: "Custom Design Bench",
                 })
               : detailRow,
           );
@@ -491,6 +494,7 @@ describe("case location rendered refresh contract", () => {
           return json([
             { id: "station-received", code: "RECV", status: "received", name: "Received" },
             { id: "station-design", code: "DESIGN", status: "in_design", name: "Design Bench" },
+            { id: "station-design-custom", code: "DESIGN_CUSTOM", status: "in_design", name: "Custom Design Bench" },
           ]);
         }
         if (path.endsWith("/organizations")) {
@@ -523,7 +527,7 @@ describe("case location rendered refresh contract", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select case 26-602" }));
     fireEvent.click(screen.getByRole("button", { name: "Change Location" }));
     fireEvent.change(screen.getByLabelText("New location"), {
-      target: { value: "station-design" },
+      target: { value: "station-design-custom" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
@@ -531,20 +535,20 @@ describe("case location rendered refresh contract", () => {
       expect(postBodies).toEqual([{
         caseIds: ["bulk-location-a", "bulk-location-b"],
         status: "in_design",
-        labLocationId: "station-design",
+        labLocationId: "station-design-custom",
       }]);
       expect(new Set(refreshedIds)).toEqual(
         new Set(["bulk-location-a", "bulk-location-b"]),
       );
     });
-    expect(screen.queryByText("2 cases marked as Design Bench.")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 cases marked as Custom Design Bench.")).not.toBeInTheDocument();
 
     releaseById.get("bulk-location-a")?.();
     await Promise.resolve();
-    expect(screen.queryByText("2 cases marked as Design Bench.")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 cases marked as Custom Design Bench.")).not.toBeInTheDocument();
 
     releaseById.get("bulk-location-b")?.();
-    expect(await screen.findByText("2 cases marked as Design Bench.")).toBeInTheDocument();
+    expect(await screen.findByText("2 cases marked as Custom Design Bench.")).toBeInTheDocument();
   }, 20000);
 });
 
@@ -795,7 +799,7 @@ describe("CaseDrawer smoke render", () => {
         {withAiPanel(<CaseDrawer labCase={detail as unknown as LabCase} onClose={() => {}} />)}
       </Wrapper>,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: /^Files/ })[0]);
+    fireEvent.click(screen.getByRole("tab", { name: /^Files/ }));
 
     const media = await screen.findByRole("button", { name: /Images\/videos/ });
     const documents = screen.getByRole("button", { name: /Documents/ });
@@ -804,6 +808,8 @@ describe("CaseDrawer smoke render", () => {
     expect(media).toHaveTextContent("(1)");
     expect(documents).toHaveTextContent("(1)");
     expect(files).toHaveTextContent("(1)");
+    expect(screen.getByTestId("attachment-section-media")).toHaveClass("border-section");
+    expect(screen.getByTestId("attachment-section-documents")).toHaveClass("border-section");
     expect(media).toHaveAttribute("aria-expanded", "false");
     expect(documents).toHaveAttribute("aria-expanded", "false");
     expect(files).toHaveAttribute("aria-expanded", "false");
@@ -811,6 +817,11 @@ describe("CaseDrawer smoke render", () => {
 
     fireEvent.click(documents);
     expect(documents).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen
+        .getByTestId("attachment-section-documents")
+        .querySelector(".border-t.border-section"),
+    ).toBeInTheDocument();
     expect(await screen.findByText("rx.jpg")).toBeInTheDocument();
     expect(screen.queryByText("photo.jpg")).not.toBeInTheDocument();
     expect(
@@ -834,7 +845,7 @@ describe("CaseDrawer smoke render", () => {
         {withAiPanel(<CaseDrawer labCase={detail as unknown as LabCase} onClose={() => {}} />)}
       </Wrapper>,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: /^Files/ })[0]);
+    fireEvent.click(screen.getByRole("tab", { name: /^Files/ }));
     expect(
       await screen.findByRole("button", { name: /Images\/videos/ }),
     ).toHaveAttribute("aria-expanded", "true");
@@ -908,8 +919,11 @@ describe("CaseDrawer smoke render", () => {
     // "Patient" field below — the header instance renders first in the DOM.
     const headerNameRow = screen.getAllByText("Jane Doe")[0]
       .parentElement as HTMLElement;
-    const patientDetailRow = screen.getByText("Patient").nextElementSibling as HTMLElement;
-
+    const patientSection = screen.getByTestId("case-slip-patient-provider");
+    const patientDetailLabel = within(patientSection).getByText("Patient", {
+      exact: true,
+    });
+    const patientDetailRow = patientDetailLabel.nextElementSibling as HTMLElement;
     // Remake and exception creation now live in the header, beside the patient name.
     expect(headerNameRow).toContainElement(remakeButton);
     expect(headerNameRow).toContainElement(exceptionButton);
@@ -919,8 +933,6 @@ describe("CaseDrawer smoke render", () => {
       ),
     ).toEqual(["Remake", "Create Exception Case"]);
     expect(screen.getAllByTitle("Create a remake of this case")).toHaveLength(1);
-
-    // The Case Details "Patient" field keeps only "Preview Rx".
     expect(patientDetailRow).not.toContainElement(remakeButton);
     expect(patientDetailRow).not.toContainElement(exceptionButton);
     expect(
@@ -1224,14 +1236,29 @@ describe("CaseDrawer lab slip dated notes", () => {
     const dueDate = screen.getByText(/Due Date:/);
     expect(screen.getByTestId("case-details-date-created")).toContainElement(dateCreated);
     expect(screen.getByTestId("case-details-due-date")).toContainElement(dueDate);
+    expect(screen.getByTestId("case-details-due-date")).toHaveClass("text-2xl");
+    expect(
+      within(screen.getByTestId("case-details-due-date")).getByRole("button", {
+        name: "Change due date",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("case-details-metadata")).toContainElement(
       screen.getByTestId("case-details-priority"),
     );
     expect(metadataRow).toContainElement(dateCreated);
     expect(metadataRow).toContainElement(dueDate);
+    const dates = within(metadataRow).getByTestId("case-details-dates");
+    expect(dates).toHaveClass("flex-col", "items-start");
+    expect(Array.from(dates.children)).toEqual([
+      screen.getByTestId("case-details-date-created"),
+      screen.getByTestId("case-details-due-date"),
+    ]);
+    expect(within(metadataRow).getAllByText(/Due Date:/)).toHaveLength(1);
     expect(metadataRow.nextElementSibling).toHaveClass("border-t", "border-border");
     const dividers = within(metadataRow).getAllByTestId("case-details-metadata-divider");
-    expect(dividers).toHaveLength(2);
+    expect(dividers).toHaveLength(1);
+    expect(dates.nextElementSibling).toBe(dividers[0]);
+    expect(dividers[0].nextElementSibling).toBe(screen.getByTestId("case-details-priority"));
     dividers.forEach((divider) => {
       expect(divider).toHaveAttribute("aria-hidden", "true");
       expect(divider).toHaveClass("w-px", "h-4", "bg-border");
@@ -1287,7 +1314,7 @@ describe("CaseDrawer lab slip dated notes", () => {
 
     // Every authored note — text, author and visibility — stays on the Notes
     // tab, untouched by the Lab Slip cleanup.
-    fireEvent.click(screen.getByRole("button", { name: /^Notes/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Notes/ }));
     expect(
       await screen.findByText(
         "Confirmed with Dr. Byrne that we are going to TIW.",
@@ -1361,7 +1388,7 @@ describe("CaseDrawer lab slip dated notes", () => {
     expect(screen.queryByText(longText)).not.toBeInTheDocument();
 
     // The note itself is untouched and still readable in full on its own tab.
-    fireEvent.click(screen.getByRole("button", { name: /^Notes/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Notes/ }));
     expect(await screen.findByText(longText)).toBeInTheDocument();
   });
 });
@@ -1445,7 +1472,7 @@ describe("CaseDrawer timeline provider note", () => {
       </Wrapper>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: /History/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /History/i }));
 
     expect(
       await screen.findByText("Please rush this one, patient travels next week."),
@@ -1561,7 +1588,6 @@ describe("CaseDrawer returned-case wizard", () => {
     const locateSelect = await screen.findByTestId("locate-case-select");
     await screen.findByRole("option", { name: "Received" });
     fireEvent.change(locateSelect, { target: { value: "loc-received" } });
-    fireEvent.click(screen.getByTestId("locate-case-submit"));
   }
 
   /** Click a button inside the wizard panel identified by `testId`. */
@@ -1591,7 +1617,7 @@ describe("CaseDrawer returned-case wizard", () => {
     expect(overlay.className).toContain("inset-0");
     expect(overlay.className).toContain("items-center");
     expect(overlay.className).toContain("justify-center");
-    expect(dialog.contains(screen.getByTestId("locate-case-submit"))).toBe(false);
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
 
     // The question title lives in the popup header and follows the flow.
     expect(screen.getByTestId("return-wizard-title")).toHaveTextContent(
@@ -1931,10 +1957,7 @@ describe("CaseDrawer invoice payments", () => {
     );
 
     // Switch to the Invoice tab.
-    const invoiceTab = (await screen.findAllByRole("button")).find(
-      (b) => b.textContent?.trim() === "Invoice",
-    );
-    expect(invoiceTab).toBeTruthy();
+    const invoiceTab = await screen.findByRole("tab", { name: "Invoice" });
     fireEvent.click(invoiceTab!);
 
     // The payments section header and the recorded payment row render.
@@ -1975,6 +1998,7 @@ describe("CaseDrawer due-date persistence", () => {
       });
 
     let detailCalls = 0;
+    let patchCalls = 0;
     let releaseRefetch: () => void = () => {};
     const refetchGate = new Promise<void>((resolve) => {
       releaseRefetch = resolve;
@@ -1994,7 +2018,10 @@ describe("CaseDrawer due-date persistence", () => {
         const method = (init?.method ?? "GET").toUpperCase();
 
         if (path.endsWith(`/cases/${caseId}`)) {
-          if (method === "PATCH") return json("{}");
+          if (method === "PATCH") {
+            patchCalls += 1;
+            return json("{}");
+          }
           detailCalls += 1;
           if (detailCalls === 1) return json(detailBody(OLD));
           // The post-save refetch: hold it open so we can assert the staged
@@ -2018,7 +2045,9 @@ describe("CaseDrawer due-date persistence", () => {
       doctorName: "Dr. Synthetic063",
       status: "received",
       priority: "normal",
-      dueDate: OLD,
+      // The list row is intentionally stale; wait for the detail request to
+      // provide the authoritative starting due date before editing.
+      dueDate: "2026-06-24",
       createdAt: "2026-01-15T10:00:00.000Z",
       updatedAt: "2026-01-15T10:00:00.000Z",
       totalPrice: "0",
@@ -2032,14 +2061,14 @@ describe("CaseDrawer due-date persistence", () => {
     );
 
     // Old date is shown before editing.
-    expect(await screen.findByText("06/25/2026")).toBeInTheDocument();
+    const dates = screen.getByTestId("case-details-dates");
+    await waitFor(() => {
+      expect(within(dates).getByTestId("case-details-due-date"))
+        .toHaveTextContent("06/25/2026");
+    });
 
     // Open the edit form.
-    const editBtn = (await screen.findAllByRole("button")).find(
-      (b) => b.textContent?.trim() === "Edit",
-    );
-    expect(editBtn).toBeTruthy();
-    fireEvent.click(editBtn!);
+    fireEvent.click(screen.getByTestId("case-details-edit"));
 
     // Change the due date.
     const dateInput = document.querySelector(
@@ -2049,20 +2078,168 @@ describe("CaseDrawer due-date persistence", () => {
     fireEvent.change(dateInput!, { target: { value: NEW } });
 
     // One press writes immediately; the form remains open through the refetch.
-    fireEvent.click(screen.getByText("Save changes"));
+    fireEvent.click(screen.getByTestId("case-details-edit-save"));
+    await waitFor(() => expect(patchCalls).toBe(1));
 
     // While the refetch is held open, the new value must remain on screen and
     // the old value must never flash back.
     await waitFor(() => expect(detailCalls).toBeGreaterThan(1));
     expect(dateInput).toHaveValue(NEW);
     expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
-    expect(screen.queryByText("06/25/2026")).not.toBeInTheDocument();
+    expect(within(dates).getByTestId("case-details-due-date"))
+      .not.toHaveTextContent("06/25/2026");
 
     // Release the refetch -> server returns the new value -> still shown.
     releaseRefetch();
     await waitFor(() => {
-      expect(screen.getByText("07/10/2026")).toBeInTheDocument();
+      expect(within(dates).getByTestId("case-details-due-date"))
+        .toHaveTextContent("07/10/2026");
     });
+    expect(within(dates).getByTestId("case-details-due-date")).toHaveTextContent("07/10/2026");
+    expect(within(dates).getByTestId("case-details-date-created")).toHaveTextContent("01/15/2026");
+    expect(screen.getAllByTestId("case-details-due-date")).toHaveLength(1);
+  });
+
+  it("saves a calendar-selected due date immediately and preserves its time", async () => {
+    const caseId = "quick-due-date-case";
+    const OLD = "2026-06-25";
+    const NEW = "2026-07-10";
+    let currentDueDate = OLD;
+    let patchBody: Record<string, unknown> | null = null;
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    const detail = () => ({
+      id: caseId,
+      caseNumber: "26-2",
+      patientFirstName: "Synthetic",
+      patientLastName: "Case",
+      doctorName: "Dr. Synthetic",
+      status: "received",
+      priority: "normal",
+      dueDate: currentDueDate,
+      dueTime: "15:30",
+      createdAt: "2026-01-15T10:00:00.000Z",
+      updatedAt: "2026-01-15T10:00:00.000Z",
+      totalPrice: "0",
+      labOrganizationId: "synthetic-lab",
+      viewerIsLabMember: true,
+      restorations: [],
+      notes: [],
+      attachments: [],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const path = new URL(url, "http://localhost").pathname;
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (path.endsWith(`/cases/${caseId}`) && method === "PATCH") {
+          const parsedPatchBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          patchBody = parsedPatchBody;
+          currentDueDate = String(parsedPatchBody.dueDate);
+          return json(detail());
+        }
+        if (path.endsWith(`/cases/${caseId}`)) return json(detail());
+        if (path.endsWith("/cases")) return json([]);
+        if (path.endsWith("/organizations")) return json([]);
+        if (path.endsWith("/vocabulary") || path.endsWith("/finance/vendors")) return json([]);
+        return json({});
+      }),
+    );
+
+    const fakeCase = {
+      ...detail(),
+      dueDate: OLD,
+    } as unknown as LabCase;
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={fakeCase} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    const dueDateRow = await screen.findByTestId("case-details-due-date");
+    await waitFor(() => expect(dueDateRow).toHaveTextContent("06/25/2026"));
+    const dateInput = screen.getByTestId(
+      "case-details-due-date-picker-input",
+    ) as HTMLInputElement;
+    expect(dateInput).toHaveValue(OLD);
+
+    fireEvent.change(dateInput, { target: { value: NEW } });
+
+    await waitFor(() => expect(patchBody).toEqual({
+      dueDate: NEW,
+      dueTime: "15:30",
+    }));
+    await waitFor(() => expect(dueDateRow).toHaveTextContent("07/10/2026 at 3:30 PM"));
+  });
+
+  it("reverts the displayed date and reports a rejected quick save", async () => {
+    const caseId = "quick-due-date-rejected-case";
+    const OLD = "2026-06-25";
+    const NEW = "2026-07-10";
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    const detail = () => ({
+      id: caseId,
+      caseNumber: "26-3",
+      patientFirstName: "Synthetic",
+      patientLastName: "Case",
+      doctorName: "Dr. Synthetic",
+      status: "received",
+      priority: "normal",
+      dueDate: OLD,
+      createdAt: "2026-01-15T10:00:00.000Z",
+      updatedAt: "2026-01-15T10:00:00.000Z",
+      totalPrice: "0",
+      labOrganizationId: "synthetic-lab",
+      viewerIsLabMember: true,
+      restorations: [],
+      notes: [],
+      attachments: [],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const path = new URL(url, "http://localhost").pathname;
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (path.endsWith(`/cases/${caseId}`) && method === "PATCH") {
+          return json({ message: "Date update denied." }, 403);
+        }
+        if (path.endsWith(`/cases/${caseId}`)) return json(detail());
+        if (path.endsWith("/cases")) return json([]);
+        if (path.endsWith("/organizations")) return json([]);
+        if (path.endsWith("/vocabulary") || path.endsWith("/finance/vendors")) return json([]);
+        return json({});
+      }),
+    );
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(
+          <CaseDrawer labCase={detail() as unknown as LabCase} onClose={() => {}} />,
+        )}
+      </Wrapper>,
+    );
+
+    const dueDateRow = await screen.findByTestId("case-details-due-date");
+    const dateInput = screen.getByTestId(
+      "case-details-due-date-picker-input",
+    ) as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: NEW } });
+
+    await waitFor(() => expect(dueDateRow).toHaveTextContent("06/25/2026"));
+    expect(dueDateRow).not.toHaveTextContent("07/10/2026");
   });
 });
 

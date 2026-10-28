@@ -1436,19 +1436,10 @@ maybe("Backup Restore Integrity", () => {
         } else {
           expect(url).toContain(`/${fakeFileName}:/content`);
         }
-        return {
-          ok: true,
+        return new Response(new Uint8Array(fakeFileBytes), {
           status: 200,
-          json: async () => ({}),
-          text: async () => "",
-          arrayBuffer: async () => {
-            const buf = Buffer.from(fakeFileBytes);
-            return buf.buffer.slice(
-              buf.byteOffset,
-              buf.byteOffset + buf.byteLength,
-            ) as ArrayBuffer;
-          },
-        };
+          headers: { "Content-Length": String(fakeFileBytes.length) },
+        });
       });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1563,9 +1554,10 @@ maybe("Backup Restore Integrity", () => {
       expect(typeof manifest.attachmentRowCount).toBe("number");
     });
 
-    it("27. streamBackupDownload throws when guard fires (attachment rows > 0, media dir empty)", async () => {
+    it("27. streamBackupDownload reports missing originals without dropping their database references", async () => {
       // The explicitly seeded attachment row is still present.
-      // Setting fileCount=0 must cause the streaming backup endpoint to return 500.
+      // Missing originals are disclosed in an encrypted partial archive, never
+      // mislabeled complete or removed from the database.
       // The streaming route is POST /api/admin/backup/generate (not GET /download).
       backupMod._setUploadInspectionForTests({
         caseMedia:     { exists: true, fileCount: 0, totalBytes: 0 },
@@ -1573,9 +1565,23 @@ maybe("Backup Restore Integrity", () => {
       });
       const res = await request(appMod.default)
         .post("/api/admin/backup/generate")
-        .set("X-Platform-Admin-Secret", PLATFORM_ADMIN_SECRET);
-      expect(res.status).toBe(500);
-      expect(JSON.stringify(res.body)).toMatch(/aborted|missing|empty/i);
+        .set("X-Platform-Admin-Secret", PLATFORM_ADMIN_SECRET)
+        .buffer(true)
+        .parse((response: any, done: any) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () => done(null, Buffer.concat(chunks)));
+          response.on("error", done);
+        });
+      expect(res.status).toBe(200);
+      expect(res.headers["x-backup-archive-kind"]).toBe("partial-non-production");
+      expect(Number(res.headers["x-backup-missing-file-count"])).toBeGreaterThan(0);
+      const zip = new AdmZip(backupMod.decryptBuffer(res.body));
+      expect(JSON.parse(zip.readAsText("missing-files.json")).missingReferences)
+        .toContain(`case-media/${guardAttachmentId}.pdf`);
+      const { db, caseAttachments } = dbMod as any;
+      expect(await db.select().from(caseAttachments)
+        .where(eq(caseAttachments.id, guardAttachmentId))).toHaveLength(1);
     });
 
     it("28. executeRestore extracts profile-photos/ entries from backup ZIP", async () => {
@@ -1620,16 +1626,29 @@ maybe("Backup Restore Integrity", () => {
       }
     });
 
-    it("29. runLocalBackup refuses to write a database-only archive when referenced media is missing", async () => {
+    it("29. runLocalBackup writes an explicitly partial archive with a missing-file inventory", async () => {
       const pathMod = require("path") as typeof import("path");
       const fs = require("fs") as typeof import("fs");
       const osMod = require("os") as typeof import("os");
 
       const destDir = fs.mkdtempSync(pathMod.join(osMod.tmpdir(), "labtrax-local-dest-"));
       try {
-        await expect(backupMod.runLocalBackup("test-29", destDir))
-          .rejects.toThrow(/^Backup failed during case-media inventory and reference validation after [\d.]+s: .*required file references have no readable recovery source/i);
-        expect(fs.readdirSync(destDir)).toEqual([]);
+        const result = await backupMod.runLocalBackup("test-29", destDir);
+        expect(result).toMatchObject({
+          destination: "local", archiveKind: "partial-non-production", partialFailure: true,
+        });
+        expect(result.warnings).toMatch(/not a complete recovery point/i);
+        expect(fs.readdirSync(destDir)).toEqual([result.fileName]);
+        const bytes = fs.readFileSync(result.path!);
+        expect(bytes.length).toBe(result.size);
+        const zip = new AdmZip(backupMod.decryptBuffer(bytes));
+        expect(zip.getEntry("db/database.pgdump")).toBeTruthy();
+        const missing = JSON.parse(zip.readAsText("missing-files.json"));
+        expect(missing.missingFileCount).toBeGreaterThan(0);
+        expect(missing.missingReferences).toContain(`case-media/${guardAttachmentId}.pdf`);
+        const { db, caseAttachments } = dbMod as any;
+        expect(await db.select().from(caseAttachments)
+          .where(eq(caseAttachments.id, guardAttachmentId))).toHaveLength(1);
       } finally {
         fs.rmSync(destDir, { recursive: true, force: true });
       }
@@ -1646,7 +1665,10 @@ maybe("Backup Restore Integrity", () => {
       const before = countTempDirs();
       const destDir = fs.mkdtempSync(pathMod.join(osMod.tmpdir(), "labtrax-local-dest-"));
       try {
-        await expect(backupMod.runLocalBackup("test-30", destDir)).rejects.toThrow(/required file references/i);
+        const result = await backupMod.runLocalBackup("test-30", destDir);
+        expect(result.archiveKind).toBe("partial-non-production");
+        expect(result.partialFailure).toBe(true);
+        expect(fs.readdirSync(destDir)).toEqual([result.fileName]);
         // A leaked temp archive would fill the deployment disk over time.
         expect(countTempDirs()).toBe(before);
       } finally {

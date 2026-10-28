@@ -347,6 +347,7 @@ vi.mock("expo-router", () => {
 vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({}),
+  usePreventRemove: () => {},
   useRoute: () => ({ params: {} }),
   useFocusEffect: deferredFocusEffect,
   NavigationContainer: passthrough,
@@ -2070,6 +2071,7 @@ vi.mock("@/lib/theme-context", () => {
     tintLight: "#D9E9F7",
     tintDark: "#0F4C81",
     border: "#E2E8F0",
+    sectionBorder: "#7F97B1",
     warning: "#B45309",
     icon: "#64748B",
     tabIconDefault: "#94A3B8",

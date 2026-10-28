@@ -46,3 +46,8 @@ attached_assets/image_1791833262991.png
 *.pkg
 *.ipa
 *.tar.gz
+
+# Review-only copies of the user's uploaded reference screenshots.
+artifacts/mockup-sandbox/public/tooth-compare/reference3.png
+artifacts/mockup-sandbox/public/tooth-compare/reference4.png
+artifacts/mockup-sandbox/public/tooth-compare/reference5.png

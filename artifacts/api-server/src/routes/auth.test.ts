@@ -149,7 +149,12 @@ maybe("Auth registration and password reset (db integration)", () => {
       .get("/api/auth/check-email")
       .query({ email: email.toUpperCase() });
     expect(availability.status).toBe(200);
-    expect(availability.body.data?.available).toBe(false);
+    expect(availability.body.data?.available).toBe(true);
+    const unknownEmailAvailability = await request(appMod.default)
+      .get("/api/auth/check-email")
+      .query({ email: `${rid("unknown")}@example.com` });
+    expect(unknownEmailAvailability.status).toBe(200);
+    expect(unknownEmailAvailability.body.data).toEqual(availability.body.data);
 
     const second = await request(appMod.default)
       .post("/api/auth/register")
@@ -182,7 +187,7 @@ maybe("Auth registration and password reset (db integration)", () => {
       .get("/api/auth/check-email")
       .query({ email: firstEmail.toUpperCase() });
     expect(availability.status).toBe(200);
-    expect(availability.body.data?.available).toBe(false);
+    expect(availability.body.data?.available).toBe(true);
 
     const second = await request(appMod.default)
       .post("/api/auth/register")
@@ -351,12 +356,18 @@ maybe("Auth registration and password reset (db integration)", () => {
   describe("login, refresh, and logout", () => {
     let loginUserId: string;
     let loginUsername: string;
+    let inactiveUserId: string;
+    let inactiveUsername: string;
     let panUserId: string;
     let panAccountNumber: string;
 
     beforeAll(async () => {
       loginUserId = rid("loginusr");
-      loginUsername = `lt_${loginUserId}`;
+      // A short uppercase username mirrors the identifier shown in the
+      // Desktop sign-in report and exercises case-insensitive username lookup.
+      loginUsername = `JPP${randomBytes(3).toString("hex").toUpperCase()}`;
+      inactiveUserId = rid("inactive");
+      inactiveUsername = `inactive_${randomBytes(3).toString("hex")}`;
       panUserId = rid("panuser");
       panAccountNumber = `PAN${rid("").slice(0, 8).toUpperCase()}`;
       const { db, users } = dbMod as any;
@@ -366,6 +377,12 @@ maybe("Auth registration and password reset (db integration)", () => {
           username: loginUsername,
           password: "TestLogin1!",
           email: `${loginUserId}@example.com`,
+        },
+        {
+          id: inactiveUserId,
+          username: inactiveUsername,
+          password: "TestLogin1!",
+          isActive: false,
         },
         {
           id: panUserId,
@@ -378,8 +395,10 @@ maybe("Auth registration and password reset (db integration)", () => {
 
     afterAll(async () => {
       const { db, users, userSessions } = dbMod as any;
-      await db.delete(userSessions).where(inArray(userSessions.userId, [loginUserId, panUserId]));
-      await db.delete(users).where(inArray(users.id, [loginUserId, panUserId]));
+      await db.delete(userSessions).where(
+        inArray(userSessions.userId, [loginUserId, inactiveUserId, panUserId]),
+      );
+      await db.delete(users).where(inArray(users.id, [loginUserId, inactiveUserId, panUserId]));
     });
 
     it("POST /api/auth/login — valid credentials return 200 with access + refresh tokens", async () => {
@@ -392,11 +411,71 @@ maybe("Auth registration and password reset (db integration)", () => {
       expect(typeof r.body.refreshToken).toBe("string");
     });
 
+    it("POST /api/auth/login — Desktop username/password contract accepts normalized username casing", async () => {
+      const r = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({
+          username: loginUsername.toLowerCase(),
+          password: "TestLogin1!",
+          deviceName: "LabTrax Desktop",
+          clientType: "desktop",
+        });
+      expect(r.status).toBe(200);
+      expect(r.body.success).toBe(true);
+      expect(typeof r.body.accessToken).toBe("string");
+      expect(typeof r.body.refreshToken).toBe("string");
+      expect(r.body.user.username).toBe(loginUsername);
+    });
+
     it("POST /api/auth/login — wrong password returns 401", async () => {
       const r = await request(appMod.default)
         .post("/api/auth/login")
         .send({ identifier: loginUsername, password: "WrongPass!", clientType: "mobile" });
       expect(r.status).toBe(401);
+    });
+
+    it("POST /api/auth/login — credential failures do not reveal whether the username exists", async () => {
+      const wrongPassword = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({
+          username: loginUsername,
+          password: "WrongPass!",
+          clientType: "desktop",
+        });
+      const unknownUsername = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({
+          username: rid("ghost"),
+          password: "AnyPass1!",
+          clientType: "desktop",
+        });
+
+      expect(wrongPassword.status).toBe(401);
+      expect(unknownUsername.status).toBe(401);
+      expect(wrongPassword.body.message).toBe("Invalid username or password.");
+      expect(unknownUsername.body.message).toBe(wrongPassword.body.message);
+    });
+
+    it("POST /api/auth/login — disabled accounts receive the same generic rejection", async () => {
+      const disabledAccount = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({
+          username: inactiveUsername,
+          password: "TestLogin1!",
+          clientType: "desktop",
+        });
+      const unknownUsername = await request(appMod.default)
+        .post("/api/auth/login")
+        .send({
+          username: rid("ghost"),
+          password: "AnyPass1!",
+          clientType: "desktop",
+        });
+
+      expect(disabledAccount.status).toBe(401);
+      expect(unknownUsername.status).toBe(401);
+      expect(disabledAccount.body.message).toBe("Invalid username or password.");
+      expect(unknownUsername.body.message).toBe(disabledAccount.body.message);
     });
 
     it("POST /api/auth/login — non-existent username returns 401", async () => {
