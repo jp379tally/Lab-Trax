@@ -55,7 +55,7 @@ export async function followManualBackup(
         !(error instanceof TypeError) && !/\b50[234]\b/.test(String(error))) throw error;
     uncertain = true;
   }
-  while (now() - started < (options.timeoutMs ?? 2 * 60 * 60_000)) {
+  while (now() - started < (options.timeoutMs ?? (6 * 60 + 5) * 60_000)) {
     let status: ManualBackupStatus;
     try {
       status = await readStatus();

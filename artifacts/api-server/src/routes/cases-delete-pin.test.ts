@@ -28,7 +28,8 @@ vi.mock("../lib/case-media.js", () => ({
 // verifyCode defaults to returning {verified:true}; individual tests can
 // override it for one call via mockResolvedValueOnce.
 vi.mock("../lib/verification.js", () => ({
-  createVerificationCode: vi.fn().mockResolvedValue(undefined),
+  createVerificationCode: vi.fn().mockResolvedValue("test-verification-code-id"),
+  invalidateVerificationCode: vi.fn().mockResolvedValue(undefined),
   verifyCode: vi.fn().mockResolvedValue({ verified: true }),
   normalizePhoneTarget: (p: string) => p.replace(/\D/g, ""),
   normalizeEmailTarget: (e: string) => e.trim().toLowerCase(),
@@ -235,12 +236,90 @@ maybe("Case delete security flow (db integration)", () => {
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
     expect(typeof r.body.data.deleteSessionToken).toBe("string");
+    expect(r.body.data.maskedRecipient).toBe(`${adminUserId[0]}***@test.local`);
     // OTP must be delivered by email to the lab owner — never by SMS.
     expect(sendMail).toHaveBeenCalledTimes(1);
     expect((sendMail as ReturnType<typeof vi.fn>).mock.calls[0][0].to).toBe(
       `${adminUserId}@test.local`,
     );
     expect(sendSms).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing SMTP configuration", "smtp_not_configured"],
+    ["reserved test recipient", "reserved_domain"],
+    ["undeliverable recipient domain", "undeliverable_domain"],
+    ["test-environment skip", "disabled_in_test"],
+    ["rejected SMTP login", "auth_failed"],
+    ["rejected recipient", "recipient_rejected"],
+    ["transport failure", "send_failed"],
+    ["unrecognized provider diagnostic", "provider-internal:password=hidden"],
+    ["unspecified skipped send", undefined],
+  ])("refuses initiation when email delivery reports %s", async (_label, reason) => {
+    const adminToken = await makeSession(adminUserId);
+    const { sendMail } = await import("../lib/mail.js");
+    const { createVerificationCode, invalidateVerificationCode, verifyCode } =
+      await import("../lib/verification.js");
+    (sendMail as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      sent: false,
+      ...(reason ? { reason } : {}),
+    });
+    (createVerificationCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "unsent-case-delete-code",
+    );
+    (invalidateVerificationCode as ReturnType<typeof vi.fn>).mockClear();
+    (verifyCode as ReturnType<typeof vi.fn>).mockClear();
+
+    const c = await insertCanonical();
+    const init = await request(appMod.default)
+      .post("/api/cases/delete-initiate")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ adminPin: "testpin999", caseIds: [c] });
+
+    expect(init.status).toBe(502);
+    expect(init.body.data?.deleteSessionToken).toBeUndefined();
+    expect(JSON.stringify(init.body)).not.toMatch(
+      /BadCredentials|provider-internal|Invalid login|535[-\s]/i,
+    );
+    expect(invalidateVerificationCode).toHaveBeenCalledWith(
+      "unsent-case-delete-code",
+    );
+
+    const deletion = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ caseIds: [c], smsOtpCode: "123456" });
+    expect(deletion.status).toBe(403);
+    expect(verifyCode).not.toHaveBeenCalled();
+  });
+
+  it("invalidates the persisted code when the mail sender throws without exposing its diagnostic", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const { sendMail } = await import("../lib/mail.js");
+    const { createVerificationCode, invalidateVerificationCode } =
+      await import("../lib/verification.js");
+    (sendMail as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("BadCredentials SMTP_PASS=private-provider-value"),
+    );
+    (createVerificationCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "thrown-send-unsent-code",
+    );
+    (invalidateVerificationCode as ReturnType<typeof vi.fn>).mockClear();
+
+    const c = await insertCanonical();
+    const init = await request(appMod.default)
+      .post("/api/cases/delete-initiate")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ adminPin: "testpin999", caseIds: [c] });
+
+    expect(init.status).toBe(502);
+    expect(init.body.data?.deleteSessionToken).toBeUndefined();
+    expect(JSON.stringify(init.body)).not.toMatch(
+      /BadCredentials|SMTP_PASS|private-provider-value/i,
+    );
+    expect(invalidateVerificationCode).toHaveBeenCalledWith(
+      "thrown-send-unsent-code",
+    );
   });
 
   // ── POST /api/cases/bulk-delete security gate ──────────────────────────────

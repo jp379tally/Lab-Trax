@@ -6,6 +6,7 @@ import {
   getMaterialSubtypes,
   getCaseTypeLabel,
   getSubtypeLabel,
+  getPricingKey,
   deriveCaseHierarchy,
   encodeRestorationSubtype,
   encodeCustomToken,
@@ -157,6 +158,7 @@ describe("getSubtypes / getMaterialSubtypes", () => {
     expect(subs).toContain("crown_and_bridge");
     expect(subs).toContain("implant");
     expect(subs).toContain("temporaries");
+    expect(subs).toContain("diagnostic_wax_up");
   });
 
   it("ortho subtypes include night_guards and retainers", () => {
@@ -194,6 +196,18 @@ describe("deriveCaseHierarchy", () => {
     expect(h.caseType).toBe("restorative");
     expect(h.subtype).toBe("crown_and_bridge");
     expect(h.materialSubtype).toBe("zirconia");
+  });
+
+  it("identifies Diagnostic Wax Up as a material-free restorative subtype", () => {
+    const hierarchy = deriveCaseHierarchy("Diagnostic Wax Up", null, "Diagnostic Wax Up");
+    expect(hierarchy).toEqual({
+      caseType: "restorative",
+      subtype: "diagnostic_wax_up",
+      materialSubtype: null,
+    });
+    expect(encodeRestorationSubtype(hierarchy)).toBe("restorative/diagnostic_wax_up");
+    expect(getPricingKey(hierarchy)).toBeNull();
+    expect(getMaterialSubtypes("restorative", "diagnostic_wax_up")).toEqual([]);
   });
 
   it("infers implant from restorationType=Implant Crown", () => {

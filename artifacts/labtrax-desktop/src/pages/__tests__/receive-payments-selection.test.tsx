@@ -457,12 +457,61 @@ describe("Receive Payments selection", () => {
     try {
       renderPage();
       await loaded();
-      const ada = screen.getByRole("checkbox", { name: "Select Dr. Ada Multi at Multi Dental" });
-      const ben = screen.getByRole("checkbox", { name: "Select Dr. Ben Multi at Multi Dental" });
-      fireEvent.click(ada);
-      fireEvent.click(ben);
+      const ada = () => screen.getByRole("checkbox", { name: "Select Dr. Ada Multi at Multi Dental" });
+      const ben = () => screen.getByRole("checkbox", { name: "Select Dr. Ben Multi at Multi Dental" });
+      const parent = () => screen.getByRole("checkbox", { name: "Select all doctors at Multi Dental" });
+      expect(rowIds()).toEqual([
+        "beta",
+        "alpha",
+        "gamma",
+        "multi",
+        "doctor:multi:profile-multi-ada",
+        "doctor:multi:profile-multi-ben",
+      ]);
+      fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "name" } });
+      expect(rowIds()).toEqual([
+        "alpha",
+        "beta",
+        "multi",
+        "doctor:multi:profile-multi-ada",
+        "doctor:multi:profile-multi-ben",
+        "gamma",
+      ]);
+      fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "balance" } });
+      const adaRow = screen.getByTestId("receive-customer-row-doctor:multi:profile-multi-ada");
+      expect(within(adaRow).getAllByText("Dr. Ada Multi")).toHaveLength(2);
+      const adaCells = adaRow.querySelectorAll("td");
+      expect(adaCells[1]?.querySelector(".tabular-nums")).toHaveTextContent("$30.00");
+      expect(adaCells[3]).toBeEmptyDOMElement();
+      expect(screen.getByTestId("receive-customer-row-multi").querySelectorAll("td")[3]).toBeEmptyDOMElement();
+
+      // Search keeps the practice as context but filtered select-all picks
+      // only the matching doctor account.
+      fireEvent.change(screen.getByLabelText("Search customers"), { target: { value: "Dr. Ada Multi" } });
+      expect(rowIds()).toEqual(["multi", "doctor:multi:profile-multi-ada"]);
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select all shown customers" }));
+      expect(ada()).toBeChecked();
+      expect(parent()).toHaveAttribute("aria-checked", "mixed");
+      expectCards("1", "1", "$30.00");
+      fireEvent.change(screen.getByLabelText("Search customers"), { target: { value: "" } });
+
+      // The parent selects and clears all payable doctor accounts, never the
+      // practice-wide account.
+      fireEvent.click(parent());
+      expect(ada()).toBeChecked();
+      expect(ben()).toBeChecked();
+      expect(parent()).toBeChecked();
       expectCards("2", "2", "$55.00");
-      expect(screen.getByRole("checkbox", { name: "Select Multi Dental" })).not.toBeChecked();
+      fireEvent.click(parent());
+      expect(ada()).not.toBeChecked();
+      expect(ben()).not.toBeChecked();
+      expectCards("0", "0", "$0.00");
+
+      fireEvent.click(ada());
+      expect(parent()).toHaveAttribute("aria-checked", "mixed");
+      fireEvent.click(ben());
+      expectCards("2", "2", "$55.00");
+      expect(parent()).toBeChecked();
       fireEvent.change(screen.getByLabelText("Payment Method"), { target: { value: "cash" } });
 
       await startReceiving();

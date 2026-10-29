@@ -10207,6 +10207,13 @@ components:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Due date explicitly extracted from the prescription; separate from lab scheduling.
+        aiIntakeReviewedDates:
+          type: boolean
+          enum: [true]
+          description: >
+            True when an AI intake review explicitly supplied its received,
+            lab due, and eligible prescription dates. The server persists the
+            reviewed lab schedule without applying a second current-date cap.
         providerContactSnapshot:
           type: object
           additionalProperties: true

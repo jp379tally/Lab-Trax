@@ -1,3 +1,4 @@
+import { createBackupContinuation, getBackupContinuation, type BackupContinuation } from "@/lib/backup-continuation";
 import {
   followManualBackup,
   type ManualBackupStatus,
@@ -44,6 +45,8 @@ import {
 } from "@/lib/local-backup-progress";
 import {
   applyManualBackupLiveStatus,
+  clearManualBackupIdentity,
+  clearUnavailableManualBackup,
   getManualBackupProgress,
   loadManualBackupIdentity,
   resetManualBackupProgress,
@@ -2569,6 +2572,7 @@ interface BackupScheduleData {
   /** The independent off-site protection job on the deployed server. */
   offsite?: {
     databaseProtection?: {
+      destination?: "onedrive" | "google-drive";
       mode: "incremental-storage-fresh-export" | "incremental-records-and-media";
       scope: "production-database-and-media";
       coverage: "complete" | "partial";
@@ -2943,8 +2947,9 @@ function PlatformBackupPanel() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   function backupSourceHeaders(): Record<string, string> {
-    return scheduleQuery.data?.sourceEnvironment
-      ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {};
+    // App users always request production. The server rejects a mismatched
+    // binding; changing destinations can never select a development database.
+    return { "X-LabTrax-Backup-Source": "production" };
   }
   const scheduledBackupProgress = useSyncExternalStore(
     subscribeScheduledLocalBackupProgress,
@@ -2957,8 +2962,9 @@ function PlatformBackupPanel() {
     getManualBackupProgress,
   );
   const [scheduledElapsedSeconds, setScheduledElapsedSeconds] = useState(0);
-  const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
-  const [nowArchiveKind, setNowArchiveKind] = useState<"full" | "database-only">("full");
+  const [nowDest, setNowDest] = useState<BackupDestinationType>(() =>
+    (user?.id ? loadManualBackupIdentity(user.id)?.destination : null) ?? "local");
+  const nowArchiveKind = "full" as "full" | "database-only";
   const [nowPath, setNowPath] = useState("");
   const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean; partialFailure?: boolean; warnings?: string | null; warningMessage?: string | null; databaseOnly?: boolean } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
@@ -2996,14 +3002,18 @@ function PlatformBackupPanel() {
   });
 
   useEffect(() => {
-    if (!user?.id || manualProgress.runId) return;
+    if (!user?.id) return;
     const identity = loadManualBackupIdentity(user.id);
+    if (identity && (!manualProgress.runId || manualProgress.runId === identity.runId)) {
+      setNowDest(identity.destination);
+      setNowPath(identity.path);
+    }
+    if (manualProgress.runId) return;
     const identityKey = identity ? `${user.id}:${identity.runId}` : null;
     if (!identity || !identityKey || rehydratedManualRunRef.current === identityKey) return;
     rehydratedManualRunRef.current = identityKey;
     setManualReconnectUnconfirmed(true);
     setNowDest(identity.destination);
-    setNowArchiveKind(identity.archiveKind);
     setNowPath(identity.path);
     resetManualBackupProgress(identity.runId, "Reconnecting to your manual backup", identity.startedAt);
     void apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
@@ -3014,8 +3024,8 @@ function PlatformBackupPanel() {
       setManualReconnectUnconfirmed(false);
     }).catch(() => {
       updateManualBackupProgress({
-        state: "stale",
-        error: "Could not reconnect to this backup. Check Recent backups before starting another run.",
+        state: "running",
+        error: "Could not reconnect to this backup. Sign in again if needed and retry reconnection. Check Recent backups before starting another run.",
       });
     });
   }, [user?.id, manualProgress.runId]);
@@ -3149,8 +3159,9 @@ function PlatformBackupPanel() {
     runId: string,
     archiveKind: "full" | "database-only",
     browserSaveHandle?: BrowserBackupSaveHandle,
+    continuation?: BackupContinuation,
   ) {
-    const response = await apiFetchDownloadResponse(
+    const response = continuation ? await continuation.download() : await apiFetchDownloadResponse(
       `/admin/backup/download/${encodeURIComponent(runId)}`,
       { method: "GET", headers: backupSourceHeaders() },
     );
@@ -3187,7 +3198,10 @@ function PlatformBackupPanel() {
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       viaBrowser = true;
     }
-    const report = await apiFetch<{ rejected?: boolean; warning?: string; completedAt?: string }>(
+    const reportRequest = continuation
+      ? async (_path: string, options: RequestInit) => continuation.report<{ rejected?: boolean; warning?: string; completedAt?: string }>(JSON.parse(options.body as string))
+      : apiFetch<{ rejected?: boolean; warning?: string; completedAt?: string }>;
+    const report = await reportRequest(
       "/admin/backup/desktop-run-report",
       {
         method: "POST",
@@ -3228,6 +3242,14 @@ function PlatformBackupPanel() {
             ? "Preparing, uploading and verifying the encrypted archive in Google Drive"
             : "Generating and downloading the full archive";
       const runId = crypto.randomUUID();
+      let continuation: BackupContinuation | undefined;
+      const startRun = async (path: string, options: RequestInit) => {
+        const acknowledgement = await apiFetch<Awaited<ReturnType<Parameters<typeof followManualBackup>[1]>> & { continuationToken?: string }>(path, options);
+        if (acknowledgement.continuationToken) {
+          continuation = createBackupContinuation(runId, acknowledgement.continuationToken, backupSourceHeaders(), user?.id);
+        }
+        return acknowledgement;
+      };
       resetManualBackupProgress(runId, initialPhase, startedAt);
       if (user?.id) {
         saveManualBackupIdentity(user.id, {
@@ -3242,9 +3264,9 @@ function PlatformBackupPanel() {
       if (nowDest === "onedrive" || nowDest === "google-drive") {
         const provider = nowDest === "onedrive" ? "OneDrive" : "Google Drive";
         let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
-        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        const readStatus = () => pendingStatus ??= (continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
           `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
-        ).finally(() => { pendingStatus = null; });
+        )).finally(() => { pendingStatus = null; });
         const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
           ...status,
           state: status.state as LocalBackupLiveStatus["state"],
@@ -3257,7 +3279,7 @@ function PlatformBackupPanel() {
         try {
         const res = await followManualBackup(
           runId,
-          () => apiFetch("/admin/backup/run", {
+          () => startRun("/admin/backup/run", {
             method: "POST",
             headers: backupSourceHeaders(),
             body: JSON.stringify({ destination: nowDest, runId, respondAsync: true,
@@ -3279,9 +3301,9 @@ function PlatformBackupPanel() {
       }
       if (isNetworkSftp) {
         let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
-        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        const readStatus = () => pendingStatus ??= (continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
           `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
-        ).finally(() => { pendingStatus = null; });
+        )).finally(() => { pendingStatus = null; });
         const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
           ...status,
           state: status.state as LocalBackupLiveStatus["state"],
@@ -3296,7 +3318,7 @@ function PlatformBackupPanel() {
         try {
           const res = await followManualBackup(
             runId,
-            () => apiFetch("/admin/backup/run", {
+            () => startRun("/admin/backup/run", {
               method: "POST",
               body: JSON.stringify({ destination: nowDest, path: nowPath.trim(), runId, respondAsync: true }),
               headers: backupSourceHeaders(),
@@ -3335,7 +3357,7 @@ function PlatformBackupPanel() {
         return { size: result.sizeBytes, completedAt: result.completedAt, fileName: result.fileName, savedTo: result.path, viaBrowser: false,
           partialFailure: result.partialFailure, warnings: result.warnings };
       }
-      const readStatus = (id: string) => apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+      const readStatus = (id: string) => continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
         `/admin/backup/status/${encodeURIComponent(id)}`,
         { headers: backupSourceHeaders() },
       );
@@ -3347,7 +3369,7 @@ function PlatformBackupPanel() {
       });
       const stopWatching = watchBackupLiveStatus(runId, readStatus, updateStatus);
       try {
-        await apiFetch("/admin/backup/run", {
+        await startRun("/admin/backup/run", {
           method: "POST",
           headers: backupSourceHeaders(),
           body: JSON.stringify({
@@ -3357,11 +3379,11 @@ function PlatformBackupPanel() {
             respondAsync: true,
           }),
         });
-        const until = Date.now() + 2 * 60 * 60 * 1000;
+        const until = Date.now() + (6 * 60 + 5) * 60 * 1000;
         while (Date.now() < until) {
           const status = await readStatus(runId);
           updateStatus(status);
-          if (status.delivery) return deliverStagedManualBackup(runId, nowArchiveKind, browserSaveHandle);
+          if (status.delivery) return deliverStagedManualBackup(runId, nowArchiveKind, browserSaveHandle, continuation);
           if (status.state === "cancelled") throw new Error(status.error ?? "Backup cancelled. Incomplete output was discarded.");
           if (status.state === "failed" || status.state === "stale") {
             throw new Error(status.error ?? "Backup generation failed. Check Recent backups.");
@@ -3399,14 +3421,18 @@ function PlatformBackupPanel() {
         updateManualBackupProgress({ state: "running", error: err.message || "Download interrupted. Retry from the same backup run." });
         return;
       }
-      updateManualBackupProgress({
-        state: "failed",
-        phase: "backup failed",
-        error: err.message || "Backup failed.",
-        liveStatus: getManualBackupProgress().liveStatus
-          ? { ...getManualBackupProgress().liveStatus!, state: "failed", phase: "backup failed" }
-          : null,
-      });
+      const httpStatus = (err as Error & { status?: number }).status;
+      const connectionUncertain = err instanceof TypeError || [401, 403, 502, 503, 504].includes(httpStatus ?? 0);
+      if ((current.liveStatus && !["failed", "stale", "cancelled"].includes(current.liveStatus.state)) ||
+          (!current.liveStatus && connectionUncertain)) {
+        // A lost session or network error cannot establish server job failure.
+        setManualReconnectUnconfirmed(true);
+        updateManualBackupProgress({ state: "running", error:
+          "Live progress is unavailable. Sign in again if needed, then retry backup reconnection. Do not start another backup; the server run may still be active." });
+        return;
+      }
+      updateManualBackupProgress({ state: (current.liveStatus?.state ?? "failed") as "failed" | "stale" | "cancelled",
+        error: err.message || "Backup failed." });
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
     },
   });
@@ -3427,10 +3453,19 @@ function PlatformBackupPanel() {
     if (manualProgress.state !== "running" || !manualProgress.runId || backupNowMutation.isPending) return;
     return watchBackupLiveStatus(
       manualProgress.runId,
-      (runId) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
+      (runId) => getBackupContinuation(runId, user?.id)?.status<LocalBackupLiveStatus>() ?? apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
         headers: backupSourceHeaders(),
       }),
-      applyManualBackupLiveStatus,
+      (status) => {
+        applyManualBackupLiveStatus(status);
+        setManualReconnectUnconfirmed(false);
+      },
+      1200,
+      () => {
+        setManualReconnectUnconfirmed(true);
+        updateManualBackupProgress({ error:
+          "Live progress is unavailable. Sign in again if needed, then retry backup reconnection. The backup may still be running; do not start a duplicate." });
+      },
     );
   }, [manualProgress.runId, manualProgress.state, backupNowMutation.isPending]);
 
@@ -3439,7 +3474,12 @@ function PlatformBackupPanel() {
     setResumeDeliveryPending(true);
     setBackupError(null);
     try {
-      const result = await deliverStagedManualBackup(manualProgress.runId, nowArchiveKind);
+      const authorization = await apiFetch<{ continuationToken: string }>(
+        "/admin/backup/continuation/" + encodeURIComponent(manualProgress.runId),
+        { method: "POST", headers: backupSourceHeaders() },
+      );
+      const continuation = createBackupContinuation(manualProgress.runId, authorization.continuationToken, backupSourceHeaders(), user?.id);
+      const result = await deliverStagedManualBackup(manualProgress.runId, nowArchiveKind, undefined, continuation);
       const completed = { ...result, databaseOnly: nowArchiveKind === "database-only" };
       setBackupResult(completed);
       updateManualBackupProgress({
@@ -3457,11 +3497,31 @@ function PlatformBackupPanel() {
     }
   }
 
+  function releaseUnavailableManualRun() {
+    if (!user?.id) return;
+    clearUnavailableManualBackup(user.id);
+    setManualReconnectUnconfirmed(false);
+    setBackupResult(null);
+    queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+  }
+
+  useEffect(() => {
+    if (user?.id && ["completed", "failed", "cancelled", "stale"].includes(manualProgress.state)) {
+      clearManualBackupIdentity(user.id);
+    }
+  }, [user?.id, manualProgress.state]);
+
   async function retryManualBackupReconnect() {
     const runId = manualProgress.runId;
     if (!runId || !user?.id) return;
     setManualReconnectUnconfirmed(true);
     try {
+      const reconnected = await apiFetch<{ runId: string; state: string }>(
+        `/admin/backup/reconnect/${encodeURIComponent(runId)}`,
+        { method: "POST", headers: backupSourceHeaders() },
+      );
+      if (reconnected.runId !== runId) throw new Error("The server returned a different backup run.");
+      if (reconnected.state === "unavailable") { releaseUnavailableManualRun(); return; }
       const status = await apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
         `/admin/backup/status/${encodeURIComponent(runId)}`,
         { headers: backupSourceHeaders() },
@@ -3480,10 +3540,19 @@ function PlatformBackupPanel() {
     if (!runId || cancelPending || manualProgress.state !== "running") return;
     setCancelPending(true);
     try {
-      await apiFetch(`/admin/backup/cancel/${encodeURIComponent(runId)}`, {
+      const cancelled = await apiFetch<{ runId: string; state: string; status?: LocalBackupLiveStatus }>(`/admin/backup/cancel/${encodeURIComponent(runId)}`, {
         method: "POST",
         headers: backupSourceHeaders(),
       });
+      if (cancelled.runId !== runId) throw new Error("The server returned a different backup run.");
+      if (cancelled.state === "unavailable") { releaseUnavailableManualRun(); return; }
+      if (cancelled.state !== "cancelled") {
+        if (!cancelled.status) throw new Error("The server did not confirm cancellation. Check Recent Backups before starting another backup.");
+        applyManualBackupLiveStatus(cancelled.status);
+        setManualReconnectUnconfirmed(false);
+        queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+        return;
+      }
       updateManualBackupProgress({
         state: "cancelled",
         phase: "backup cancelled",
@@ -3508,6 +3577,10 @@ function PlatformBackupPanel() {
 
   const choosingBackupFile = useRef(false);
   async function runManualBackup() {
+    if (scheduleQuery.data?.sourceEnvironment !== "production") {
+      setBackupError("Production backups are unavailable on this server. Open the production LabTrax app before starting a backup.");
+      return;
+    }
     if (user?.id && !manualProgress.runId && loadManualBackupIdentity(user.id)) return;
     if (backupNowMutation.isPending || getManualBackupProgress().state === "running" ||
         choosingBackupFile.current || gate.blocked) return;
@@ -3552,11 +3625,13 @@ function PlatformBackupPanel() {
 
   const saveScheduleMutation = useMutation({
     mutationFn: () => {
+      if (scheduleQuery.data?.sourceEnvironment !== "production") {
+        throw new Error("Open the production LabTrax app to configure production backups.");
+      }
       const parsed = parseIntervalKey(schedIntervalKey) ?? { interval: 1, unit: "hours" as BackupIntervalUnit };
       return apiFetch("/admin/backup/schedule", {
         method: "PUT",
-        headers: scheduleQuery.data?.sourceEnvironment
-          ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {},
+        headers: backupSourceHeaders(),
         body: JSON.stringify({
           interval: parsed.interval,
           unit: parsed.unit,
@@ -3999,10 +4074,10 @@ function PlatformBackupPanel() {
 
       {scheduleQuery.data?.offsite?.databaseProtection && (
         <section className="rounded-md border bg-card p-4 space-y-2" data-testid="database-protection-status">
-          <h3 className="font-semibold text-sm">Production records and media · OneDrive · every 15 minutes</h3>
+          <h3 className="font-semibold text-sm">Production records and media · {scheduleQuery.data.offsite.databaseProtection.destination === "google-drive" ? "Google Drive" : "OneDrive"} · every {scheduleQuery.data.offsite.intervalMinutes ?? 15} minutes</h3>
           <p className="text-xs text-muted-foreground">
             {scheduleQuery.data.offsite.databaseProtection.mode === "incremental-records-and-media"
-              ? "Protects changed records and files after a verified baseline, retaining previous versions."
+              ? "The first production OneDrive backup establishes the incremental baseline. Later 15-minute runs check saved content and upload only new or changed records and files, retaining previous versions and recording deletions."
               : "Fresh consistent database exports plus encrypted content reuse for pictures, attachments, videos and other production files."}
             No development database or application source is uploaded. A long verification skips overlapping intervals.
           </p>
@@ -4169,9 +4244,9 @@ function PlatformBackupPanel() {
         </div>
         <p className="break-words text-xs text-muted-foreground" data-testid="backup-schedule-cadence-guidance">
           {scheduleQuery.data?.sourceEnvironment === "production"
-            ? "Choose the destination and interval for production backups. Google Drive and OneDrive run on the server and reuse verified encrypted records and media. Local folder / USB uses LabTrax Desktop on the selected computer; network server uses SFTP. A busy run finishes before one coalesced catch-up starts."
+            ? "Choose the destination and interval for production backups. Scheduled runs first verify the last saved recovery point, then upload only new or changed records and original files. Google Drive and OneDrive run on the server and reuse verified encrypted records and media. Local folder / USB uses LabTrax Desktop on the selected computer; network server uses SFTP. A busy run finishes before one coalesced catch-up starts."
             : scheduleQuery.data?.sourceEnvironment === "development"
-              ? "This schedule protects the Development database only. Choose its destination and interval independently of Production; Development files stay in their separate backup folder."
+              ? "Production backups are unavailable on this development server. Open the live production LabTrax app to configure backups; application code is saved separately in GitHub."
               : "The server has not confirmed which database this schedule would affect. Confirm the environment before changing its cadence."}
           {scheduleQuery.data?.sourceEnvironment === "production" && (
             <> Only a complete, authenticated database-and-media recovery point advances complete protection. Missing-file warnings remain visible.</>
@@ -4449,6 +4524,7 @@ function PlatformBackupPanel() {
             onClick={() => saveScheduleMutation.mutate()}
             disabled={
               saveScheduleMutation.isPending ||
+              scheduleQuery.data?.sourceEnvironment !== "production" ||
               scheduleQuery.isLoading ||
               gate.blocked ||
               (schedEnabled && needsPath(schedDest) && !schedPath.trim()) ||
@@ -4529,14 +4605,14 @@ function PlatformBackupPanel() {
       <div data-testid="backup-manual-section" className="min-w-0 border border-border rounded-lg p-3.5 space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <ShieldCheck size={14} className="text-muted-foreground" />
-          <h3 className="min-w-0 break-words text-base font-bold">Manual Backup</h3>
+          <h3 className="min-w-0 break-words text-base font-bold">Production Data Backup</h3>
           <span className="ml-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold text-success">
             <ShieldCheck size={11} />
             Encrypted archive
           </span>
         </div>
         <p className="break-words text-xs text-muted-foreground">
-          Creates a full backup ZIP containing all cases, patients, doctors, invoices, payments, bank transactions, pricing, and media attachments.
+          Saves your live lab records and original files: cases, notes, patients, doctors, invoices, payments, pictures, videos, documents, and other lab uploads. Application code and UI changes are managed separately in GitHub.
         </p>
 
         {scheduledBackupProgress && !gate.blocked && (
@@ -4564,27 +4640,9 @@ function PlatformBackupPanel() {
             )}
           </div>
         )}
-        <label className="block text-xs font-medium">
-          Backup contents
-          <select aria-label="Backup contents" value={nowArchiveKind}
-            disabled={manualBackupRunning}
-            onChange={(event) => { setNowArchiveKind(event.target.value as "full" | "database-only"); setBackupResult(null); }}
-            className="mt-1 block h-9 w-full rounded-md border border-border bg-background px-2">
-            <option value="full">Database and readable files — report missing originals</option>
-            <option value="database-only">Database only — no media; not complete recovery</option>
-          </select>
-        </label>
-        {nowArchiveKind === "full" && (
-          <p role="note" className="break-words text-xs text-muted-foreground">
-            Unavailable originals are listed in the encrypted archive. A backup with missing files completes with warnings and is not a complete recovery point.
-          </p>
-        )}
-        {nowArchiveKind === "database-only" && (
-          <p role="note" className="break-words text-xs text-amber-700">
-            Preserves database records and file references, but excludes file bytes. Missing originals remain unresolved.
-            This does not establish complete recovery or reset complete-backup freshness. Normal in-app restore refuses database-only archives.
-          </p>
-        )}
+        <p role="note" className="break-words text-xs text-muted-foreground">
+          Every backup includes production records and original pictures, videos and files. Large initial backups can take several hours. Missing originals are reported and make the backup incomplete.
+        </p>
         {backupResult?.databaseOnly && (
           <Alert tone="warning">Database-only backup delivered. Media is excluded; complete recovery is not verified.</Alert>
         )}
@@ -4645,7 +4703,7 @@ function PlatformBackupPanel() {
         )}
         {backupResult && (
           <Alert tone={backupResult.partialFailure ? "warning" : "success"}>
-            {backupResult.databaseOnly ? "Database-only backup delivered; media excluded." : backupResult.partialFailure ? "Backup completed with warnings" : "Backup complete."} —{" "}
+            {backupResult.databaseOnly ? "Database-only backup delivered; media excluded." : backupResult.partialFailure ? "Incomplete backup — original files are missing" : "Backup complete."} —{" "}
             {formatBackupSize(backupResult.size)}{" "}
             {backupResult.viaBrowser ? (
               <>
@@ -4692,6 +4750,7 @@ function PlatformBackupPanel() {
                     name="now-destination"
                     value={d}
                     checked={nowDest === d}
+                    disabled={manualBackupRunning}
                     onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
                     className="shrink-0 accent-primary"
                   />
@@ -4769,6 +4828,7 @@ function PlatformBackupPanel() {
           type="button"
           onClick={() => void runManualBackup()}
           disabled={
+            scheduleQuery.data?.sourceEnvironment !== "production" ||
             manualBackupRunning ||
             manualReconnectUnconfirmed ||
             (!!user?.id && !manualProgress.runId && !!loadManualBackupIdentity(user.id)) ||

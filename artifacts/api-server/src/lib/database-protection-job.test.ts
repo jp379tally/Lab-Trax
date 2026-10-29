@@ -127,6 +127,29 @@ describe("production database job coordination (synthetic metadata)", () => {
     });
     fake.latest.mockReset().mockResolvedValue({ root: { point: "synthetic-point" } });
   });
+  it("lets a verified operator source seed the same production OneDrive namespace outside the deployment", async () => {
+    fake.production = false;
+    vi.stubEnv("PROD_DATABASE_URL", process.env.DATABASE_URL!);
+    try {
+      const result = await runDatabaseProtectionJob({ codec, capture: fake.capture, destination: "onedrive",
+        externalProductionSourceRevision: "a".repeat(40), trigger: "manual" });
+      expect(result.state).toBe("verified");
+      expect(fake.verify).toHaveBeenCalledOnce();
+      const folders = vi.mocked(databaseOneDriveStore).mock.calls.map(call => call[0]);
+      expect(folders).toEqual([
+        "Apps/LabTrax Backups/production-content-v1/" + databaseProtectionSource(),
+        "Apps/LabTrax Backups/production-content-v1/" + databaseProtectionSource() + "/database",
+      ]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it("rejects an operator attempt against a different database before provider calls", async () => {
+    fake.production = false; vi.stubEnv("PROD_DATABASE_URL", "postgresql://synthetic.invalid/other_source");
+    try {
+      await expect(runDatabaseProtectionJob({ codec, capture: fake.capture, destination: "onedrive",
+        externalProductionSourceRevision: "a".repeat(40) })).rejects.toThrow(/production binding/);
+      expect(databaseOneDriveStore).not.toHaveBeenCalled(); expect(fake.verify).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("keeps legacy protection until a new destination is explicitly saved", async () => {
     fake.settings.set("backup_schedule_destination", "google-drive");
     fake.settings.set("backup_schedule_enabled", "false");
@@ -150,6 +173,12 @@ describe("production database job coordination (synthetic metadata)", () => {
     expect(databaseOneDriveStore).not.toHaveBeenCalled();
     expect(fake.saved).toBe(previousOneDrive);
     expect(JSON.parse(fake.settings.get("backup_production_content_protection_v1:google-drive")!).state).toBe("verified");
+  });
+  it("an explicit manual archive still captures a baseline after a recent verified interval", async () => {
+    await runDatabaseProtectionJob({ codec, capture: fake.capture, destination: "onedrive" });
+    fake.protect.mockClear();
+    await runDatabaseProtectionJob({ codec, capture: fake.capture, trigger: "manual", destination: "onedrive" });
+    expect(fake.protect).toHaveBeenCalledTimes(1);
   });
   it("honors a five-minute interval instead of suppressing the next point for fifteen minutes", async () => {
     vi.useFakeTimers();

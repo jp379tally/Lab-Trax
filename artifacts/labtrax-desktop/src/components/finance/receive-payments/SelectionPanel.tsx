@@ -118,6 +118,15 @@ export function SelectionPanel({
     () => customers.filter((customer) => customerMatches(customer, filters)),
     [customers, filters],
   );
+  const matchingCustomerRows = useMemo(() => {
+    const visible = new Map(matching.map((customer) => [customer.id, customer]));
+    for (const customer of matching) {
+      if (!customer.isDoctorAccount || !customer.practiceOrganizationId) continue;
+      const practice = customersById.get(customer.practiceOrganizationId);
+      if (practice && !practice.isDoctorAccount) visible.set(practice.id, practice);
+    }
+    return sortCustomers([...visible.values()], sort);
+  }, [matching, customersById, sort]);
   const focusCustomer =
     tab === "invoices" && view.invoiceCustomerId ? customersById.get(view.invoiceCustomerId) ?? null : null;
   const active = filtersActive(filters);
@@ -201,7 +210,8 @@ export function SelectionPanel({
         if (!matching.length) return <EmptyState actions={clearButton}>No customers match these filters.</EmptyState>;
         return (
           <CustomersTab
-            rows={sortCustomers(matching, sort)}
+            rows={matchingCustomerRows}
+            allCustomers={customers}
             selection={selection}
             sort={sort}
             onSort={onSort}

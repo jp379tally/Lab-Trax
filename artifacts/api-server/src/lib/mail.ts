@@ -166,14 +166,12 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
   const cfg = getMailerConfig();
   if (!cfg) {
     logger.warn(
-      { to: opts.to, subject: opts.subject },
       "[mail] SMTP not configured; skipping send"
     );
     return { sent: false, reason: "smtp_not_configured" };
   }
   if (isReservedEmailDomain(opts.to)) {
     logger.warn(
-      { to: opts.to, subject: opts.subject },
       "[mail] recipient is a reserved/undeliverable test domain; skipping send"
     );
     return { sent: false, reason: "reserved_domain" };
@@ -181,7 +179,6 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
   const deliverability = await resolveDomainDeliverability(opts.to);
   if (deliverability === "undeliverable") {
     logger.warn(
-      { to: opts.to, subject: opts.subject },
       "[mail] recipient domain has no MX/A record; skipping send"
     );
     return { sent: false, reason: "undeliverable_domain" };
@@ -190,7 +187,6 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
     // The DNS lookup itself failed (runtime restriction / transient DNS
     // outage). SMTP is the authority for real domains — proceed to send.
     logger.warn(
-      { to: opts.to, subject: opts.subject },
       "[mail] MX/A preflight lookup errored; proceeding to SMTP"
     );
   }
@@ -214,12 +210,7 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
     const classified = classifySmtpError(err);
     logger.error(
       {
-        err: err?.message || String(err),
         smtpCategory: classified.category,
-        smtpCode: classified.code,
-        smtpResponseCode: classified.responseCode,
-        to: opts.to,
-        subject: opts.subject,
       },
       "[mail] failed to send"
     );

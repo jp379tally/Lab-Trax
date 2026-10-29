@@ -1,3 +1,4 @@
+import { assertExternalProductionBinding } from "./external-production-backup";
 import { pool } from "@workspace/db";
 import { capturePostgresRecordChanges, recordInventoryHash, recordInventoryReferences,
   type RecordCapture, type RecordInventory } from "./postgres-record-delta";
@@ -30,6 +31,10 @@ import {
 } from "./production-media-journal";
 
 export const COMPLETE_BACKUP_VERSION = 2;
+// Bump this contract only when recoveryReferences changes semantics. UI/code
+// releases must not force unchanged production records to be exported again.
+export const PRODUCTION_RECORD_REFERENCE_PROTOCOL = createHash("sha256")
+  .update("labtrax-production-record-references-v1").digest("hex");
 export const COMPLETE_PRODUCTION_KIND = "complete-production";
 export const COMPLETE_DEVELOPMENT_KIND = "complete-non-production";
 const DESKTOP_RELEASE_IDENTITY_PATH = "desktop-installer/release-identity.json";
@@ -195,6 +200,8 @@ export function includedBackupStagingObjectSizes(objects: readonly BackupStaging
 export interface CompleteRecoveryManifest {
   coverageVersion: number;
   sourceEnvironment: "production" | "non-production";
+  /** Lab records and originals; application installers are managed separately. */
+  backupScope?: "production-data";
   sourceRevision?: string | null;
   releaseIdentity?: DesktopReleaseIdentity;
   sourceDatabase: string;
@@ -426,9 +433,12 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
   dump: (snapshot: string) => Promise<DatabaseDumpSource> | DatabaseDumpSource,
   signal?: AbortSignal,
   options: {
+    externalProductionSourceRevision?: string;
     archiveDestination?: CompleteArchiveDestination;
     allowMissingReferences?: boolean;
     productionDataOnly?: boolean;
+    /** Seed changed-record protection while retaining a standalone full archive. */
+    recordsWithFullArchive?: boolean;
     productionJournalAfterPosition?: string | null;
     /** Import the same exported snapshot used by the scheduled pg_dump. */
     snapshot?: string;
@@ -438,11 +448,15 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     records?: { previous: RecordInventory | null; schemaSql: (snapshot: string) => Promise<string> };
   } = {} as { streamDatabaseDump?: Stream },
 ): Promise<CompleteBackupCaptured<Stream>> {
+  const externalRevision = options.externalProductionSourceRevision;
+  const externalProduction = assertExternalProductionBinding(externalRevision);
+  const productionSource = isProductionDeployment() || externalProduction;
+  const captureRevision = () => externalRevision ? Promise.resolve(externalRevision) : readRunningSourceRevision();
   const client = await pool.connect();
   let dumpScratch: string | undefined;
   let ownMediaLock = false;
   try {
-    if (options.records && (!options.productionDataOnly || !options.snapshot || !options.streamDatabaseDump)) {
+    if (options.records && (!options.productionDataOnly || !options.snapshot || (!options.streamDatabaseDump && !options.recordsWithFullArchive))) {
       throw new Error("Record-change capture requires the scheduled production snapshot path.");
     }
     if (!options.snapshot) { await lockMediaCheckpoint(client); ownMediaLock = true; }
@@ -463,7 +477,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const snapshotToken = options.snapshot ?? boundary.snapshot;
     if (!snapshotToken) throw new Error("PostgreSQL did not provide a consistent backup snapshot.");
     let fingerprintSha256: string | null = null;
-    if (isProductionDeployment()) {
+    if (productionSource) {
       fingerprintSha256 = await verifyProductionBackupSource(client);
     }
     let productionMediaJournal: CompleteRecoveryManifest["productionMediaJournal"];
@@ -517,8 +531,8 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
             previous: options.records.previous, schemaSql: ()=>options.records!.schemaSql(snapshotToken), signal,
             references: (table, row) => [...recoveryReferences(table, row)],
             // Reconcile historical references when the deployed extractor changes.
-            referenceProtocol:createHash("sha256").update(`record-references-v1:${isProductionDeployment()
-              ? await readRunningSourceRevision() : "isolated-record-capture-v1"}`).digest("hex"),
+            referenceProtocol: productionSource ? PRODUCTION_RECORD_REFERENCE_PROTOCOL
+              : createHash("sha256").update("record-references-v1:isolated-record-capture-v1").digest("hex"),
           });
           const tables = recordCapture.inventory.tables.map(table => ({schema:table.schema,name:table.name,
             rows:table.rows.reduce((sum,row)=>sum+row.count,0)}));
@@ -571,6 +585,11 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
         rowsPerSecond: Math.round(rowsScanned / Math.max(1, (Date.now() - inventoryStartedAt) / 1000)),
       }),
     );
+    if (options.productionDataOnly) {
+      for (const name of references) {
+        if (name.startsWith("desktop-installer/")) references.delete(name);
+      }
+    }
     const activeCounts = (await client.query<{ users: string; organizations: string; cases: string }>(`
       SELECT (SELECT count(*) FROM public.users WHERE deleted_at IS NULL)::text AS users,
         (SELECT count(*) FROM public.organizations WHERE deleted_at IS NULL)::text AS organizations,
@@ -578,12 +597,13 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     `)).rows[0]!;
     // Only a new/schema baseline exports schema definitions. No data pg_dump
     // runs for record points, and unchanged intervals export no row bodies.
-    const dumpSource = recordCapture?.delta ? Buffer.alloc(0) : await dump(snapshotToken);
+    const deltaOnly = recordCapture?.delta && !options.recordsWithFullArchive;
+    const dumpSource = deltaOnly ? Buffer.alloc(0) : await dump(snapshotToken);
     let pgDump: Buffer | AsyncIterable<Uint8Array>;
     let pgDumpBytes: number;
     let databaseSha256: string;
     let dispose: (() => Promise<void>) | undefined;
-    if (recordCapture?.delta) {
+    if (deltaOnly) {
       // No unused fs.ReadStream/file descriptor or scratch dump for an interval
       // whose schema is retained. Only selected row bodies were captured.
       pgDump = (async function* () {})(); pgDumpBytes=0;databaseSha256=recordInventoryHash(recordCapture.inventory);
@@ -644,13 +664,13 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
       pgDumpBytes = dumpSource.length;
       databaseSha256 = createHash("sha256").update(dumpSource).digest("hex");
     }
-    if (recordCapture) databaseSha256 = recordInventoryHash(recordCapture.inventory);
+    if (recordCapture && !options.recordsWithFullArchive) databaseSha256 = recordInventoryHash(recordCapture.inventory);
     let sourceRevision: string | null = null;
     let releaseIdentity: DesktopReleaseIdentity | undefined;
     let releaseIdentityBytes: Buffer | undefined;
-    if (isProductionDeployment() && options.productionDataOnly) sourceRevision = await readRunningSourceRevision();
-    if (isProductionDeployment() && !options.productionDataOnly) {
-      sourceRevision = await readRunningSourceRevision();
+    if (productionSource && options.productionDataOnly) sourceRevision = await captureRevision();
+    if (productionSource && !options.productionDataOnly) {
+      sourceRevision = await captureRevision();
       const sidecar = objects.find(object => object.relativeName === DESKTOP_RELEASE_IDENTITY_PATH);
       if (!sidecar && !options.allowMissingReferences) {
         throw new Error("Production recovery capture requires a signed Desktop release identity sidecar.");
@@ -674,7 +694,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     } = await measureBackupPhase(
       "case-media inventory and reference validation",
       async () => {
-        if (isProductionDeployment() && !process.env.PRIVATE_OBJECT_DIR) {
+        if (productionSource && !process.env.PRIVATE_OBJECT_DIR) {
           throw new Error("Complete production backup requires access to private App Storage.");
         }
         const media = pinnedMedia, local = pinnedLocal, privateFiles = pinnedPrivate, legacyState = pinnedLegacy;
@@ -743,14 +763,15 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const databaseUrl = new URL(process.env.DATABASE_URL!);
     const manifest: CompleteRecoveryManifest = {
       coverageVersion: COMPLETE_BACKUP_VERSION,
-      sourceEnvironment: isProductionDeployment() ? "production" : "non-production",
+      sourceEnvironment: productionSource ? "production" : "non-production",
       sourceRevision,
+      ...(options.productionDataOnly ? { backupScope: "production-data" as const } : {}),
       ...(releaseIdentity ? { releaseIdentity } : {}),
       sourceDatabase: boundary.database,
       sourceIdentitySha256: createHash("sha256").update(`${databaseUrl.hostname}:${databaseUrl.port}/${boundary.database}`).digest("hex"),
       storageNamespaceSha256: process.env.PRIVATE_OBJECT_DIR
         ? createHash("sha256").update(process.env.PRIVATE_OBJECT_DIR.trim().replace(/^\/+|\/+$/g, "")).digest("hex") : null,
-      provenance: { productionLineageVerified: isProductionDeployment(), fingerprintSha256 },
+      provenance: { productionLineageVerified: productionSource, fingerprintSha256 },
       snapshotAt: new Date(boundary.at).toISOString(),
       snapshot: snapshotToken,
       databaseSha256,
@@ -789,7 +810,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const count = (name: string) => tables.find(table => table.schema === "public" && table.name === name)?.rows ?? 0;
     return {
       pgDump, dispose, append,
-      manifest: recordCapture ? {...manifest,databaseCapture:"postgresql-record-state-v1" as const} : manifest,
+      manifest: recordCapture && !options.recordsWithFullArchive ? {...manifest,databaseCapture:"postgresql-record-state-v1" as const} : manifest,
       ...(recordCapture ? {recordCapture} : {}),
       productionMediaSources: [
         ...media.sourceVersions.map(source => ({
@@ -857,7 +878,8 @@ export function validateCompleteRecovery(zip: RecoveryZip): CompleteRecoveryMani
   if (manifest.coverageVersion === COMPLETE_BACKUP_VERSION &&
       manifest.sourceEnvironment === "production" &&
       (!/^[a-f0-9]{40}$/.test(manifest.sourceRevision ?? "") ||
-       (!manifest.releaseIdentity && !(partial && missing.includes(DESKTOP_RELEASE_IDENTITY_PATH))))) {
+       (!manifest.releaseIdentity && manifest.backupScope !== "production-data" &&
+         !(partial && missing.includes(DESKTOP_RELEASE_IDENTITY_PATH))))) {
     throw new Error("Production recovery manifest is missing its matched Desktop release identity.");
   }
   if (manifest.sourceRevision !== undefined && manifest.sourceRevision !== null &&

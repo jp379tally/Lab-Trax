@@ -77,6 +77,7 @@ export function watchBackupLiveStatus(
   getLiveStatus: (runId: string) => Promise<LocalBackupLiveStatus>,
   onLiveStatus: (status: LocalBackupLiveStatus) => void,
   intervalMs = 1200,
+  onStatusError: (error: unknown) => void = () => {},
 ): () => void {
   let active = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -93,8 +94,9 @@ export function watchBackupLiveStatus(
         active = false;
         return;
       }
-    } catch {
-      // Status is advisory; transient API errors must not fail the backup.
+    } catch (error) {
+      // A failed poll is not a failed backup, but stale progress must be visible.
+      if (active) onStatusError(error);
     } finally {
       inFlight = false;
       if (active) timer = setTimeout(() => void poll(), intervalMs);

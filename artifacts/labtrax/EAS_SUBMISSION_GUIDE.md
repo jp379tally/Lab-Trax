@@ -5,6 +5,14 @@ It is not a fix for Replit's App Store publishing button. Replit Expo Launch and
 the repository's `EAS iOS Build + Submit` workflow are different entry points.
 Do not use either to bypass a failing release gate.
 
+## Direct checked release from Replit Shell
+
+Run `pnpm run ios:check` from the repository root to run and record all required source-bound checks. API and backup/restore tests use disposable local databases. Logs are retained under `.local/ios-release-checks/`.
+
+Run `pnpm run ios:release` only to explicitly authorize one iOS build and its submission. It repeats verification, arms one build after every check passes, and invokes the existing exact-build upload path. Failed checks, source changes, concurrent preparation, and unresolved submissions block the release. `pnpm run ios:status` reports the current state.
+
+These commands do not use Replit Agent or require the hosted App Store publishing button. Check mode never starts a build. An accepted upload still requires Apple processing before TestFlight availability can be confirmed.
+
 ## Verified identity — October 9, 2026
 
 | Field | Verified value / source |

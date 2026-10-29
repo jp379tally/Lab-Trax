@@ -140,55 +140,46 @@ describe("Backup Now real synthetic HTTP/download/restore", () => {
     expect(await backup.getLastSuccessfulBackupAt()).toBeNull();
   });
 
-  it("downloads an explicitly requested database-only archive, authenticates it, and restores all synthetic records into a second database", async () => {
-    const response = await post("/api/admin/backup/generate?archiveKind=database-only").buffer(true).parse(binary);
-    expect(response.status).toBe(200);
-    expect(response.headers["x-backup-archive-kind"]).toBe("database-only");
-    expect(response.headers["x-backup-coverage-version"]).toBe("0");
-    expect(response.headers["x-backup-source"]).toBe("development");
-    const zip = new AdmZip(backup.decryptBuffer(response.body));
-    const manifest = JSON.parse(zip.readAsText("manifest.json"));
-    expect(manifest.archiveKind).toBe("database-only");
-    expect(manifest.includesMedia).toBe(false);
-    expect(zip.getEntries().some(entry => /^(media|profile-photos)\//.test(entry.entryName))).toBe(false);
-    expect(() => backup.parseAndValidateBackupManifest(response.body)).toThrow(/database-only/);
-    const directory = await fs.mkdtemp(path.join(process.env.LABTRAX_ISOLATED_RESTORE_ROOT!, "synthetic-readback-"));
-    const dump = path.join(directory, "database.pgdump");
-    await fs.writeFile(dump, zip.readFile("db/database.pgdump")!, { mode: 0o600 });
-    const restoredName = `backup_now_rehearsal_${randomBytes(6).toString("hex")}`;
-    await pool.query(`CREATE DATABASE "${restoredName}"`);
-    const url = new URL(process.env.DATABASE_URL!);
-    url.pathname = "/" + restoredName;
+  it("seeds record fingerprints while preserving a full standalone database dump, including when prior records exist", async () => {
+    const { captureCompleteBackup } = await import("../lib/complete-backup");
     const { resolvePostgresTool } = await import("../lib/pg-tools");
-    execFileSync(resolvePostgresTool("pg_restore"), ["--exit-on-error", "--no-owner", "--no-privileges", "--dbname", url.toString(), dump],
-      { stdio: "pipe", timeout: 180000 });
-    const { Pool } = await import("pg");
-    const restored = new Pool({ connectionString: url.toString() });
+    const { createHash } = await import("node:crypto");
+    const coordinator = await pool.connect();
     try {
-      expect((await restored.query("SELECT value FROM system_settings WHERE key=$1", [key])).rows[0].value).toBe(value);
-      const sourceTables = (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows;
-      expect((await restored.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows).toHaveLength(sourceTables.length);
-    } finally { await restored.end(); }
-    expect((await pool.query("SELECT value FROM system_settings WHERE key=$1", [key])).rows[0].value).toBe(value);
+      await coordinator.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const snapshot = (await coordinator.query("SELECT pg_export_snapshot() AS snapshot")).rows[0].snapshot;
+      let previous = null as any;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const captured = await captureCompleteBackup("uploads", token => execFileSync(resolvePostgresTool("pg_dump"),
+          ["--format=custom", "--snapshot=" + token, "--dbname=" + process.env.DATABASE_URL], { maxBuffer: 32 * 1024 * 1024 }), undefined, {
+          snapshot, productionDataOnly: true, recordsWithFullArchive: true, allowMissingReferences: true,
+          records: { previous, schemaSql: async token => execFileSync(resolvePostgresTool("pg_dump"),
+            ["--schema-only", "--format=plain", "--no-owner", "--no-privileges", "--quote-all-identifiers", "--snapshot=" + token,
+              "--dbname=" + process.env.DATABASE_URL], { maxBuffer: 32 * 1024 * 1024 }).toString("utf8") },
+        });
+        expect(captured.pgDump.subarray(0, 5).toString()).toBe("PGDMP");
+        expect(captured.manifest.databaseSha256).toBe(createHash("sha256").update(captured.pgDump).digest("hex"));
+        expect(captured.manifest).not.toHaveProperty("databaseCapture");
+        expect(captured.recordCapture).toBeDefined();
+        if (attempt) expect(captured.recordCapture!.delta).toBeTruthy();
+        const { captureProductionMedia } = await import("../lib/production-content-capture");
+        const { recordInventoryHash } = await import("../lib/postgres-record-delta");
+        const evidence = await captureProductionMedia(captured, async () => { throw new Error("No selected media expected"); }, () => new Set());
+        expect(evidence.evidence.databaseSha256).toBe(recordInventoryHash(captured.recordCapture!.inventory));
+        expect(captured.manifest.databaseSha256).toBe(createHash("sha256").update(captured.pgDump).digest("hex"));
+        previous = captured.recordCapture!.inventory;
+      }
+    } finally { await coordinator.query("ROLLBACK"); coordinator.release(); }
   });
 
-  it("records desktop database-only delivery only after its disk report without claiming full coverage", async () => {
-    const response = await post("/api/admin/backup/generate?deferRecord=1&source=manual&archiveKind=database-only").buffer(true).parse(binary);
-    expect(response.status).toBe(200);
-    const runId = response.headers["x-backup-run-id"];
-    expect(runId).toMatch(/^[0-9a-f-]{36}$/);
-    const saved = path.join(process.env.LABTRAX_ISOLATED_RESTORE_ROOT!, "synthetic-usb.zip.enc");
-    await fs.writeFile(saved, response.body);
-    expect(await fs.readFile(saved)).toEqual(response.body);
-    const report = await post("/api/admin/backup/desktop-run-report").send({
-      source: "manual", status: "success", fileName: "synthetic-usb.zip.enc", path: saved,
-      sizeBytes: response.body.length, downloadRunId: runId,
-    });
-    expect(report.status).toBe(200);
-    expect(report.body.rejected).not.toBe(true);
-    const row = (await pool.query("SELECT archive_kind,status,media_file_count FROM backup_runs WHERE download_run_id=$1", [runId])).rows[0];
-    expect(row).toMatchObject({ archive_kind: "database-only", status: "success", media_file_count: 0 });
-    expect(await backup.getLastSuccessfulBackupAt()).toBeNull();
+  it("rejects records-only generation and cloud requests before starting work", async () => {
+    expect((await post("/api/admin/backup/generate?archiveKind=database-only")).status).toBe(400);
+    expect((await post("/api/admin/backup/generate?deferRecord=1&source=manual&archiveKind=database-only")).status).toBe(400);
+    for (const destination of ["onedrive", "google-drive", "browser"]) {
+      const response = await post("/api/admin/backup/run").send({ destination, archiveKind: "database-only", runId: randomUUID(), respondAsync: true });
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/always include production records and original files/);
+    }
   });
 
   it("does not accept an invalid kind, a mismatched source, or downgrade a default complete request", async () => {
@@ -245,7 +236,7 @@ describe("Backup Now real synthetic HTTP/download/restore", () => {
     const response = await post("/api/admin/backup/schedule/run-now").send({});
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ destination: "google-drive", partialFailure: true });
-    expect(response.body.warnings).toContain("1 required files");
+    expect(response.body.warnings).toContain("1 original lab files");
     expect(await backup.getLastSuccessfulBackupAt()).toBeNull();
   });
 

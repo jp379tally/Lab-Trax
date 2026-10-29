@@ -155,6 +155,50 @@ afterEach(() => {
 });
 
 describe("AiReaderExtractedScreen — doctor confirmation", () => {
+  it("shows accessible clinical labels and keeps their inputs editable", async () => {
+    seedEditableLab();
+    seedExtracted();
+    installFetchHandler();
+
+    const screen = await renderAndPrepare();
+    const caseTypeInput = screen.getByLabelText("Case Type");
+    const materialInput = screen.getByLabelText("Case Material");
+    const shadeInput = screen.getByLabelText("Shade");
+
+    expect(screen.getByText("Case Type")).toBeTruthy();
+    expect(screen.getByText("Case Material")).toBeTruthy();
+    expect(screen.getByText("Shade")).toBeTruthy();
+
+    await fireEvent.changeText(caseTypeInput, "Crown & Bridge");
+    await fireEvent.changeText(materialInput, "Acrylic");
+    await fireEvent.changeText(shadeInput, "A3");
+
+    expect(caseTypeInput.props.value).toBe("Crown & Bridge");
+    expect(materialInput.props.value).toBe("Acrylic");
+    expect(shadeInput.props.value).toBe("A3");
+
+    await fireEvent.press(screen.getByTestId("ai-reader-create-btn"));
+    await waitFor(() => {
+      expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    const submitted = mockCreateCaseMutateAsync.mock.calls[0][0] as {
+      data: {
+        shade: string;
+        restorations: Array<Record<string, unknown>>;
+      };
+    };
+    expect(submitted.data.shade).toBe("A3");
+    expect(submitted.data.restorations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          restorationType: "Crown & Bridge",
+          material: "Acrylic",
+          shade: "A3",
+        }),
+      ]),
+    );
+  });
+
   it("opens the confirmation sheet (not the generic alert) on a 409 DOCTOR_CONFIRMATION_REQUIRED", async () => {
     seedEditableLab();
     seedExtracted();

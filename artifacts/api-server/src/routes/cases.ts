@@ -69,7 +69,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import OpenAI from "openai";
 import AdmZip from "adm-zip";
 import { writeAuditLog, writeAuditLogTx } from "../lib/audit";
-import { isValidDueTime, resolveCaseDueDate } from "../lib/case-due-date";
+import {
+  isValidDueTime,
+  resolveAiIntakePrescriptionDueDate,
+  resolveCaseDueDate,
+} from "../lib/case-due-date";
 import { getCasesOverview } from "../lib/cases-overview";
 import caseDoctorReassignmentRouter from "./case-doctor-reassignment";
 import { caseToothChartRouter } from "./case-tooth-chart";
@@ -172,6 +176,7 @@ import {
 import { signDeleteSessionToken, verifyDeleteSessionToken } from "../lib/auth.js";
 import {
   createVerificationCode,
+  invalidateVerificationCode,
   normalizeEmailTarget,
   verifyCode,
 } from "../lib/verification.js";
@@ -3369,7 +3374,11 @@ const createCaseSchema = z.object({
   receivedAt: calendarDate.optional(),
   scanDate: calendarDate.optional(),
   prescriptionDueDate: calendarDate.optional(),
-  dueDate: z.string().optional(),
+  dueDate: z.string().nullable().optional(),
+  // The desktop AI review explicitly supplies the dates shown to staff. Keep
+  // that reviewed lab schedule authoritative instead of applying the generic
+  // create route's current-date cap a second time.
+  aiIntakeReviewedDates: z.literal(true).optional(),
   providerContactSnapshot: z.record(z.string(), z.unknown()).optional(),
   invoiceNotes: z.string().max(10_000).optional(),
   bridgeConnectors: z.string().max(1024).optional(),
@@ -4824,10 +4833,12 @@ async function _sendCaseDeleteEmail(
 ): Promise<void> {
   const { sendMail } = await import("../lib/mail.js");
   const maskedEmail = _maskEmail(toEmail);
-  const result = await sendMail({
-    to: toEmail,
-    subject: "LabTrax security code — confirm case deletion",
-    html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+  let result: { sent: boolean; reason?: string };
+  try {
+    result = await sendMail({
+      to: toEmail,
+      subject: "LabTrax security code — confirm case deletion",
+      html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
             <h2 style="margin: 0;">LabTrax</h2>
             <p style="margin: 4px 0 0; opacity: 0.85;">Case Deletion Confirmation</p>
@@ -4841,31 +4852,48 @@ async function _sendCaseDeleteEmail(
             <p style="color: #666; font-size: 13px;">If you did not request this, contact your lab immediately.</p>
           </div>
         </div>`,
-    text: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
-  });
-  // A skipped send (SMTP unconfigured, the test runner, or a reserved/
-  // undeliverable test domain) is not an error — only a genuine delivery
-  // failure should surface as a 500 so the client can retry.
-  if (
-    !result.sent &&
-    result.reason &&
-    !["smtp_not_configured", "reserved_domain", "undeliverable_domain", "disabled_in_test"].includes(result.reason)
-  ) {
+      text: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
+    });
+  } catch {
     log?.warn?.(
-      { email: maskedEmail, reason: result.reason },
+      { email: maskedEmail, reason: "send_failed" },
       "case-delete OTP email send failed",
     );
     throw new HttpError(
-      500,
-      "We could not send the email code. Check the lab owner's email address and try again.",
+      502,
+      "We could not send the email code. Check the lab owner's email address and email server settings, then try again.",
     );
   }
+
   if (result.sent) {
-    log?.info?.(
-      { email: maskedEmail },
-      "case-delete OTP email dispatched",
-    );
+    log?.info?.({ email: maskedEmail }, "case-delete OTP email dispatched");
+    return;
   }
+
+  const failureMessages: Record<string, string> = {
+    smtp_not_configured:
+      "Email delivery is not configured. Ask a platform administrator to set SMTP_HOST, SMTP_USER, and SMTP_PASS in server secrets, then try again.",
+    reserved_domain:
+      "The lab owner's email address uses a reserved test domain and cannot receive mail. Update the owner's email address in their profile, then try again.",
+    undeliverable_domain:
+      "The lab owner's email domain cannot receive mail. Update the owner's email address in their profile, then try again.",
+    disabled_in_test:
+      "Email delivery is disabled in this test environment. Use an environment with email delivery configured to request a code.",
+    auth_failed:
+      "The email provider rejected its login. Ask a platform administrator to check the SMTP credentials in server secrets, then try again.",
+    recipient_rejected:
+      "The email provider rejected the lab owner's address. Update the owner's email address in their profile, then try again.",
+    send_failed:
+      "We could not send the email code. Ask a platform administrator to check the email server settings, then try again.",
+  };
+  const safeReason = result.reason && failureMessages[result.reason]
+    ? result.reason
+    : "send_failed";
+  log?.warn?.(
+    { email: maskedEmail, reason: safeReason },
+    "case-delete OTP email send failed",
+  );
+  throw new HttpError(502, failureMessages[safeReason]);
 }
 
 const deleteInitiateSchema = z.object({
@@ -4982,7 +5010,7 @@ router.post(
     const ownerEmailTarget = `case-delete:${normalizeEmailTarget(ownerEmail)}`;
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    await createVerificationCode({
+    const verificationCodeId = await createVerificationCode({
       channel: "email",
       target: ownerEmailTarget,
       code,
@@ -4997,7 +5025,23 @@ router.post(
       },
       "case-delete OTP: sending email",
     );
-    await _sendCaseDeleteEmail(ownerEmail, code, req.log as any);
+    try {
+      await _sendCaseDeleteEmail(ownerEmail, code, req.log as any);
+    } catch (error) {
+      try {
+        await invalidateVerificationCode(verificationCodeId);
+      } catch {
+        req.log?.error?.(
+          { labOrgId: labOrganizationId, actorId: userId },
+          "case-delete OTP could not be invalidated after delivery failure",
+        );
+        throw new HttpError(
+          500,
+          "We could not safely complete email verification. Please try again.",
+        );
+      }
+      throw error;
+    }
 
     const deleteSessionToken = signDeleteSessionToken({
       caseIds: uniqueCaseIds,
@@ -5016,7 +5060,10 @@ router.post(
       metadataJson: { caseIds: uniqueCaseIds, ownerUserId: ownerUser.id },
     });
 
-    return ok(res, { deleteSessionToken });
+    return ok(res, {
+      deleteSessionToken,
+      maskedRecipient: _maskEmail(ownerEmail),
+    });
   })
 );
 
@@ -5512,12 +5559,28 @@ router.post(
       where: eq(organizations.id, input.labOrganizationId),
       columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
     });
-    const resolvedDueDate = resolveCaseDueDate(
-      suppliedDueDate,
-      new Date(),
-      dueDateLabOrg?.defaultCaseDueDays,
-      dueDateLabOrg?.capCaseDueToDefault,
-    );
+    if (
+      input.aiIntakeReviewedDates &&
+      input.dueDate &&
+      !isValidCalendarDate(input.dueDate)
+    ) {
+      throw new HttpError(400, "Reviewed lab due date is not a valid calendar date.");
+    }
+    const resolvedDueDate = input.aiIntakeReviewedDates
+      ? suppliedDueDate
+      : resolveCaseDueDate(
+          suppliedDueDate,
+          new Date(),
+          dueDateLabOrg?.defaultCaseDueDays,
+          dueDateLabOrg?.capCaseDueToDefault,
+        );
+    const resolvedPrescriptionDueDate = input.aiIntakeReviewedDates
+      ? resolveAiIntakePrescriptionDueDate(
+          input.prescriptionDueDate,
+          input.receivedAt ?? new Date().toISOString().slice(0, 10),
+          dueDateLabOrg?.defaultCaseDueDays,
+        )
+      : input.prescriptionDueDate ?? null;
 
     // Test-only TOCTOU barrier: lets concurrent requests that both cleared the
     // pre-check rendezvous here before either write reaches the DB, making the
@@ -5587,7 +5650,7 @@ router.post(
           priority: input.priority,
           receivedAt: parseCalendarDate(input.receivedAt),
           scanDate: input.scanDate ?? null,
-          prescriptionDueDate: input.prescriptionDueDate ?? null,
+          prescriptionDueDate: resolvedPrescriptionDueDate,
           providerContactSnapshot: input.providerContactSnapshot ?? null,
           dueDate: resolvedDueDate,
           dueTime: input.dueDate ? input.dueTime ?? null : null,
@@ -15521,22 +15584,32 @@ router.post(
       ? body.labDueDateHint
       : body.rxDueDateHint === undefined ? body.dueDateHint : undefined;
     const labDueDateText = reviewedLabDueDate?.trim();
-    const parsedLabDueDate = labDueDateText
-      ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(labDueDateText)
-          ? `${labDueDateText}T12:00:00` : labDueDateText)
+    const normalizedReviewedLabDate = labDueDateText
+      ? normalizeDueDateForInputServer(labDueDateText)
       : null;
-    const iteroAutoSuppliedDate = parsedLabDueDate && !Number.isNaN(parsedLabDueDate.getTime())
-      ? parsedLabDueDate : null;
+    const iteroReviewedLabDate = normalizedReviewedLabDate
+      ? calendarDateToUtcNoon(normalizedReviewedLabDate)
+      : null;
     const iteroAutoLabOrg = await db.query.organizations.findFirst({
       where: eq(organizations.id, body.labOrganizationId),
       columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
     });
-    const dueDate = resolveCaseDueDate(
-      iteroAutoSuppliedDate,
-      new Date(),
-      iteroAutoLabOrg?.defaultCaseDueDays,
-      iteroAutoLabOrg?.capCaseDueToDefault,
+    const iteroReviewedPrescriptionDate = normalizeDueDateForInputServer(
+      extracted.dueDate ?? "",
     );
+    const iteroPrescriptionDueDate = resolveAiIntakePrescriptionDueDate(
+      iteroReviewedPrescriptionDate,
+      body.receivedAt ?? new Date().toISOString().slice(0, 10),
+      iteroAutoLabOrg?.defaultCaseDueDays,
+    );
+    const dueDate = reviewedLabDueDate !== undefined
+      ? iteroReviewedLabDate
+      : resolveCaseDueDate(
+          null,
+          new Date(),
+          iteroAutoLabOrg?.defaultCaseDueDays,
+          iteroAutoLabOrg?.capCaseDueToDefault,
+        );
 
     // Resolve any AI-derived restoration rows BEFORE the transaction so the
     // pricing lookups don't hold open the dedup-claim transaction.
@@ -15889,9 +15962,9 @@ router.post(
           scanDate: body.scanDateHint !== undefined
             ? body.scanDateHint || null
             : (extracted.scanDate ? normalizeDueDateForInputServer(extracted.scanDate) : null),
-          prescriptionDueDate: extracted.dueDate ? normalizeDueDateForInputServer(extracted.dueDate) : null,
+          prescriptionDueDate: iteroPrescriptionDueDate,
           dueDate,
-          expectedDeliveryDate: iteroAutoSuppliedDate
+          expectedDeliveryDate: iteroReviewedLabDate
             ? null
             : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,

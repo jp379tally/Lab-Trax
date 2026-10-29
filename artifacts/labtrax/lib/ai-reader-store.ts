@@ -65,6 +65,11 @@ export interface AiReaderUserOverrides {
   doctorName?: string;
   patientFirst?: string;
   patientLast?: string;
+  receivedAt?: string;
+  labDueDate?: string;
+  labDueDateEdited?: boolean;
+  rxDueDate?: string;
+  /** Legacy single-date override; interpreted as an edited lab due date. */
   dueDate?: string;
   notes?: string;
   priority?: "normal" | "rush";

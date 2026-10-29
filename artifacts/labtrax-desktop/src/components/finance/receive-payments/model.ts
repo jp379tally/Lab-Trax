@@ -830,6 +830,42 @@ export function isSelected(selection: Selection, customerId: string): boolean {
   return selection.ids.includes(customerId);
 }
 
+export function doctorAccountsForPractice(
+  customers: readonly PayableCustomer[],
+  practice: PayableCustomer,
+): PayableCustomer[] {
+  const practiceId = practice.practiceOrganizationId ?? practice.account.providerOrganizationId;
+  return customers.filter(
+    (customer) =>
+      customer.isDoctorAccount &&
+      (customer.practiceOrganizationId ?? customer.account.providerOrganizationId) === practiceId,
+  );
+}
+
+export function practiceDoctorSelectionState(
+  selection: Selection,
+  doctors: readonly PayableCustomer[],
+): { checked: boolean; indeterminate: boolean } {
+  const selected = doctors.filter((doctor) => isSelected(selection, doctor.id)).length;
+  return {
+    checked: doctors.length > 0 && selected === doctors.length,
+    indeterminate: selected > 0 && selected < doctors.length,
+  };
+}
+
+/** Parent controls select distinct doctor accounts, never the overlapping practice account. */
+export function togglePracticeDoctorSelection(
+  selection: Selection,
+  practice: PayableCustomer,
+  doctors: readonly PayableCustomer[],
+): Selection {
+  if (!doctors.length) return selection;
+  const { checked } = practiceDoctorSelectionState(selection, doctors);
+  const ids = doctors.map((doctor) => doctor.id);
+  if (checked) return deselectCustomers(selection, [...ids, practice.id]);
+  return selectCustomers(selection, doctors);
+}
+
 export function selectCustomers(
   selection: Selection,
   customers: readonly PayableCustomer[],
@@ -1252,7 +1288,24 @@ export function restoreSavedSelection(
     } else {
       scope = { mode: "invoices", invoiceIds: null };
     }
-    ids.push(customer.id);
+    const doctors = customer.isDoctorAccount ? [] : doctorAccountsForPractice([...customers.values()], customer);
+    if (doctors.length) {
+      // Older saved sets may contain the former practice-wide account. Expand
+      // its saved invoice scope into the matching doctor accounts so loading
+      // that set cannot silently create an overlapping practice payment.
+      const covered = new Set(coveredInvoiceIds(customer, scope));
+      for (const doctor of doctors) {
+        const doctorInvoiceIds = doctor.invoices
+          .filter((invoice) => covered.has(invoice.id))
+          .map((invoice) => invoice.id);
+        const doctorScope = scopeForPicks(doctor, new Set(doctorInvoiceIds), false);
+        if (!doctorScope) continue;
+        if (!ids.includes(doctor.id)) ids.push(doctor.id);
+        scopes[doctor.id] = doctorScope;
+      }
+      continue;
+    }
+    if (!ids.includes(customer.id)) ids.push(customer.id);
     scopes[customer.id] = scope;
   }
   const wholePracticeIds = new Set(

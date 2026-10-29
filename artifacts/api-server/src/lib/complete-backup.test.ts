@@ -379,3 +379,20 @@ describe("all-content recovery contract", () => {
     })]).toContain("legacy-case-data-backups/run/case.json");
   });
 });
+
+describe("production lab data recovery independent of application installers", () => {
+  it("validates original lab files without requiring a matching application installer", () => {
+    const f = fixture();
+    f.manifest.backupScope = "production-data";
+    delete f.manifest.releaseIdentity;
+    for (const file of f.manifest.files.filter(file => file.relativeName.startsWith("desktop-installer/"))) f.zip.deleteFile(file.archivePath);
+    f.manifest.files = f.manifest.files.filter(file => !file.relativeName.startsWith("desktop-installer/"));
+    f.manifest.requiredReferences = f.manifest.requiredReferences.filter(name => !name.startsWith("desktop-installer/"));
+    f.save();
+    expect(validateCompleteRecovery(f.zip)).toEqual(f.manifest);
+    expect(f.zip.getEntry("media/video.mov")).not.toBeNull();
+    expect(f.zip.getEntry("media/note-document.pdf")).not.toBeNull();
+    f.zip.deleteFile("media/video.mov");
+    expect(() => validateCompleteRecovery(f.zip)).toThrow();
+  });
+});

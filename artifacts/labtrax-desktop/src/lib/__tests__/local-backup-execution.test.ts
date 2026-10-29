@@ -405,3 +405,22 @@ describe("local backup write/report ownership", () => {
     stop();
   });
 });
+
+describe("backup progress polling reconnects after authorization failure", () => {
+  it("reports the lost status connection without inventing a failed run, then resumes", async () => {
+    vi.useFakeTimers();
+    const denied = Object.assign(new Error("Sign in again"), { status: 401 });
+    const status = { runId: "same-run", state: "running", phase: "case-media transfer into archive", elapsedMs: 1000, metrics: { completedBytes: 1024 } } as LocalBackupLiveStatus;
+    const read = vi.fn().mockRejectedValueOnce(denied).mockResolvedValue(status);
+    const update = vi.fn(); const disconnected = vi.fn();
+    const stop = watchBackupLiveStatus("same-run", read, update, 1200, disconnected);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(disconnected).toHaveBeenCalledWith(denied);
+      expect(update).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(update).toHaveBeenCalledWith(status);
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally { stop(); vi.useRealTimers(); }
+  });
+});

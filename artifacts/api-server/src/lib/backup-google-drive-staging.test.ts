@@ -199,7 +199,7 @@ describe("complete Google Drive cloud staging", () => {
       )).toThrow(/capacity failure/);
       const result = await runGoogleDriveBackup("synthetic-test", { deadline });
       expect(fake.capture.mock.calls[0]?.[3]).toEqual({
-        archiveDestination: "cloud", allowMissingReferences: true,
+        archiveDestination: "cloud", allowMissingReferences: true, productionDataOnly: true,
       });
       expect(fake.stageSetup).toHaveBeenCalledWith(source, deadline.timeoutMs, deadline.signal);
       expect(fake.uploadFile).not.toHaveBeenCalled();

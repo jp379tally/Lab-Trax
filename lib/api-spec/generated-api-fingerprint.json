@@ -6,14 +6,14 @@
   },
   "inputs": {
     "lib/api-spec/fix-zod-constant-order.mjs": "653c3b816fd8c99ecf0e8bdce9eb7dd2fb0af567a0f7ab79f071771d1b1cc7ea",
-    "lib/api-spec/openapi.yaml": "a03aadf9de29de2fe8c2ad6a358b4455cbd098386757c53f93d0384b1ea21218",
+    "lib/api-spec/openapi.yaml": "059785d1b0ca7e44eb40a966fe1111866031fe07d6835aedea4a95d899e2e1fe",
     "lib/api-spec/orval.config.ts": "dc04efbf79596217edf9023fab07427656bd5ca7d9505a0e489ed0190bdbb9f9",
     "lib/api-spec/package.json": "d7332bf22d98d2e35e88a7526f7db05787f3c1cbdeb2b5b54a83f8e3322d856f"
   },
   "outputs": {
-    "lib/api-client-react/src/generated/api.schemas.ts": "047c96c874a29ec69d0bbb9a205f7551308abd77c6861cd3aa10dc99b555d735",
+    "lib/api-client-react/src/generated/api.schemas.ts": "24b36247d60bed7693256975a08c6b683fe086d307531d969ae5164255b80fa2",
     "lib/api-client-react/src/generated/api.ts": "9d227e1a21e332272a9173481e47b7efcd956cd2f743452a14b04b6ff98f739a",
-    "lib/api-zod/src/generated/api.ts": "1ac3b417180b172cd87736b283bb7f81bf8b7663850604ad8721ea9f3b5bc613",
+    "lib/api-zod/src/generated/api.ts": "b1ba756fa23502ad944f2face3d788cee66e71b078e07a22dfdf68495cfa870d",
     "lib/api-zod/src/generated/types/acceptInvitationResult.ts": "c95725f754a28439e7f53586ae4107f2889eb4223b86fe0f1e1116abcb0d3d5e",
     "lib/api-zod/src/generated/types/acceptInvitationResultData.ts": "ef50a0c463a15fc58ae90d465be41c2fe0368fddf5dc318a853ce6bbce43751b",
     "lib/api-zod/src/generated/types/accountBalance.ts": "81b51bc95145dd9398f918fbfdc43d9f599e11f7318d410ff62926ed2de62143",
@@ -196,7 +196,7 @@
     "lib/api-zod/src/generated/types/createCaseAttachmentInput.ts": "036a9914a15d2c19a2cb5748eff57c2617dd060b1282a1399a70043abb117388",
     "lib/api-zod/src/generated/types/createCaseAttachmentInputCategory.ts": "ddb4c772c1fbf05bc20aeaabe241ae0d58ec1f252f996be5cdaa8e647300c283",
     "lib/api-zod/src/generated/types/createCaseAttachmentInputVisibility.ts": "7ee5ae4a09da1940c081b59000acd4fd064a8defaeef593a88e6d004863904ab",
-    "lib/api-zod/src/generated/types/createCaseInput.ts": "64f0a884550f1a9414f03be9db0b9bebbfca9b510bd89f839754a0fea302668a",
+    "lib/api-zod/src/generated/types/createCaseInput.ts": "705a072610782ae4bbb72eddf44339fa3b07b621694e653f574fb10a7cf51661",
     "lib/api-zod/src/generated/types/createCaseInputInvoiceOverrideLinesItem.ts": "013cbbfd6e395f1e3298bfba4da630268dec4b77bddc795454961bae479e8c92",
     "lib/api-zod/src/generated/types/createCaseInputPriority.ts": "ddc369aa52987b1dbe103b679a63bd390ace44045cf91a87df75911cb82c7330",
     "lib/api-zod/src/generated/types/createCaseInputProviderContactSnapshot.ts": "ed48ab1010c633533cab6d591103272daa42aaf3995e82fd9aa929751025f063",

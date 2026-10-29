@@ -9,6 +9,7 @@ import {
   customerMatches,
   daysPastDue,
   deselectCustomers,
+  doctorAccountsForPractice,
   EMPTY_FILTERS,
   EMPTY_SELECTION,
   filtersActive,
@@ -19,6 +20,7 @@ import {
   NO_LOCATION,
   pickInvoices,
   pruneSelection,
+  practiceDoctorSelectionState,
   readSavedSelections,
   restoreSavedSelection,
   savedSelectionCustomers,
@@ -26,6 +28,7 @@ import {
   scopeFigures,
   scopeFor,
   selectCustomers,
+  togglePracticeDoctorSelection,
   selectedFigures,
   selectionTotals,
   selectStatementScope,
@@ -360,6 +363,43 @@ describe("doctor payment accounts", () => {
     expect(selection.ids).toEqual([whole.id]);
     selection = selectCustomers(selection, [ada]);
     expect(selection.ids).toEqual([ada.id]);
+
+    const doctors = doctorAccountsForPractice(accounts, whole);
+    expect(doctors.map((doctor) => doctor.id)).toEqual([ada.id, ben.id]);
+    const parentSelected = togglePracticeDoctorSelection(EMPTY_SELECTION, whole, doctors);
+    expect(parentSelected.ids).toEqual([ada.id, ben.id]);
+    expect(parentSelected.ids).not.toContain(whole.id);
+    expect(practiceDoctorSelectionState(parentSelected, doctors)).toEqual({
+      checked: true,
+      indeterminate: false,
+    });
+    expect(selectionTotals(selectedFigures(parentSelected, byId))).toMatchObject({
+      customers: 2,
+      invoices: 2,
+      amount: 55,
+    });
+    expect(togglePracticeDoctorSelection(parentSelected, whole, doctors)).toEqual(EMPTY_SELECTION);
+    const oneDoctor = selectCustomers(EMPTY_SELECTION, [ada]);
+    expect(practiceDoctorSelectionState(oneDoctor, doctors)).toEqual({
+      checked: false,
+      indeterminate: true,
+    });
+    expect(togglePracticeDoctorSelection(oneDoctor, whole, doctors).ids).toEqual([ada.id, ben.id]);
+
+    const legacyPracticeSaved = restoreSavedSelection(
+      {
+        name: "Former whole-practice choice",
+        savedAt: "2026-10-25T12:00:00.000Z",
+        customers: [{ id: whole.id, name: whole.name, scope: { mode: "invoices", invoiceIds: null } }],
+      },
+      byId,
+    );
+    expect(legacyPracticeSaved.selection.ids).toEqual([ada.id, ben.id]);
+    expect(selectionTotals(selectedFigures(legacyPracticeSaved.selection, byId))).toMatchObject({
+      customers: 2,
+      invoices: 2,
+      amount: 55,
+    });
   });
 
   it("distinguishes matching display names with original profile names", () => {

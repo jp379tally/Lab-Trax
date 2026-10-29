@@ -3021,7 +3021,7 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 //                       token + OTP, server verifies both and soft-deletes.
 //                       (Wire field is still named `smsOtpCode` for backward
 //                       compatibility with older deployed servers/clients.)
-function CaseDeleteModal({
+export function CaseDeleteModal({
   caseIds,
   onClose,
   onSuccess,
@@ -3035,7 +3035,9 @@ function CaseDeleteModal({
   const [pin, setPin] = useState("");
   const [otp, setOtp] = useState("");
   const [deleteSessionToken, setDeleteSessionToken] = useState<string | null>(null);
+  const [recipientEmail, setRecipientEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(600);
 
@@ -3067,12 +3069,18 @@ function CaseDeleteModal({
     }
     setIsPending(true);
     setError(null);
+    setDeleteSessionToken(null);
+    setRecipientEmail(null);
     try {
-      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+      const r = await apiFetch<{
+        deleteSessionToken: string;
+        maskedRecipient: string;
+      }>("/cases/delete-initiate", {
         method: "POST",
         body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
       });
       setDeleteSessionToken(r.deleteSessionToken);
+      setRecipientEmail(r.maskedRecipient);
       setStep("confirm");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Incorrect PIN.");
@@ -3102,16 +3110,24 @@ function CaseDeleteModal({
     if (!pin || isPending) return;
     setIsPending(true);
     setError(null);
+    setDeliveryError(null);
     try {
-      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+      const r = await apiFetch<{
+        deleteSessionToken: string;
+        maskedRecipient: string;
+      }>("/cases/delete-initiate", {
         method: "POST",
         body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
       });
       setDeleteSessionToken(r.deleteSessionToken);
+      setRecipientEmail(r.maskedRecipient);
       setOtp("");
       setSecondsLeft(600);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not resend code.");
+      setDeleteSessionToken(null);
+      setRecipientEmail(null);
+      setOtp("");
+      setDeliveryError(e instanceof Error ? e.message : "Could not send the email code. Fix the issue and retry.");
     } finally {
       setIsPending(false);
     }
@@ -3202,7 +3218,7 @@ function CaseDeleteModal({
                 />
               </div>
               {error && (
-                <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                <div role="alert" data-testid="case-delete-pin-error" className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
                   {error.toLowerCase().includes("email address") ? (
                     <>
                       {error}{" "}
@@ -3244,7 +3260,13 @@ function CaseDeleteModal({
                 </div>
                 <div>
                   <p className="text-sm font-medium">Delete {label}?</p>
-                  <p className="text-sm text-muted-foreground mt-1">This will permanently remove {label} from the lab. An email code will be sent to the lab owner to confirm. This cannot be undone.</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    The verification email was sent to{" "}
+                    <span data-testid="case-delete-recipient" className="font-medium text-foreground">
+                      {recipientEmail ?? "the lab owner's email"}
+                    </span>
+                    . This will permanently remove {label} from the lab and cannot be undone.
+                  </p>
                 </div>
               </div>
             </div>
@@ -3255,7 +3277,7 @@ function CaseDeleteModal({
                 onClick={() => { setStep("otp"); setSecondsLeft(600); }}
                 className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 inline-flex items-center justify-center gap-1.5"
               >
-                Yes, send code
+                Continue to code
               </button>
             </div>
           </>
@@ -3269,7 +3291,13 @@ function CaseDeleteModal({
               </button>
             </div>
             <div className="px-6 py-5 space-y-4">
-              <p className="text-sm text-muted-foreground">A 6-digit code was sent to the lab owner's email. Enter it to confirm deletion of {label}.</p>
+              <p className="text-sm text-muted-foreground">
+                A 6-digit code was sent to{" "}
+                <span data-testid="case-delete-recipient" className="font-medium text-foreground">
+                  {recipientEmail ?? "the lab owner's email"}
+                </span>
+                . Enter it to confirm deletion of {label}.
+              </p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-otp" className="text-xs font-medium text-muted-foreground">
                   Email code{" "}
@@ -3292,8 +3320,13 @@ function CaseDeleteModal({
                 />
               </div>
               {error && <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>}
+              {deliveryError && (
+                <p role="alert" data-testid="case-delete-delivery-error" className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {deliveryError} No new code was sent. Correct the issue above, then retry sending the code.
+                </p>
+              )}
               <button type="button" onClick={() => void resendCode()} disabled={isPending} className="text-xs text-primary hover:underline disabled:opacity-50">
-                Resend code
+                {deliveryError ? "Retry sending code" : "Resend code"}
               </button>
             </div>
             <div className="flex gap-3 px-6 pb-5">
@@ -3301,7 +3334,7 @@ function CaseDeleteModal({
               <button
                 type="button"
                 onClick={() => void submitOtp()}
-                disabled={isPending || otp.length < 6 || secondsLeft === 0}
+                disabled={isPending || !deleteSessionToken || otp.length < 6 || secondsLeft === 0}
                 className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
               >
                 {isPending && <Loader2 size={13} className="animate-spin" />}

@@ -2,7 +2,8 @@
 
 **A successful build is not approval to publish.** LabTrax records, accounting
 history, attachment links, and stored media must remain unchanged by a release.
-If any item below is unverified or the exact migration is destructive, do not
+Except for the specific owner-authorized backup-repair exception below, if any
+item below is unverified or the exact migration is destructive, do not
 recommend or perform the release. Do not use a Publish option that replaces
 data, restores a backup, copies development data, or seeds demo records.
 
@@ -16,7 +17,8 @@ data, restores a backup, copies development data, or seeds demo records.
 - [ ] Confirm the deployment remains bound to the intended production
   database. The production identity preflight must pass against the committed
   fingerprint. Never change the binding to make a failing check pass.
-- [ ] Verify a recent off-site production backup in OneDrive before release.
+- [ ] Verify a recent off-site production backup in OneDrive before release,
+  unless this is the explicitly authorized backup-repair rollout below.
   The required protection cadence is every 15 minutes. Confirm the actual
   cloud object exists and its returned size matches the uploaded bytes; confirm
   it contains both the database and case media and has a successful integrity
@@ -32,6 +34,35 @@ data, restores a backup, copies development data, or seeds demo records.
 If the pending migration cannot be compared to the exact reviewed diff, stop.
 Record that migration safety is **unverified**; do not infer safety from the
 current schema, a successful build, or a passing identity check.
+
+## Owner-authorized backup-repair rollout exception (2026-10-20)
+
+The owner explicitly authorized completing and integrating the existing backup
+repair, and republishing it, before a successful live off-site backup exists.
+Requiring the repaired production backup to run before deploying that repair
+would be circular. For this repair only, implementation completion means saved,
+integrated source and applicable synthetic/isolated prepublication checks;
+live provider read-back and production recovery proof follow the owner's
+republish. Do not hold code-task completion solely on those later checks.
+This applies to the first deployment of this bounded backup repair, not to
+unrelated changes or subsequent ordinary releases.
+
+This exception defers **only live backup freshness/verification**. It does not
+authorize publication by an agent, a production restore, destructive SQL,
+database replacement/rebinding, development-data copying, seeding, deletion of
+records or files, or any relaxation of archive integrity/reference checks.
+The exact pending managed schema diff and unchanged production binding still
+need operator review. No environment variable or runtime bypass is introduced.
+
+Unreadable required references remain an explicit operational failure. Preserve
+the records and existing bytes, repair storage access or recover verified exact
+originals, then retry. Never omit them, manufacture substitutes, mark an
+incomplete archive complete, or advance verified-backup status on a failure.
+After republishing, confirm the deployed staging path, run the backup from the
+app, verify the actual private destination object and coverage, and rehearse
+restore only in isolated resources. Until then, production recovery protection
+is **unverified**, even though the repair implementation can be complete.
+The normal backup policy and protection cadence remain unchanged.
 
 ## Startup and release-triggered mutation audit
 
@@ -97,6 +128,8 @@ production database binding settings, backup destination, and any
 replace/restore/copy choice also require operator review. The build does not
 claim that those platform actions are protected.
 
-Do not publish while any of those checks is missing. Review the exact diff and
-backup evidence in the platform before promotion. This policy is a release
+Do not publish while any of those checks is missing, except that live backup
+verification alone may be deferred for the explicitly authorized repair rollout
+above. Review the exact diff and applicable evidence in the platform before
+promotion. This policy is a release
 requirement, not a claim that the application controls the Publish button.

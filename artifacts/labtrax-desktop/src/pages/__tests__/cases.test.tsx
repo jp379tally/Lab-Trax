@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import CasesPage, { CaseDrawer, NewCaseModal } from "@/pages/cases";
+import CasesPage, { CaseDeleteModal, CaseDrawer, NewCaseModal } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
 import type { SessionUser } from "@/lib/api";
 import { formatDate, formatShortDate } from "@/lib/format";
@@ -235,6 +235,140 @@ describe("CasesPage smoke render", () => {
     });
     expect(screen.getAllByText(formatDate(savedStationCase.createdAt)).length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText(formatDate(savedStationCase.updatedAt))).not.toBeInTheDocument();
+  });
+});
+
+describe("Case deletion email delivery", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  function renderDeleteModal() {
+    const Wrapper = makeAuthWrapper("/cases", {
+      user: { id: "delete-modal-admin", username: "admin", role: "admin" } as SessionUser,
+      status: "authed",
+    });
+    render(
+      <Wrapper>
+        <CaseDeleteModal caseIds={["case-to-delete"]} onClose={() => {}} onSuccess={() => {}} />
+      </Wrapper>,
+    );
+  }
+
+  it("shows the masked destination after confirmed email delivery", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/cases/delete-initiate")) {
+          return json({
+            ok: true,
+            data: {
+              deleteSessionToken: "confirmed-delivery-token",
+              maskedRecipient: "o***@lab.example",
+            },
+          });
+        }
+        return json({});
+      }),
+    );
+    renderDeleteModal();
+
+    fireEvent.change(await screen.findByLabelText("Admin PIN"), {
+      target: { value: "1234" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(await screen.findByTestId("case-delete-recipient")).toHaveTextContent(
+      "o***@lab.example",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Continue to code" }));
+    expect(await screen.findByText(/A 6-digit code was sent to/)).toBeInTheDocument();
+    expect(screen.getByTestId("case-delete-recipient")).toHaveTextContent(
+      "o***@lab.example",
+    );
+  });
+
+  it("keeps the PIN step visible and explains how to retry an unsuccessful initial send", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/cases/delete-initiate")) {
+          return json(
+            {
+              ok: false,
+              message:
+                "Email delivery is not configured. Ask a platform administrator to check server secrets, then try again.",
+            },
+            502,
+          );
+        }
+        return json({});
+      }),
+    );
+    renderDeleteModal();
+
+    fireEvent.change(await screen.findByLabelText("Admin PIN"), {
+      target: { value: "1234" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(await screen.findByTestId("case-delete-pin-error")).toHaveTextContent(
+      /ask a platform administrator.*try again/i,
+    );
+    expect(screen.getByLabelText("Admin PIN")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue to code" })).not.toBeInTheDocument();
+  });
+
+  it("keeps resend failures visible and lets the admin retry delivery", async () => {
+    let sendAttempt = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/cases/delete-initiate")) {
+          sendAttempt += 1;
+          if (sendAttempt === 2) {
+            return json(
+              { ok: false, message: "The email provider rejected its login. Check SMTP settings and retry." },
+              502,
+            );
+          }
+          return json({
+            ok: true,
+            data: {
+              deleteSessionToken: `delivery-token-${sendAttempt}`,
+              maskedRecipient: "o***@lab.example",
+            },
+          });
+        }
+        return json({});
+      }),
+    );
+    renderDeleteModal();
+
+    fireEvent.change(await screen.findByLabelText("Admin PIN"), {
+      target: { value: "1234" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue to code" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resend code" }));
+
+    expect(await screen.findByTestId("case-delete-delivery-error")).toHaveTextContent(
+      /provider rejected its login.*no new code was sent.*retry sending the code/i,
+    );
+    expect(screen.getByRole("button", { name: "Retry sending code" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Delete 1 case/ })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry sending code" }));
+    await waitFor(() => expect(sendAttempt).toBe(3));
+    expect(await screen.findByTestId("case-delete-recipient")).toHaveTextContent(
+      "o***@lab.example",
+    );
+    expect(screen.queryByTestId("case-delete-delivery-error")).not.toBeInTheDocument();
   });
 });
 

@@ -100,7 +100,7 @@ beforeEach(() => {
           elapsedMs: 100,
           metrics: {},
           archiveEvidence: {
-            archiveKind: "complete-non-production",
+            archiveKind: "complete-production",
             coverageVersion: 1,
             mediaFileCount: 1,
             attachmentRowCount: 1,
@@ -108,8 +108,8 @@ beforeEach(() => {
           delivery: {
             fileName: "labtrax-backup.zip.enc",
             size: 76,
-            archiveKind: "complete-non-production",
-            sourceEnvironment: "non-production",
+            archiveKind: "complete-production",
+            sourceEnvironment: "production",
           },
         };
       return jsonResponse({ ok: true, runId: manualBackupBody.runId, state: "running" }, 202);
@@ -140,7 +140,7 @@ beforeEach(() => {
           "Content-Type": "application/octet-stream",
           "Content-Disposition": 'attachment; filename="labtrax-backup.zip.enc"',
           "Content-Length": String(archive.byteLength),
-          "x-backup-archive-kind": "complete-non-production",
+          "x-backup-archive-kind": "complete-production",
           "x-backup-coverage-version": "1",
           "x-backup-missing-file-count": "0",
           "x-backup-media-file-count": "1",
@@ -156,7 +156,7 @@ beforeEach(() => {
       return jsonResponse({ ok: true, connected: false, folder: "", manageUrl: null });
     }
     if (url.includes("/admin/backup/schedule")) {
-      return jsonResponse({ interval: null, destination: null, enabled: false });
+      return jsonResponse({ interval: null, destination: null, enabled: false, sourceEnvironment: "production" });
     }
     if (url.includes("/admin/backup/history")) {
       return jsonResponse({ ok: true, runs: [] });
@@ -199,13 +199,17 @@ describe("Settings → Backup → lab-scoped download", () => {
     });
     renderBackupSettings();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+    const backupButton = await screen.findByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(backupButton).toBeEnabled());
+    fireEvent.click(backupButton);
 
     expect(await screen.findByText(/saved to/)).toBeInTheDocument();
     expect(picker).toHaveBeenCalledWith({ suggestedName: "labtrax-backup.zip.enc" });
     expect(adminBackupCalls).toHaveLength(1);
     expect(adminBackupCalls[0]).toContain("/admin/backup/download/");
     expect(manualBackupBody).toMatchObject({ destination: "browser", archiveKind: "full" });
+    const startRequest = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/admin/backup/run"));
+    expect(new Headers(startRequest?.[1]?.headers).get("X-LabTrax-Backup-Source")).toBe("production");
     expect(adminBackupReports).toEqual([expect.objectContaining({
       status: "success",
       source: "manual",
@@ -218,7 +222,9 @@ describe("Settings → Backup → lab-scoped download", () => {
   it("cancels only the active manual run and displays cancellation rather than success", async () => {
     holdManualGeneration = true;
     renderBackupSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+    const backupButton = await screen.findByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(backupButton).toBeEnabled());
+    fireEvent.click(backupButton);
     await waitFor(() => expect(screen.getByTestId("cancel-manual-backup")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("cancel-manual-backup"));
 
@@ -239,8 +245,8 @@ describe("Settings → Backup → lab-scoped download", () => {
       delivery: {
         fileName: "labtrax-backup.zip.enc",
         size: 76,
-        archiveKind: "complete-non-production",
-        sourceEnvironment: "non-production",
+        archiveKind: "complete-production",
+        sourceEnvironment: "production",
       },
     };
     saveManualBackupIdentity("user-one", {

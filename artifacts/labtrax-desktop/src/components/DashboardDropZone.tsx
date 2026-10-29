@@ -23,6 +23,11 @@ import {
   updateConnectorChoices, validateToothConnectors, toothAssignmentSummary, catalogToothMaterialOptions,
   incompatibleToothConnectorPairs,
 } from "@workspace/case-taxonomy";
+import {
+  addCalendarDays,
+  isValidCalendarDate,
+  resolveAiIntakePrescriptionDueDate,
+} from "@workspace/calendar-date";
 import { ToothActionDialog, type ToothActionPayload } from "./ToothActionDialog";
 import { apiFetch, ApiError } from "@/lib/api";
 import { runPrescriptionAnalysis, validatePrescriptionPageCount } from "@/lib/prescription-analysis";
@@ -76,8 +81,10 @@ interface ExtractedRx {
   removableSubtype?: "partial" | "denture" | "flipper" | "repair_partial" | "repair_denture" | "repair" | null;
   /** Explicit date extracted from the scan or source platform. */
   scanDate?: string | null;
-  /** Independent lab schedule date; blank delegates to the lab turnaround rule. */
+  /** Reviewed lab schedule date, optionally prefilled from the lab turnaround. */
   labDueDate?: string | null;
+  /** Whether a staff member explicitly edited the lab schedule date. */
+  labDueDateEdited?: boolean;
   /** Source platform identifier (never the Case Pan barcode). */
   platformCaseIdentifier?: string | null;
   /** Calendar date on which this Rx was received (editable during review). */
@@ -93,6 +100,14 @@ interface ExtractedRx {
   assignmentOverridesManual?: boolean;
   bridgeConnectors?: string;
   toothAssignments?: unknown;
+}
+
+const DIAGNOSTIC_WAX_UP_LABEL = "Diagnostic Wax Up";
+const DIAGNOSTIC_WAX_UP_SUBTYPE = "restorative/diagnostic_wax_up";
+
+function isDiagnosticWaxUp(value: string | null | undefined): boolean {
+  return (value ?? "").trim().toLocaleLowerCase() ===
+    DIAGNOSTIC_WAX_UP_LABEL.toLocaleLowerCase();
 }
 
 function localCalendarDate(date = new Date()): string {
@@ -118,6 +133,16 @@ function normalizeDueDateForInput(raw: string | null | undefined): string {
     return `${fullYr}-${mo.padStart(2, "0")}-${dy.padStart(2, "0")}`;
   }
   return "";
+}
+
+function reviewedPrescriptionDueDate(
+  raw: string | null | undefined,
+  receivedAt: string | null | undefined,
+  turnaroundDays: number | null,
+): string {
+  const dueDate = normalizeDueDateForInput(raw);
+  if (!dueDate || !isValidCalendarDate(dueDate)) return "";
+  return resolveAiIntakePrescriptionDueDate(dueDate, receivedAt, turnaroundDays) ?? "";
 }
 
 interface DoctorDirectoryEntry {
@@ -296,6 +321,7 @@ interface OrgLite {
   billingEmail?: string | null;
   primaryEmail?: string | null;
   additionalEmails?: Array<{ email: string; type: "billing" | "correspondence" }>;
+  defaultCaseDueDays?: number | null;
 }
 
 /**
@@ -1382,16 +1408,97 @@ export function DashboardDropZone() {
       const values = { ...rxDraft.assignmentValues };
       for (const unit of rxAssignmentUnits) values[unit.toothNumber] = {
         ...values[unit.toothNumber],
-        restorationSubtype: values[unit.toothNumber]?.restorationSubtype ?? unit.restorationSubtype ?? undefined,
+        restorationSubtype: rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE
+          ? DIAGNOSTIC_WAX_UP_SUBTYPE
+          : values[unit.toothNumber]?.restorationSubtype ?? unit.restorationSubtype ?? undefined,
         material: values[unit.toothNumber]?.material ?? unit.material ?? undefined,
         shade: values[unit.toothNumber]?.shade ?? unit.shade ?? undefined,
       };
-      patch.assignmentValues = applyToothAssignmentDefaults(values, { material: patch.material ?? undefined, shade: patch.shade ?? undefined });
+      if (rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+        patch.assignmentValues = Object.fromEntries(Object.entries(values).map(([tooth, value]) => [
+          tooth,
+          {
+            ...value,
+            restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+            ...(patch.material !== undefined ? { material: patch.material ?? "" } : {}),
+            ...(patch.shade !== undefined ? { shade: patch.shade ?? "" } : {}),
+          },
+        ]));
+      } else {
+        patch.assignmentValues = applyToothAssignmentDefaults(values, {
+          material: patch.material ?? undefined,
+          shade: patch.shade ?? undefined,
+        });
+      }
     }
     if (patch.assignmentRoles || patch.assignmentValues) patch.assignmentOverridesManual = true;
     rxClinicalOverrides.current = { ...rxClinicalOverrides.current, ...patch };
     setRxDraft((current) => ({ ...current, ...patch }));
     setRxAssignmentError(null);
+  }
+  function selectDiagnosticWaxUp() {
+    captureRxAssignmentUndo();
+    const assignmentValues = { ...rxDraft.assignmentValues };
+    for (const [tooth, role] of Object.entries(rxDraft.assignmentRoles ?? {})) {
+      if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+      assignmentValues[tooth] = {
+        ...assignmentValues[tooth],
+        material: DIAGNOSTIC_WAX_UP_LABEL,
+        shade: DIAGNOSTIC_WAX_UP_LABEL,
+        restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      };
+    }
+    const patch: Partial<ExtractedRx> = {
+      caseType: DIAGNOSTIC_WAX_UP_LABEL,
+      material: DIAGNOSTIC_WAX_UP_LABEL,
+      shade: DIAGNOSTIC_WAX_UP_LABEL,
+      restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      assignmentValues,
+      assignmentOverridesManual: true,
+    };
+    rxClinicalOverrides.current = { ...rxClinicalOverrides.current, ...patch };
+    setRxDraft((current) => ({ ...current, ...patch }));
+    setRxAssignmentError(null);
+  }
+  function selectRxRestorationType(value: string) {
+    if (isDiagnosticWaxUp(value)) {
+      selectDiagnosticWaxUp();
+      return;
+    }
+    const patch: Partial<ExtractedRx> = { caseType: value };
+    if (rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      patch.restorationSubtype = undefined;
+      patch.assignmentValues = Object.fromEntries(
+        Object.entries(rxDraft.assignmentValues ?? {}).map(([tooth, assignment]) => [
+          tooth,
+          assignment?.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE
+            ? { ...assignment, restorationSubtype: undefined }
+            : assignment,
+        ]),
+      );
+    }
+    editRxClinical(patch);
+  }
+  function selectRxRestorationSubtype(value: string) {
+    if (value === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      selectDiagnosticWaxUp();
+      return;
+    }
+    if (rxDraft.restorationSubtype !== DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      // Preserve existing behavior for every other restoration subtype.
+      setRxDraft({ ...rxDraft, restorationSubtype: value });
+      return;
+    }
+
+    const assignmentValues = { ...rxDraft.assignmentValues };
+    for (const [tooth, role] of Object.entries(rxDraft.assignmentRoles ?? {})) {
+      if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+      assignmentValues[tooth] = { ...assignmentValues[tooth], restorationSubtype: value || undefined };
+    }
+    editRxClinical({
+      restorationSubtype: value || undefined,
+      ...(Object.keys(assignmentValues).length ? { assignmentValues } : {}),
+    });
   }
   const [zipSource, setZipSource] = useState<{
     originalZip: File;
@@ -1404,6 +1511,32 @@ export function DashboardDropZone() {
   // Selected lab + practice when creating a modern /api/cases case from
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
+  const selectedRxLab = labOrgs.find((o) => o.id === rxLabOrgId) ?? null;
+  const rxTurnaroundDays =
+    selectedRxLab?.defaultCaseDueDays != null &&
+    Number.isInteger(selectedRxLab.defaultCaseDueDays) &&
+    selectedRxLab.defaultCaseDueDays > 0
+      ? selectedRxLab.defaultCaseDueDays
+      : null;
+  const eligibleRxDueDate = reviewedPrescriptionDueDate(
+    rxDraft.dueDate,
+    rxDraft.receivedAt,
+    rxTurnaroundDays,
+  );
+  useEffect(() => {
+    if (rxDraft.labDueDateEdited) return;
+    const nextLabDueDate = !rxDraft.receivedAt || rxTurnaroundDays == null
+      ? ""
+      : addCalendarDays(rxDraft.receivedAt, rxTurnaroundDays) ?? "";
+    setRxDraft((current) => {
+      if (current.labDueDateEdited || current.receivedAt !== rxDraft.receivedAt) {
+        return current;
+      }
+      return current.labDueDate === nextLabDueDate
+        ? current
+        : { ...current, labDueDate: nextLabDueDate };
+    });
+  }, [rxDraft.receivedAt, rxDraft.labDueDateEdited, rxTurnaroundDays]);
   const rxCatalog = useGetCatalogTree({ labOrganizationId: rxLabOrgId }, {
     query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: rxLabOrgId }), enabled: !!rxLabOrgId },
   });
@@ -1412,6 +1545,24 @@ export function DashboardDropZone() {
       key: option.restorationSubtype, label: option.label, parentLabel: option.parentLabel,
     }))
     : getCatalogMaterialsForRestoration(undefined, { restorationType: "Crown" });
+  const rxRestorationSubtypeOptions = [
+    ...rxCatalogMaterials,
+    ...((rxCatalog.data?.data?.caseTypes ?? [])
+      .filter((caseType) => caseType.key === "restorative")
+      .flatMap((caseType) => caseType.subtypes
+        .filter((subtype) => subtype.materials.length === 0)
+        .map((subtype) => ({
+          key: `restorative/${subtype.key}`,
+          label: subtype.label,
+          parentLabel: caseType.label,
+        })))),
+  ];
+  if (!rxRestorationSubtypeOptions.some((option) => option.key === DIAGNOSTIC_WAX_UP_SUBTYPE)) {
+    rxRestorationSubtypeOptions.push({
+      key: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      label: DIAGNOSTIC_WAX_UP_LABEL,
+    });
+  }
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
   const [earlyDuplicate, setEarlyDuplicate] = useState<DuplicateHit | null>(null);
   const duplicateLookupSequenceRef = useRef(0);
@@ -1923,6 +2074,7 @@ export function DashboardDropZone() {
       caseType: rxCaseType,
       material: rxMaterial,
       shade: rxShade,
+      restorationSubtype: rxDraft.restorationSubtype,
       arch: rxArch || null,
       assignmentRoles: rxDraft.assignmentRoles,
       assignmentValues: rxDraft.assignmentValues,
@@ -1968,6 +2120,7 @@ export function DashboardDropZone() {
     rxCaseType,
     rxMaterial,
     rxShade,
+    rxDraft.restorationSubtype,
     rxArch,
     rxDoctorName,
     rxDraft.assignmentRoles,
@@ -2393,6 +2546,7 @@ export function DashboardDropZone() {
           scanDate: normalizeDueDateForInput(rx.scanDate),
           platformCaseIdentifier: rx.platformCaseIdentifier ?? "",
           labDueDate: "",
+          labDueDateEdited: false,
           // The received date is a workflow field, not an AI extraction. Keep
           // it on the draft so it survives duplicate/remake/doctor continuations.
           receivedAt: droppedOn,
@@ -3231,7 +3385,7 @@ export function DashboardDropZone() {
           // (e.g. Replit AI proxy does not support openai.files.create() for PDFs).
           // This ensures the case is fully populated from the data the user
           // already reviewed in the form.
-          fd.append("rxDueDateHint", r.dueDate?.trim() ?? "");
+          fd.append("rxDueDateHint", eligibleRxDueDate);
           fd.append("labDueDateHint", r.labDueDate?.trim() ?? "");
           fd.append("scanDateHint", r.scanDate?.trim() ?? "");
           fd.append("externalPatientIdHint", r.platformCaseIdentifier?.trim() || iteroOrderId);
@@ -3382,8 +3536,9 @@ export function DashboardDropZone() {
             doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
-            ...(r.labDueDate ? { dueDate: r.labDueDate } : {}),
-            ...(r.dueDate ? { prescriptionDueDate: r.dueDate } : {}),
+            aiIntakeReviewedDates: true,
+            dueDate: r.labDueDate || null,
+            ...(eligibleRxDueDate ? { prescriptionDueDate: eligibleRxDueDate } : {}),
             ...(r.scanDate ? { scanDate: r.scanDate } : {}),
             ...(r.platformCaseIdentifier ? { externalPatientId: r.platformCaseIdentifier.trim() } : {}),
             ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
@@ -3547,8 +3702,9 @@ export function DashboardDropZone() {
             doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
-            ...(r.labDueDate ? { dueDate: r.labDueDate } : {}),
-            ...(r.dueDate ? { prescriptionDueDate: r.dueDate } : {}),
+            aiIntakeReviewedDates: true,
+            dueDate: r.labDueDate || null,
+            ...(eligibleRxDueDate ? { prescriptionDueDate: eligibleRxDueDate } : {}),
             ...(r.scanDate ? { scanDate: r.scanDate } : {}),
             ...(r.platformCaseIdentifier ? { externalPatientId: r.platformCaseIdentifier.trim() } : {}),
             ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
@@ -4449,15 +4605,19 @@ export function DashboardDropZone() {
               }
             />
           )}
-          <FieldCombobox
-            value={r.caseType || ""}
-            suggestions={dropZoneRestorationTypeSuggestions}
-        onChange={(t) => editRxClinical({ caseType: t })}
-            onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
-            placeholder="Restoration type"
-            addNewLabel="Add restoration type"
-            size="sm"
-          />
+          <label htmlFor="rx-clinical-case-type" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Case Type</span>
+            <FieldCombobox
+              inputId="rx-clinical-case-type"
+              value={r.caseType || ""}
+              suggestions={dropZoneRestorationTypeSuggestions}
+              onChange={selectRxRestorationType}
+              onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
+              placeholder="Restoration type"
+              addNewLabel="Add restoration type"
+              size="sm"
+            />
+          </label>
           {!/ortho|night guard|retainer|aligner/i.test(r.caseType ?? "") && (
               <div className="col-span-2 order-last space-y-2 rounded-lg border border-border p-3" data-testid="rx-chart-section">
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground">Tooth Chart</h4>
@@ -4623,17 +4783,21 @@ export function DashboardDropZone() {
               </select>
             </label>
           )}
-          <FieldCombobox
-            value={r.material || ""}
-            suggestions={isRemovableRestorationType(r.caseType)
-              ? [...new Set([...dropZoneMaterialSuggestions, ...rxCatalogMaterials.map((option) => option.label)])]
-              : dropZoneMaterialSuggestions}
-            onChange={(m) => editRxClinical({ material: m })}
-            onCreate={(v) => dropZoneCreateVocabItem("material", v)}
-            placeholder="Material"
-            addNewLabel="Add material"
-            size="sm"
-          />
+          <label htmlFor="rx-clinical-material" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Case Material</span>
+            <FieldCombobox
+              inputId="rx-clinical-material"
+              value={r.material || ""}
+              suggestions={isRemovableRestorationType(r.caseType)
+                ? [...new Set([...dropZoneMaterialSuggestions, ...rxCatalogMaterials.map((option) => option.label)])]
+                : dropZoneMaterialSuggestions}
+              onChange={(m) => editRxClinical({ material: m })}
+              onCreate={(v) => dropZoneCreateVocabItem("material", v)}
+              placeholder="Material"
+              addNewLabel="Add material"
+              size="sm"
+            />
+          </label>
           <label className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground px-0.5">Restoration subtype</span>
             {isRemovableRestorationType(r.caseType) ? (
@@ -4656,56 +4820,80 @@ export function DashboardDropZone() {
                 aria-label="Restoration subtype"
                 className={inputCls}
                 value={r.restorationSubtype || ""}
-                onChange={(e) => setRxDraft({ ...r, restorationSubtype: e.target.value })}
+                onChange={(e) => selectRxRestorationSubtype(e.target.value)}
               >
                 <option value="">Select subtype…</option>
-                {rxCatalogMaterials.map((option) => (
+                {rxRestorationSubtypeOptions.map((option) => (
                   <option key={option.key} value={option.key}>{option.label}</option>
                 ))}
-                {r.restorationSubtype && !rxCatalogMaterials.some((option) => option.key === r.restorationSubtype) && (
+                {r.restorationSubtype && !rxRestorationSubtypeOptions.some((option) => option.key === r.restorationSubtype) && (
                   <option value={r.restorationSubtype}>{r.restorationSubtype}</option>
                 )}
               </select>
             )}
           </label>
-          <FieldCombobox
-            value={r.shade || ""}
-            suggestions={dropZoneShadeSuggestions}
-            onChange={(s) => editRxClinical({ shade: s })}
-            onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
-            placeholder="Shade"
-            addNewLabel="Add shade"
-            size="sm"
-          />
-          <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
-            <span className="text-xs text-muted-foreground px-0.5">
-              Rx due date (from prescription)
-            </span>
-            <div className="relative">
-              <input
-                id="rx-due-date"
-                type="date"
-                className={`${inputCls} w-full${!r.dueDate ? " [color:transparent]" : ""}`}
-                value={r.dueDate || ""}
-                onChange={(e) =>
-                  setRxDraft({ ...r, dueDate: e.target.value })
-                }
-              />
-              {!r.dueDate && (
-                <span className="pointer-events-none absolute inset-0 flex items-center px-2.5 text-sm text-muted-foreground">
-                  No date set
-                </span>
-              )}
-            </div>
+          <label htmlFor="rx-clinical-shade" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Shade</span>
+            <FieldCombobox
+              inputId="rx-clinical-shade"
+              value={r.shade || ""}
+              suggestions={dropZoneShadeSuggestions}
+              onChange={(s) => editRxClinical({ shade: s })}
+              onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
+              placeholder="Shade"
+              addNewLabel="Add shade"
+              size="sm"
+            />
           </label>
+          {(!rxTurnaroundDays || !r.dueDate || eligibleRxDueDate) && (
+            <>
+              <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground px-0.5">
+                  Rx due date (from prescription)
+                </span>
+                <div className="relative">
+                  <input
+                    id="rx-due-date"
+                    type="date"
+                    className={`${inputCls} w-full${!r.dueDate ? " [color:transparent]" : ""}`}
+                    value={r.dueDate || ""}
+                    onChange={(e) =>
+                      setRxDraft({ ...r, dueDate: e.target.value })
+                    }
+                  />
+                  {!r.dueDate && (
+                    <span className="pointer-events-none absolute inset-0 flex items-center px-2.5 text-sm text-muted-foreground">
+                      No date set
+                    </span>
+                  )}
+                </div>
+              </label>
+              {rxTurnaroundDays != null && eligibleRxDueDate && (
+                <div
+                  role="note"
+                  className="col-span-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200"
+                >
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    The prescription requests {eligibleRxDueDate}. This falls within the lab&apos;s{" "}
+                    {rxTurnaroundDays}-day turnaround; the Lab due date remains the lab schedule and is not replaced.
+                  </span>
+                </div>
+              )}
+            </>
+          )}
           <label htmlFor="rx-scan-date" className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground px-0.5">Scan date</span>
             <input id="rx-scan-date" type="date" className={inputCls + " w-full"} value={r.scanDate || ""} onChange={(e) => setRxDraft({ ...r, scanDate: e.target.value })} />
           </label>
           <label htmlFor="rx-lab-due-date" className="flex flex-col gap-0.5 rounded-md border border-primary/40 bg-primary/5 p-2">
             <span className="text-xs font-semibold text-primary px-0.5">Lab due date</span>
-            <input id="rx-lab-due-date" type="date" className={inputCls + " w-full"} value={r.labDueDate || ""} onChange={(e) => setRxDraft({ ...r, labDueDate: e.target.value })} />
-            <span className="text-[10px] text-muted-foreground">Leave blank to use the lab's normal turnaround schedule.</span>
+            <input id="rx-lab-due-date" type="date" className={inputCls + " w-full"} value={r.labDueDate || ""} onChange={(e) => setRxDraft({ ...r, labDueDate: e.target.value, labDueDateEdited: true })} />
+            <span className="text-[10px] text-muted-foreground">
+              {rxTurnaroundDays != null
+                ? `Prefilled ${rxTurnaroundDays} calendar days after receipt. Your edit stays in effect.`
+                : "No turnaround is configured; enter a date if one is needed."}
+            </span>
           </label>
           <label htmlFor="rx-received-date" className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground px-0.5">

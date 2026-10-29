@@ -81,6 +81,7 @@
     "@workspace/account-number": "workspace:*",
     "@workspace/api-client-react": "workspace:*",
     "@workspace/calendar-date": "workspace:*",
+    "@workspace/dashboard-labels": "workspace:*",
     "@workspace/item-name-match": "workspace:*",
     "@workspace/legacy-case-media-contract": "workspace:*",
     "@workspace/provider-case-format": "workspace:*",

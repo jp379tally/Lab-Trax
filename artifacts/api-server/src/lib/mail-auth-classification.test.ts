@@ -16,7 +16,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const sendMailImpl = vi.fn();
+const { sendMailImpl, loggerError, loggerWarn } = vi.hoisted(() => ({
+  sendMailImpl: vi.fn(),
+  loggerError: vi.fn(),
+  loggerWarn: vi.fn(),
+}));
 
 vi.mock("./mailer", () => ({
   getMailerConfig: () => ({
@@ -28,6 +32,9 @@ vi.mock("./mailer", () => ({
     from: "lab@example-lab.com",
   }),
   createTransport: () => ({ sendMail: sendMailImpl }),
+}));
+vi.mock("./logger", () => ({
+  logger: { error: loggerError, warn: loggerWarn },
 }));
 
 // DNS preflight: report the recipient domain as deliverable so the send
@@ -45,6 +52,8 @@ describe("sendMail SMTP failure classification", () => {
   beforeEach(async () => {
     vi.stubEnv("VITEST", "");
     sendMailImpl.mockReset();
+    loggerError.mockReset();
+    loggerWarn.mockReset();
     mail = await import("./mail");
     mail.__clearMxCacheForTests();
   });
@@ -72,6 +81,9 @@ describe("sendMail SMTP failure classification", () => {
     expect(result).toEqual({ sent: false, reason: "auth_failed" });
     expect(JSON.stringify(result)).not.toContain("BadCredentials");
     expect(JSON.stringify(result)).not.toContain("535");
+    expect(JSON.stringify(loggerError.mock.calls)).not.toMatch(
+      /BadCredentials|provider.*password|Invalid login|someone@labtrax-test\.com/i,
+    );
   });
 
   it("maps a 535 response code without an EAUTH code to auth_failed", async () => {

@@ -84,33 +84,60 @@ export class BackupExitError extends Error {
   }
 }
 
-/**
- * Given commit oids ordered newest -> oldest (as `git.log` returns them) and
- * the current remote tip, compute the commits the remote is missing.
- *
- * Returns:
- *   - `ordered`: the missing commits oldest -> newest (push order).
- *   - `reachedRemote`: whether the remote tip was found as an ancestor while
- *     walking back from the local tip. When `remoteTip` exists but this is
- *     `false`, histories have diverged (the remote tip is not an ancestor of
- *     local HEAD) and the caller must refuse to push.
- */
+/** Complete parent metadata is required; shallow or malformed history fails closed. */
+export interface BackupCommit {
+  oid: string;
+  commit: { parent: string[] };
+}
+
+/** Compute the full reachable difference, independent of log order or timestamps. */
 export function computeMissingCommits(
-  commitOids: string[],
+  commits: BackupCommit[],
+  localTip: string,
   remoteTip: string | undefined,
-): { ordered: string[]; reachedRemote: boolean } {
-  const ordered: string[] = [];
-  let reachedRemote = false;
-  for (const oid of commitOids) {
-    if (remoteTip && oid === remoteTip) {
-      reachedRemote = true;
-      break;
-    }
-    ordered.push(oid);
+): { ordered: string[]; reachedRemote: boolean; hasMerge: boolean } {
+  const byOid = new Map<string, BackupCommit>();
+  const invalid = () => new BackupExitError(5,
+    "Incomplete or invalid commit history. Refusing to upload uninspected history.");
+  for (const entry of commits) {
+    if (!entry || typeof entry.oid !== "string" || !entry.oid ||
+        !Array.isArray(entry.commit?.parent) ||
+        entry.commit.parent.some(parent => typeof parent !== "string" || !parent) ||
+        byOid.has(entry.oid)) throw invalid();
+    byOid.set(entry.oid, entry);
   }
-  // ordered is newest -> oldest of the missing commits; reverse to oldest first.
-  ordered.reverse();
-  return { ordered, reachedRemote };
+  // Iterative postorder handles long histories without exhausting the call stack.
+  function ancestors(tip: string): string[] {
+    const state = new Map<string, number>();
+    const ordered: string[] = [];
+    const stack: Array<{ oid: string; expanded: boolean }> = [{ oid: tip, expanded: false }];
+    while (stack.length) {
+      const { oid, expanded } = stack.pop()!;
+      if (state.get(oid) === 2) continue;
+      const entry = byOid.get(oid);
+      if (!entry) throw invalid();
+      if (expanded) {
+        state.set(oid, 2);
+        ordered.push(oid);
+        continue;
+      }
+      if (state.get(oid) === 1) throw invalid();
+      state.set(oid, 1);
+      stack.push({ oid, expanded: true });
+      for (const parent of [...entry.commit.parent].reverse()) {
+        stack.push({ oid: parent, expanded: false });
+      }
+    }
+    return ordered;
+  }
+  const local = ancestors(localTip);
+  const reachedRemote = remoteTip !== undefined && local.includes(remoteTip);
+  const remote = new Set(reachedRemote ? ancestors(remoteTip!) : []);
+  const ordered = local.filter(oid => !remote.has(oid));
+  return {
+    ordered, reachedRemote,
+    hasMerge: ordered.some(oid => byOid.get(oid)!.commit.parent.length > 1),
+  };
 }
 
 /**
@@ -159,7 +186,7 @@ export interface GitLike {
     fs: unknown;
     dir: string;
     ref: string;
-  }): Promise<{ oid: string }[]>;
+  }): Promise<BackupCommit[]>;
   push(args: {
     fs: unknown;
     http: unknown;
@@ -234,12 +261,10 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
     return { pushedChunks: 0 };
   }
 
-  // Collect commits newest -> oldest from the local tip, stopping once we
-  // reach the remote tip (which is an ancestor for a normal fast-forward).
+  // Validate every reachable parent before choosing any upload boundary.
   const commits = await gitClient.log({ fs: fsImpl, dir, ref: localTip });
-  const { ordered, reachedRemote } = computeMissingCommits(
-    commits.map((c) => c.oid),
-    remoteTip,
+  const { ordered, reachedRemote, hasMerge } = computeMissingCommits(
+    commits, localTip, remoteTip,
   );
 
   if (remoteTip && !reachedRemote) {
@@ -274,7 +299,9 @@ export async function run(opts: RunOptions): Promise<{ pushedChunks: number }> {
 
   log(`commits to push: ${ordered.length} (chunk size ${chunkSize})`);
 
-  const boundaries = computeChunkBoundaries(ordered, chunkSize);
+  // Side branches are not a fast-forward sequence. A merge delta must be
+  // uploaded at its final tip after ALL outgoing histories pass inspection.
+  const boundaries = hasMerge ? [localTip] : computeChunkBoundaries(ordered, chunkSize);
 
   let pushed = 0;
 

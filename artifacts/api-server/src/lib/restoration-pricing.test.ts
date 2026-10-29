@@ -68,6 +68,41 @@ describe("resolveRestorationPriceKey", () => {
     );
   });
 
+  it("does not apply legacy crown pricing to a structured Diagnostic Wax Up", async () => {
+    await expect(
+      resolveRestorationPriceKey({
+        labOrganizationId: "lab-1",
+        restorationType: "Crown",
+        material: "Zirconia",
+        restorationSubtype: "restorative/diagnostic_wax_up",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("allows the lab's Diagnostic Wax Up subtype override", async () => {
+    findFirst.mockResolvedValue({ priceKeyOverride: "lab_diagnostic_wax_up" });
+
+    await expect(
+      resolveRestorationPriceKey({
+        labOrganizationId: "lab-1",
+        restorationType: "Crown",
+        material: "Zirconia",
+        restorationSubtype: "restorative/diagnostic_wax_up",
+      }),
+    ).resolves.toBe("lab_diagnostic_wax_up");
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.arrayContaining([
+          { column: catalogColumns.entryType, value: "subtype" },
+          { column: catalogColumns.caseType, value: "restorative" },
+          { column: catalogColumns.parentKey, value: "" },
+          { column: catalogColumns.key, value: "diagnostic_wax_up" },
+        ]),
+      }),
+    );
+  });
+
   it("inherits a parent subtype override when the material has no override", async () => {
     findFirst
       .mockResolvedValueOnce(undefined)

@@ -14,7 +14,13 @@
 
 export type CaseType = "restorative" | "removable" | "ortho";
 
-export type RestorativeSubtype = "crown_and_bridge" | "crown" | "bridge" | "implant" | "temporaries";
+export type RestorativeSubtype =
+  | "crown_and_bridge"
+  | "crown"
+  | "bridge"
+  | "implant"
+  | "temporaries"
+  | "diagnostic_wax_up";
 export type RemovableSubtype =
   | "dentures"
   | "partials"
@@ -143,6 +149,10 @@ export const CASE_TAXONOMY: Record<CaseType, CaseTypeEntry> = {
           resin: { label: "Resin / Composite", pricingKey: null },
           pmma: { label: "PMMA", pricingKey: null },
         },
+      },
+      diagnostic_wax_up: {
+        label: "Diagnostic Wax Up",
+        materialSubtypes: {},
       },
     },
   },
@@ -318,7 +328,7 @@ const CASE_TYPE_ALIASES: Array<{ pattern: RegExp; caseType: CaseType }> = [
   // Ortho/appliances
   { pattern: /retainer|night\s*guard|bite\s*guard|occlusal\s*guard|sports?\s*guard|bruxism|snore|mouthguard/i, caseType: "ortho" },
   // Restorative (catch-all)
-  { pattern: /crown|bridge|implant|veneer|inlay|onlay|temp|provisional|restoration/i, caseType: "restorative" },
+  { pattern: /diagnostic\s+wax\s*up|crown|bridge|implant|veneer|inlay|onlay|temp|provisional|restoration/i, caseType: "restorative" },
 ];
 
 /**
@@ -353,6 +363,7 @@ const SUBTYPE_ALIASES: Array<{ pattern: RegExp; subtype: CaseSubtype }> = [
   { pattern: /sports?\s*guard|mouthguard/i, subtype: "sports_guards" },
   { pattern: /retainer/i, subtype: "retainers" },
   // Restorative subtypes
+  { pattern: /diagnostic\s+wax\s*up/i, subtype: "diagnostic_wax_up" },
   { pattern: /implant/i, subtype: "implant" },
   { pattern: /temp|provisional/i, subtype: "temporaries" },
   { pattern: /crown|bridge|veneer|inlay|onlay/i, subtype: "crown_and_bridge" },

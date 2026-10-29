@@ -135,6 +135,32 @@ export async function planBackupMedia(
     const limit = pLimit(maxConcurrentFiles);
     let completedFiles = 0;
     let completedBytes = 0;
+    let readBytes = 0;
+    let lastPublishedAt = 0;
+    let lastActivityAt = Date.now();
+    let lastArchiveBytes = archive.pointer();
+    const publishProgress = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastPublishedAt < 500) return;
+      lastPublishedAt = now;
+      setBackupLiveProgress({ completedFiles, completedBytes: readBytes,
+        totalBytes: selectedBytes, fileCount: selected.length,
+        mediaBytesPerSecond: Math.round(readBytes / Math.max(1, (now - transferStartedAt) / 1000)),
+        archiveBytes: archive.pointer() });
+    };
+    // Monitor the whole ZIP so queued streams paused by backpressure cannot
+    // hide an indefinitely stalled active source or destination.
+    const idleTimer = setInterval(() => {
+      const pointer = archive.pointer();
+      if (pointer !== lastArchiveBytes) {
+        lastArchiveBytes = pointer;
+        lastActivityAt = Date.now();
+      }
+      if (Date.now() - lastActivityAt >= 120_000 && !controller.signal.aborted) {
+        controller.abort(new Error("Backup media transfer made no progress for two minutes. Check storage connectivity and retry; this run is not a complete backup."));
+      }
+    }, 1000);
+    idleTimer.unref?.();
     let activeStagedBytes = 0;
     let peakStagedBytes = 0;
     const transferStartedAt = Date.now();
@@ -170,13 +196,19 @@ export async function planBackupMedia(
               transform(chunk: Buffer, _encoding, callback) {
                 hash.update(chunk);
                 bytes += chunk.length;
+                readBytes += chunk.length;
+                lastActivityAt = Date.now();
+                publishProgress();
                 callback(null, chunk);
               },
             });
             reader.on("error", error => hashing.destroy(error));
             hashing.on("error", error => archive.destroy(error));
             await new Promise<void>((resolve, reject) => {
+              let settled = false;
               const settle = (error?: Error) => {
+                if (settled) return;
+                settled = true;
                 archive.removeListener("entry", onEntry);
                 controller.signal.removeEventListener("abort", onAbort);
                 if (error) reject(error); else resolve();
@@ -184,7 +216,14 @@ export async function planBackupMedia(
               const onEntry = (entry: { name: string }) => {
                 if (entry.name === name) settle();
               };
-              const onAbort = () => settle(new Error("Case-media archiving was aborted."));
+              const onAbort = () => {
+                const error = controller.signal.reason instanceof Error
+                  ? controller.signal.reason : new Error("Case-media archiving was aborted.");
+                reader.unpipe(hashing);
+                reader.destroy(error);
+                hashing.destroy(error);
+                settle(error);
+              };
               if (controller.signal.aborted) return onAbort();
               archive.on("entry", onEntry);
               controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -203,14 +242,8 @@ export async function planBackupMedia(
             });
             completedFiles++;
             completedBytes += source.size;
-            setBackupLiveProgress({
-              completedFiles,
-              completedBytes,
-              totalBytes: selectedBytes,
-              mediaBytesPerSecond: Math.round(completedBytes / Math.max(1, (Date.now() - transferStartedAt) / 1000)),
-              fileCount: media.length,
-              archiveBytes: archive.pointer(),
-            });
+            lastActivityAt = Date.now();
+            publishProgress(true);
           } catch (error) {
             if (!controller.signal.aborted) controller.abort(error);
             throw error;
@@ -229,6 +262,7 @@ export async function planBackupMedia(
         archiveBytes: archive.pointer(),
       }));
     } finally {
+      clearInterval(idleTimer);
       signal?.removeEventListener("abort", abort);
       archive.removeListener("error", abort);
       archive.removeListener("close", abort);

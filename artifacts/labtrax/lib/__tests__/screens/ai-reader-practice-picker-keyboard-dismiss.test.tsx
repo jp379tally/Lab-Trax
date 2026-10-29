@@ -92,31 +92,42 @@ afterEach(() => {
 });
 
 describe("AI reader — practice picker keyboard dismissal", () => {
-  it("keeps a typed due-date correction as a user override", async () => {
+  it("keeps a typed Rx due-date correction as a user override", async () => {
     const utils = await renderExtractedScreen();
-    // The AI supplied the wrong year; correcting it must survive a re-scan.
-    await fireEvent.press(utils.getByText("YYYY-MM-DD"));
-    await fireEvent.press(utils.getByTestId("cal-type"));
-    await fireEvent.changeText(utils.getByTestId("cal-typed-input"), "02/29/2028");
-    await fireEvent.press(utils.getByTestId("cal-typed-confirm"));
-    expect(getAiReaderSession().userOverrides?.dueDate).toBe("2028-02-29");
+    // A manually corrected prescription date must survive a re-scan.
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date"));
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date-type"));
+    await fireEvent.changeText(
+      utils.getByTestId("ai-reader-rx-due-date-typed-input"),
+      "02/29/2028",
+    );
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date-typed-confirm"));
+    expect(getAiReaderSession().userOverrides?.rxDueDate).toBe("2028-02-29");
   });
 
-  it("applies the lab turnaround cap before saving a typed override", async () => {
+  it("keeps an edited Rx date separate from the lab turnaround schedule", async () => {
     setMockAppState({
       meMemberships: [{
         ...LAB_MEMBERSHIP,
-        organization: { type: "lab", defaultCaseDueDays: 1, capCaseDueToDefault: true },
+        organization: { type: "lab", defaultCaseDueDays: 7 },
       }],
       labProviders: PRACTICES,
     });
+    setAiReaderSession({ userOverrides: { receivedAt: "2026-08-01" } });
     const utils = await renderExtractedScreen();
-    await fireEvent.press(utils.getByText("YYYY-MM-DD"));
-    await fireEvent.press(utils.getByTestId("cal-type"));
-    await fireEvent.changeText(utils.getByTestId("cal-typed-input"), "12/31/2099");
-    await fireEvent.press(utils.getByTestId("cal-typed-confirm"));
-    expect(utils.getByText(/Capped to lab's/)).toBeTruthy();
-    expect(getAiReaderSession().userOverrides?.dueDate).not.toBe("2099-12-31");
+    expect(utils.getByText("08/08/2026")).toBeTruthy();
+
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date"));
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date-type"));
+    await fireEvent.changeText(
+      utils.getByTestId("ai-reader-rx-due-date-typed-input"),
+      "08/05/2026",
+    );
+    await fireEvent.press(utils.getByTestId("ai-reader-rx-due-date-typed-confirm"));
+
+    expect(utils.getByText("08/08/2026")).toBeTruthy();
+    expect(getAiReaderSession().userOverrides?.rxDueDate).toBe("2026-08-05");
+    expect(getAiReaderSession().userOverrides?.labDueDate).toBeUndefined();
   });
 
   it("closes the keyboard when the picker sheet is tapped, keeping the filter text", async () => {

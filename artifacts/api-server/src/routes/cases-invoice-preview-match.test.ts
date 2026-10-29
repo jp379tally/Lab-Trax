@@ -194,6 +194,108 @@ maybe("preview-draft matches the grouped case invoice", () => {
     }
   });
 
+  it("keeps Diagnostic Wax Up unpriced by default and honors a subtype override", async () => {
+    const { db, labCatalogEntries, caseRestorations, pricingTiers, invoices } = dbMod;
+    const catalogId = rid("catalog");
+    const customKey = rid("diagnostic_wax_up_quote");
+    const { access } = await makeSession(labOwnerId);
+    const header = { Authorization: `Bearer ${access}` };
+    const restorations = [{
+      toothNumber: "14",
+      restorationType: "Crown",
+      material: "Diagnostic Wax Up",
+      shade: "Diagnostic Wax Up",
+      quantity: 1,
+      restorationSubtype: "restorative/diagnostic_wax_up",
+    }];
+
+    try {
+      const defaultPreview = await request(appMod.default)
+        .post("/api/invoices/preview-draft")
+        .set(header)
+        .send({
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerOrgId,
+          doctorName: "Dr. Wax Up",
+          restorations,
+        });
+      expect(defaultPreview.status, JSON.stringify(defaultPreview.body)).toBe(200);
+      expect(Number(defaultPreview.body.data.total)).toBe(0);
+
+      const defaultCase = await request(appMod.default).post("/api/cases").set(header).send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        doctorName: "Dr. Wax Up",
+        patientFirstName: "Wax",
+        patientLastName: "Default",
+        caseNumber: rid("CN"),
+        restorations,
+      });
+      expect(defaultCase.status, JSON.stringify(defaultCase.body)).toBe(201);
+      const defaultCaseId = defaultCase.body.data.id;
+      createdCaseIds.push(defaultCaseId);
+      const savedRestoration = await db.query.caseRestorations.findFirst({
+        where: eq(caseRestorations.caseId, defaultCaseId),
+      });
+      expect(savedRestoration.restorationSubtype).toBe("restorative/diagnostic_wax_up");
+      const defaultInvoice = await db.query.invoices.findFirst({
+        where: eq(invoices.caseId, defaultCaseId),
+      });
+      expect(Number(defaultInvoice.total)).toBe(0);
+
+      await db.insert(labCatalogEntries).values({
+        id: catalogId,
+        labOrganizationId: labOrgId,
+        entryType: "subtype",
+        caseType: "restorative",
+        parentKey: "",
+        key: "diagnostic_wax_up",
+        label: "Diagnostic Wax Up",
+        isCustom: false,
+        isActive: true,
+        sortOrder: 0,
+        priceKeyOverride: customKey,
+      });
+      await db.update(pricingTiers).set({
+        pricesJson: { pfm_crown: 100, zirconia_crown: 150, [customKey]: 247.38 },
+      }).where(eq(pricingTiers.labOrganizationId, labOrgId));
+
+      const overridePreview = await request(appMod.default)
+        .post("/api/invoices/preview-draft")
+        .set(header)
+        .send({
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerOrgId,
+          doctorName: "Dr. Wax Up",
+          restorations,
+        });
+      expect(overridePreview.status, JSON.stringify(overridePreview.body)).toBe(200);
+      expect(Number(overridePreview.body.data.total)).toBe(247.38);
+
+      const overrideCase = await request(appMod.default).post("/api/cases").set(header).send({
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        doctorName: "Dr. Wax Up",
+        patientFirstName: "Wax",
+        patientLastName: "Override",
+        caseNumber: rid("CN"),
+        restorations,
+      });
+      expect(overrideCase.status, JSON.stringify(overrideCase.body)).toBe(201);
+      const overrideCaseId = overrideCase.body.data.id;
+      createdCaseIds.push(overrideCaseId);
+      const overrideInvoice = await db.query.invoices.findFirst({
+        where: eq(invoices.caseId, overrideCaseId),
+      });
+      expect(Number(overrideInvoice.total)).toBe(Number(overridePreview.body.data.total));
+    } finally {
+      await db.delete(labCatalogEntries).where(eq(labCatalogEntries.id, catalogId));
+      await db.update(pricingTiers).set({
+        pricesJson: { pfm_crown: 100, zirconia_crown: 150 },
+      }).where(eq(pricingTiers.labOrganizationId, labOrgId));
+    }
+  });
+
   it("keeps reviewed corrections, a rush fee and layered charge through create, sync and edit", async () => {
     const { access } = await makeSession(labOwnerId);
     const header = { Authorization: `Bearer ${access}` };

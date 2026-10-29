@@ -20,8 +20,8 @@ const ADMIN_USER = {
 };
 
 const emptySchedule = {
-  sourceEnvironment: "development",
-  allowedScheduleIntervalsMinutes: [5, 15, 20, 30, 60, 360, 1440, 2880, 4320],
+  sourceEnvironment: "production",
+  allowedScheduleIntervalsMinutes: [5, 15, 20, 30, 60, 360, 1440],
   interval: null,
   unit: null,
   destination: null,
@@ -149,7 +149,7 @@ describe("Settings → Backup → schedule intervals", () => {
 
     expect(screen.getByRole("heading", { name: "Backup & Recovery" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Schedule Automatic Backups" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Manual Backup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Production Data Backup" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Recent Backups" })).toBeInTheDocument();
     expect(screen.getByText("Manage encrypted backups and recovery destinations.")).toBeInTheDocument();
     expect(summary).toHaveAccessibleName("Backup status summary");
@@ -257,21 +257,21 @@ describe("Settings → Backup → schedule intervals", () => {
     expect(screen.getByTestId("scheduled-backup-live-metrics")).toHaveTextContent("1 of 2 media files");
   });
 
-  it("offers development cadence choices and defaults to an unsaved 48-hour schedule", async () => {
+  it("defaults production backups to fifteen minutes with no development scope selector", async () => {
     await renderBackupTab();
-
     const select = await screen.findByTestId("backup-schedule-interval") as HTMLSelectElement;
-    expect(select).toHaveValue("48_hours");
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
-      "Every 5 minutes", "Every 15 minutes", "Every 20 minutes", "Every 30 minutes", "Every hour", "Every 6 hours", "Every 24 hours",
-      "Every 48 hours",
-      "Every 72 hours",
-    ]);
-    expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent(
-      "This schedule protects the Development database only",
-    );
+    expect(select).toHaveValue("15_minutes");
+    expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent("first verify the last saved recovery point");
+    expect(screen.queryByRole("option", { name: /development/i })).not.toBeInTheDocument();
   });
-
+  it("blocks manual backups and schedule changes on a development server", async () => {
+    schedule = { ...emptySchedule, sourceEnvironment: "development" };
+    await renderBackupTab();
+    expect(await screen.findByRole("button", { name: "Back up now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save schedule" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent("Production backups are unavailable"));
+    expect(savedSchedule).toBeNull();
+  });
   it("keeps a saved legacy interval visible and warns before changing an active schedule", async () => {
     schedule = { ...emptySchedule, interval: 2, unit: "hours", enabled: true };
     await renderBackupTab();
@@ -281,8 +281,6 @@ describe("Settings → Backup → schedule intervals", () => {
     expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
       "Current: every 2 hours (legacy)",
       "Every 5 minutes", "Every 15 minutes", "Every 20 minutes", "Every 30 minutes", "Every hour", "Every 6 hours", "Every 24 hours",
-      "Every 48 hours",
-      "Every 72 hours",
     ]);
     expect(screen.getByTestId("backup-schedule-legacy-cadence")).toHaveTextContent(
       "Select a cadence allowed for this database and save to update it",

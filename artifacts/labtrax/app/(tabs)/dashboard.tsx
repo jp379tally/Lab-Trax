@@ -35,6 +35,7 @@ import {
   type CanonicalCase,
   type DueTomorrowSort,
 } from "@workspace/api-client-react";
+import { DASHBOARD_SECTION_LABELS } from "@workspace/dashboard-labels";
 
 export { DUE_TOMORROW_SORT_LABELS };
 export type { DueTomorrowSort };
@@ -1123,7 +1124,7 @@ export default function DashboardScreen() {
           <View style={styles.sectionTitleRow}>
             <Ionicons name="alert-circle" size={16} color={colors.error} />
             <Text style={[styles.sectionTitle, { color: colors.error }]}>
-              Past due
+              {DASHBOARD_SECTION_LABELS.pastDue}
             </Text>
             <View
               testID="dashboard-past-due-count"
@@ -1204,7 +1205,9 @@ export default function DashboardScreen() {
               size={16}
               color={colors.textSecondary}
             />
-            <Text style={styles.sectionTitle}>Due tomorrow</Text>
+            <Text style={styles.sectionTitle}>
+              {DASHBOARD_SECTION_LABELS.dueTomorrow}
+            </Text>
             <View
               style={[
                 styles.countBadge,
@@ -1304,7 +1307,9 @@ export default function DashboardScreen() {
               size={16}
               color="#1D5FD8"
             />
-            <Text style={[styles.sectionTitle, { color: "#1D5FD8" }]}>Due today</Text>
+            <Text style={[styles.sectionTitle, { color: "#1D5FD8" }]}>
+              {DASHBOARD_SECTION_LABELS.dueToday}
+            </Text>
             {dueTodayCases.length > 0 && (
               <View
                 style={[
@@ -1411,7 +1416,9 @@ export default function DashboardScreen() {
           hitSlop={8}
         >
           <View style={styles.sectionTitleRow}>
-            <Text style={styles.sectionTitle}>Exception cases</Text>
+            <Text style={styles.sectionTitle}>
+              {DASHBOARD_SECTION_LABELS.exceptionCases}
+            </Text>
             {activeExceptions.length > 0 && (
               <View
                 style={[
@@ -1553,7 +1560,9 @@ export default function DashboardScreen() {
           hitSlop={8}
         >
           <View style={styles.sectionTitleRow}>
-            <Text style={styles.sectionTitle}>Recent cases</Text>
+            <Text style={styles.sectionTitle}>
+              {DASHBOARD_SECTION_LABELS.recentCases}
+            </Text>
             {recentCases.length > 0 && (
               <View
                 style={[
@@ -1779,7 +1788,7 @@ export default function DashboardScreen() {
           [
             {
               id: "past-due",
-              title: "Past due",
+              title: DASHBOARD_SECTION_LABELS.pastDue,
               color: "#DC2626",
               bg: "#FEE2E2",
               icon: "alert-circle" as IconName,
@@ -1797,7 +1806,7 @@ export default function DashboardScreen() {
             },
             {
               id: "due-today",
-              title: "Due today",
+              title: DASHBOARD_SECTION_LABELS.dueToday,
               color: "#1D5FD8",
               bg: "#DBEAFE",
               icon: "time" as IconName,
@@ -1815,7 +1824,7 @@ export default function DashboardScreen() {
             },
             {
               id: "due-tomorrow",
-              title: "Due tomorrow",
+              title: DASHBOARD_SECTION_LABELS.dueTomorrow,
               color: "#1D5FD8",
               bg: "#DBEAFE",
               icon: "calendar-outline" as IconName,
@@ -1833,7 +1842,7 @@ export default function DashboardScreen() {
             },
             {
               id: "unassigned",
-              title: "Unassigned documents",
+              title: DASHBOARD_SECTION_LABELS.unassignedDocuments,
               color: "#B45309",
               bg: "#FEF3C7",
               icon: "document-text" as IconName,
@@ -1877,7 +1886,7 @@ export default function DashboardScreen() {
       </View>
 
       <View style={styles.rxCard} testID="dashboard-rx-intake">
-        <Text style={styles.rxTitle}>RX intake</Text>
+        <Text style={styles.rxTitle}>RX Intake</Text>
         <View style={styles.rxActions}>
           <Pressable
             style={styles.rxBtn}

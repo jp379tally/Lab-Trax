@@ -67,7 +67,7 @@ describe("native dashboard summary interactions", () => {
     });
     mockScrollViewScrollTo.mockClear();
     vi.useFakeTimers();
-    await fireEvent.press(view.getByLabelText("Due tomorrow: 1"));
+    await fireEvent.press(view.getByLabelText("Due Tomorrow: 1"));
     expect(view.getByLabelText("Collapse due tomorrow")).toBeTruthy();
     expect(mockScrollViewScrollTo).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(50); });
@@ -78,7 +78,7 @@ describe("native dashboard summary interactions", () => {
     setMockAppState({ meMemberships: [membership], cases: [] });
     const view = await render(<DashboardScreen />);
     await fireEvent.press(view.getByLabelText("Collapse due tomorrow"));
-    await fireEvent.press(view.getByLabelText("Due tomorrow: 0"));
+    await fireEvent.press(view.getByLabelText("Due Tomorrow: 0"));
     expect(view.getByText("Nothing due tomorrow.")).toBeTruthy();
   });
   it("reveals the empty past-due queue when its zero-count card is pressed", async () => {
@@ -108,14 +108,14 @@ describe("native dashboard summary interactions", () => {
     } as unknown as ReturnType<typeof apiClient.useCases>);
     const view = await render(<DashboardScreen />);
     expect(view.getByTestId("dashboard-summary-past-due")).toBeTruthy();
-    expect(view.queryByLabelText("Past due: 0")).toBeNull();
+    expect(view.queryByLabelText("Past Due: 0")).toBeNull();
     expect(view.queryByText("No active cases past due.")).toBeNull();
     expect(view.queryByText("Nothing due today.")).toBeNull();
     if (state === "error") {
       await fireEvent.press(view.getByTestId("dashboard-summary-past-due"));
       expect(refetch).toHaveBeenCalledTimes(1);
     } else {
-      expect(view.getByLabelText("Past due: loading")).toBeTruthy();
+      expect(view.getByLabelText("Past Due: loading")).toBeTruthy();
     }
   });
 
@@ -146,8 +146,8 @@ describe("native dashboard summary interactions", () => {
       data: undefined, isLoading: false, isError: true, refetch,
     } as unknown as ReturnType<typeof authMe.useMe>);
     const view = await render(<DashboardScreen />);
-    expect(view.getByLabelText("Unassigned documents count unavailable, tap to retry")).toBeTruthy();
-    expect(view.queryByLabelText("Unassigned documents: 0")).toBeNull();
+    expect(view.getByLabelText("Unassigned Documents count unavailable, tap to retry")).toBeTruthy();
+    expect(view.queryByLabelText("Unassigned Documents: 0")).toBeNull();
     await fireEvent.press(view.getByTestId("dashboard-summary-unassigned"));
     expect(refetch).toHaveBeenCalledTimes(1);
   });

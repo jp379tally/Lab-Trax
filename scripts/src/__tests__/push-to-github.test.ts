@@ -16,6 +16,10 @@ import {
  * Build a fully-mocked isomorphic-git client. By default it behaves like a
  * healthy, fast-forwardable repo; individual tests override fields as needed.
  */
+function linearHistory(oids: string[]) {
+  return oids.map((oid, index) => ({ oid, commit: { parent: oids.slice(index + 1, index + 2) } }));
+}
+
 function makeGitMock(
   overrides: Partial<{
     localTip: string;
@@ -59,7 +63,7 @@ function makeGitMock(
     listFiles: vi.fn().mockResolvedValue(["src/app.ts", "lib/db/migrations/0001.sql"]),
     resolveRef: vi.fn().mockResolvedValue(localTip),
     getRemoteInfo,
-    log: vi.fn().mockResolvedValue(logOids.map((oid) => ({ oid }))),
+    log: vi.fn().mockResolvedValue(linearHistory(logOids)),
     writeRef: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(pushResult),
     deleteRef: vi.fn().mockResolvedValue(undefined),
@@ -102,7 +106,8 @@ describe("computeMissingCommits", () => {
   it("returns missing commits oldest-first for a normal fast-forward", () => {
     // git.log order: newest -> oldest. Remote is at c2 (an ancestor).
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c5", "c4", "c3", "c2", "c1"],
+      linearHistory(["c5", "c4", "c3", "c2", "c1"]),
+      "c5",
       "c2",
     );
     expect(reachedRemote).toBe(true);
@@ -112,7 +117,8 @@ describe("computeMissingCommits", () => {
 
   it("flags diverged history when the remote tip is not an ancestor", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c5", "c4", "c3"],
+      linearHistory(["c5", "c4", "c3"]),
+      "c5",
       "not-an-ancestor",
     );
     expect(reachedRemote).toBe(false);
@@ -122,7 +128,8 @@ describe("computeMissingCommits", () => {
 
   it("treats a missing remote branch (undefined tip) as all-new, not diverged", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c3", "c2", "c1"],
+      linearHistory(["c3", "c2", "c1"]),
+      "c3",
       undefined,
     );
     // reachedRemote stays false but the caller must not treat this as diverged
@@ -133,7 +140,8 @@ describe("computeMissingCommits", () => {
 
   it("returns no missing commits when the remote tip is the newest commit", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c3", "c2", "c1"],
+      linearHistory(["c3", "c2", "c1"]),
+      "c3",
       "c3",
     );
     expect(reachedRemote).toBe(true);

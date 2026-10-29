@@ -1,3 +1,8 @@
+export {
+  addCalendarDays,
+  resolveAiIntakePrescriptionDueDate,
+} from "@workspace/calendar-date";
+
 /**
  * Shared resolver for new-case due dates.
  *

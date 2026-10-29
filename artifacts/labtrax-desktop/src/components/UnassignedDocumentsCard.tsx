@@ -835,8 +835,13 @@ export function UnassignedDocumentsCard() {
         </div>
         <button
           type="button"
-          aria-label={collapsed ? "Expand" : "Collapse"}
-          className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+          aria-label={
+            collapsed
+              ? "Expand unassigned documents"
+              : "Collapse unassigned documents"
+          }
+          aria-expanded={!collapsed}
+          className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
           onClick={(e) => {
             e.stopPropagation();
             setCollapsed((v) => !v);

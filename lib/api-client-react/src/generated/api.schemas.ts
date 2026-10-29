@@ -2631,6 +2631,8 @@ export interface CreateCaseInput {
      * @pattern ^\d{4}-\d{2}-\d{2}$
      */
   prescriptionDueDate?: string;
+  /** True when an AI intake review explicitly supplied its received, lab due, and eligible prescription dates. The server persists the reviewed lab schedule without applying a second current-date cap. */
+  aiIntakeReviewedDates?: true;
   /** Contact details reviewed for this case, independent of shared practice edits. */
   providerContactSnapshot?: CreateCaseInputProviderContactSnapshot;
   /**

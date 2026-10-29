@@ -2157,6 +2157,7 @@ export default function CaseDetailScreen() {
   const [remakeNotes, setRemakeNotes] = useState("");
   const [remakeLoading, setRemakeLoading] = useState(false);
   const [remakeError, setRemakeError] = useState<string | null>(null);
+  const remakeSubmitInFlightRef = useRef(false);
   const createRemakeCustomReasonRef = useRef<TextInput>(null);
   const editRemakeCustomReasonRef = useRef<TextInput>(null);
 
@@ -2281,6 +2282,9 @@ export default function CaseDetailScreen() {
   }
 
   async function handleRemakeSubmit() {
+    // State updates are asynchronous; use a ref as well as the disabled button
+    // so two rapid taps cannot create two remakes before the next render.
+    if (remakeSubmitInFlightRef.current || remakeLoading) return;
     if (!remakeReasonKey || remakeCharge === null) return;
     if (remakeReasonKey === "other" && (!remakeCustomReason.trim() || remakeCustomReason.trim().length > 2000)) {
       setRemakeError(!remakeCustomReason.trim() ? "Enter a custom remake reason." : "Custom remake reason must be 2000 characters or fewer.");
@@ -2291,10 +2295,11 @@ export default function CaseDetailScreen() {
     const category = found?.category ?? undefined;
     const isShadeReason = SHADE_REASON_KEYS_MOBILE.has(remakeReasonKey);
     const isMaterialReason = MATERIAL_REASON_KEYS_MOBILE.has(remakeReasonKey);
+    remakeSubmitInFlightRef.current = true;
     setRemakeLoading(true);
     setRemakeError(null);
     try {
-      const raw = await resilientFetch(`/api/cases/${id}/remake`, {
+      const response = await resilientFetch(`/api/cases/${id}/remake`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2315,10 +2320,24 @@ export default function CaseDetailScreen() {
           ...(remakeNotes.trim() ? { remakeNotes: remakeNotes.trim() } : {}),
         }),
       });
-      const result = (raw as any)?.data ?? raw;
-      const newId: string = result?.id;
-      const newNumber: string = result?.caseNumber;
-      if (!newId) throw new Error("No case ID returned from server.");
+      await throwIfResNotOk(response);
+      const payload: unknown = await response.json();
+      const envelope =
+        payload && typeof payload === "object"
+          ? (payload as Record<string, unknown>)
+          : null;
+      const result =
+        envelope?.data && typeof envelope.data === "object"
+          ? (envelope.data as Record<string, unknown>)
+          : envelope;
+      const newId = typeof result?.id === "string" ? result.id : "";
+      const newNumber =
+        typeof result?.caseNumber === "string" ? result.caseNumber : "";
+      if (!newId) {
+        throw new Error(
+          "The server did not confirm the new case ID. Check the case list before trying again.",
+        );
+      }
       setShowRemakeModal(false);
       resetRemakeState();
       qcForRemake.invalidateQueries({ queryKey: ["cases"] });
@@ -2336,13 +2355,18 @@ export default function CaseDetailScreen() {
       router.push(`/case/${newId}` as never);
       void Alert.alert(
         "Remake Created",
-        `Case #${newNumber} was created as a remake.`,
+        newNumber
+          ? `Case #${newNumber} was created as a remake.`
+          : "The new remake case was created.",
       );
     } catch (e: unknown) {
       setRemakeError(
-        e instanceof Error ? e.message : "Failed to create remake.",
+        e instanceof Error
+          ? e.message
+          : "The remake could not be confirmed. Check the case list before trying again.",
       );
     } finally {
+      remakeSubmitInFlightRef.current = false;
       setRemakeLoading(false);
     }
   }
@@ -3868,6 +3892,7 @@ export default function CaseDetailScreen() {
 
                 {/* Submit */}
                 <Pressable
+                  testID="case-remake-submit"
                   onPress={() => void handleRemakeSubmit()}
                   disabled={
                     remakeLoading || !remakeReasonKey || remakeCharge === null ||

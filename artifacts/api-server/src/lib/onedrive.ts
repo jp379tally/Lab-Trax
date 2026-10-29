@@ -144,7 +144,10 @@ async function gfetch(
     else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
   }
   try {
-    return await impl(url, { ...(init ?? {}), signal: controller.signal });
+    const request = () => impl(url, { ...(init ?? {}), signal: controller.signal });
+    return await ((init?.method ?? "GET") === "GET"
+      ? retryOneDriveUploadResponse(request, controller.signal)
+      : request());
   } catch (err: unknown) {
     const aborted =
       controller.signal.aborted ||

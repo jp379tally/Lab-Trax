@@ -175,6 +175,36 @@ function renderDropZone() {
   );
 }
 
+async function enterRxReview(
+  response: typeof VALID_RX_RESPONSE,
+  defaultCaseDueDays?: number | null,
+) {
+  mockApiFetch.mockImplementation((path: string) => {
+    if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
+    if (path.startsWith("/organizations"))
+      return Promise.resolve([{
+        id: "lab1",
+        type: "lab",
+        name: "Test Lab",
+        ...(defaultCaseDueDays === undefined ? {} : { defaultCaseDueDays }),
+      }]);
+    if (path === "/cases/doctor-names") return Promise.resolve([]);
+    if (path === "/cases/doctor-directory") return Promise.resolve([]);
+    if (path === "/analyze-prescription") return Promise.resolve(response);
+    return Promise.reject(new Error(`Unexpected apiFetch: ${path}`));
+  });
+  const view = renderDropZone();
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+  await act(async () => {
+    triggerFileInput(view.container, [makeJpegFile()]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  await waitFor(() =>
+    expect(view.container.querySelector('[data-testid="rx-review-container"]')).toBeTruthy(),
+  );
+  return view;
+}
+
 // ─── Trigger helper: simulate file selection via the hidden <input type=file> ─
 
 function triggerFileInput(container: HTMLElement, files: File[]) {
@@ -261,6 +291,75 @@ describe("DashboardDropZone — AI analyze path", () => {
       },
       { timeout: 4000 },
     );
+  });
+
+  it("prefills the lab schedule from receipt and preserves a staff-edited date", async () => {
+    const { container } = await enterRxReview(
+      { ...VALID_RX_RESPONSE, dueDate: "2026-08-08" },
+      7,
+    );
+    const received = screen.getByLabelText("Date received") as HTMLInputElement;
+    const labDue = screen.getByLabelText(/Lab due date/) as HTMLInputElement;
+
+    fireEvent.change(received, { target: { value: "2026-08-01" } });
+    await waitFor(() => expect(labDue.value).toBe("2026-08-08"));
+    expect(screen.getByLabelText("Rx due date (from prescription)")).toHaveValue("2026-08-08");
+    expect(container.textContent).toContain("7-day turnaround");
+
+    fireEvent.change(received, { target: { value: "2026-08-02" } });
+    await waitFor(() => expect(labDue.value).toBe("2026-08-09"));
+    expect(screen.getByLabelText("Rx due date (from prescription)")).toHaveValue("2026-08-08");
+
+    fireEvent.change(received, { target: { value: "" } });
+    await waitFor(() => expect(labDue.value).toBe(""));
+    fireEvent.change(received, { target: { value: "2026-08-02" } });
+    await waitFor(() => expect(labDue.value).toBe("2026-08-09"));
+
+    fireEvent.change(labDue, { target: { value: "2026-08-15" } });
+    fireEvent.change(received, { target: { value: "2026-08-03" } });
+    await waitFor(() => expect(received.value).toBe("2026-08-03"));
+    expect(labDue.value).toBe("2026-08-15");
+  });
+
+  it.each(["2026-07-31", "2026-08-09"])(
+    "omits an extracted prescription date outside the turnaround window (%s)",
+    async (dueDate) => {
+      const { container } = await enterRxReview(
+        { ...VALID_RX_RESPONSE, dueDate },
+        7,
+      );
+      fireEvent.change(screen.getByLabelText("Date received"), {
+        target: { value: "2026-08-01" },
+      });
+      await waitFor(() =>
+        expect(screen.getByLabelText(/Lab due date/)).toHaveValue("2026-08-08"),
+      );
+      expect(container.querySelector("#rx-due-date")).toBeNull();
+      expect(container.textContent).not.toContain("The prescription requests");
+    },
+  );
+
+  it("keeps Rx date entry unchanged when the lab has no turnaround preference", async () => {
+    const { container } = await enterRxReview(
+      { ...VALID_RX_RESPONSE, dueDate: "2026-08-20" },
+      null,
+    );
+    fireEvent.change(screen.getByLabelText("Date received"), {
+      target: { value: "2026-08-01" },
+    });
+    expect(screen.getByLabelText("Rx due date (from prescription)")).toHaveValue("2026-08-20");
+    expect(screen.getByLabelText(/Lab due date/)).toHaveValue("");
+    expect(container.querySelector('[role="note"]')).toBeNull();
+  });
+
+  it("shows an empty Rx date field without a warning when no date was extracted", async () => {
+    const { container } = await enterRxReview(
+      { ...VALID_RX_RESPONSE, dueDate: "" },
+      7,
+    );
+    await waitFor(() => expect(container.querySelector("#rx-due-date")).toBeTruthy());
+    expect(container.querySelector<HTMLInputElement>("#rx-due-date")?.value).toBe("");
+    expect(container.textContent).not.toContain("The prescription requests");
   });
 
   it("keeps the optional chart and assignment summary in separate responsive review regions", async () => {

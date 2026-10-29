@@ -3227,6 +3227,7 @@ export const CreateCaseBody = zod.object({
   "receivedAt": zod.string().regex(createCaseBodyReceivedAtRegExp).optional().describe('Calendar date the case was received.'),
   "scanDate": zod.string().regex(createCaseBodyScanDateRegExp).optional().describe('Calendar date explicitly recorded for the scan.'),
   "prescriptionDueDate": zod.string().regex(createCaseBodyPrescriptionDueDateRegExp).optional().describe('Due date explicitly extracted from the prescription; separate from lab scheduling.'),
+  "aiIntakeReviewedDates": zod.literal(true).optional().describe('True when an AI intake review explicitly supplied its received, lab due, and eligible prescription dates. The server persists the reviewed lab schedule without applying a second current-date cap.\n'),
   "providerContactSnapshot": zod.record(zod.string(), zod.unknown()).optional().describe('Contact details reviewed for this case, independent of shared practice edits.'),
   "invoiceNotes": zod.string().max(createCaseBodyInvoiceNotesMax).optional().describe('Notes saved on the initial draft invoice.'),
   "status": zod.string().nullish(),
