@@ -640,7 +640,7 @@ maybe("off-site backup job (the production timer)", () => {
       expect(zip.getEntries().some(entry => entry.entryName.startsWith("private-objects/desktop-installer/"))).toBe(false);
       expect(fake.protectionObjects.size).toBeGreaterThan(0);
       const { getDatabaseProtectionStatus } = await import("../lib/database-protection-job.js");
-      expect((await getDatabaseProtectionStatus()).state).toBe("verified");
+      expect((await getDatabaseProtectionStatus(undefined, "onedrive")).state).toBe("verified");
       expect(manifest.mediaFileCount).toBe(1);
       expect(manifest.mediaBytes).toBe(Buffer.byteLength("durable-object-copy"));
       expect(zip.getEntry(`media/${durableFileName}`)!.getData().toString()).toBe(
@@ -761,6 +761,7 @@ maybe("off-site backup job (the production timer)", () => {
       signals.releaseMediaCopy = resolve;
     });
     let scheduledRun: Promise<unknown> | null = null;
+    const priorProtection = await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus(undefined, "onedrive");
 
     try {
       // Claim the real shared slot through the legacy runner, then simulate
@@ -798,8 +799,8 @@ maybe("off-site backup job (the production timer)", () => {
       expect(fake.uploads).toHaveLength(0);
       const protection = await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus();
       expect(protection.state).toBe("skipped_busy");
-      expect(protection.lastVerifiedAt).toBeNull();
-      expect(protection.point).toBeNull();
+      expect(protection.lastVerifiedAt).toBe(priorProtection.lastVerifiedAt);
+      expect(protection.point).toEqual(priorProtection.point);
       expect(await readSetting(lastFullSetting)).toBe(fullArchiveAt);
 
       fake.failAfterBlockedMediaCopy = true;
@@ -811,7 +812,7 @@ maybe("off-site backup job (the production timer)", () => {
       // This injected runner owns no archive/history writer. Its rejection
       // releases the real slot without turning the skipped database interval
       // into either a successful recovery point or a fabricated archive row.
-      expect((await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus()).lastVerifiedAt).toBeNull();
+      expect((await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus(undefined, "onedrive")).lastVerifiedAt).toBe(priorProtection.lastVerifiedAt);
       expect(await readSetting(lastFullSetting)).toBe(fullArchiveAt);
     } finally {
       signals.releaseMediaCopy();
