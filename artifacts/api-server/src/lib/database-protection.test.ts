@@ -102,9 +102,13 @@ describe("database-only incremental storage", () => {
     expect((await reconstructForTest(fixture.store, codec, first.marker)).equals(bytes)).toBe(true);
   });
   it("handles inserts and removes with content-defined reuse", async () => {
-    const { store } = syntheticStore(), codec = syntheticCodec(), bytes = dump();
+    const { store } = syntheticStore(), codec = syntheticCodec();
+    // Fixed synthetic bytes make boundary reuse reproducible. Random exports
+    // can hit only maximum-size cuts after an insertion and legitimately reuse none.
+    const fixture = createCipheriv("aes-256-ctr", Buffer.alloc(32, 0x5a), Buffer.alloc(16, 0xa5));
+    const bytes = Buffer.concat([Buffer.from("PGDMP"), fixture.update(Buffer.alloc(4 * 1024 * 1024)), fixture.final()]);
     await protectDatabase({ store, codec, source, capture: async () => bytes });
-    const edited = Buffer.concat([bytes.subarray(0, 300_000), randomBytes(100),
+    const edited = Buffer.concat([bytes.subarray(0, 300_000), Buffer.alloc(100, 0x53),
       bytes.subarray(300_020)]);
     const point = await protectDatabase({ store, codec, source, capture: async () => edited });
     expect((await reconstructForTest(store, codec, point.marker)).equals(edited)).toBe(true);
