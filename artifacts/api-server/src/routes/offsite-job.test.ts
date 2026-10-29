@@ -718,7 +718,8 @@ maybe("off-site backup job (the production timer)", () => {
       expect(fake.uploads).toHaveLength(0);
       const storageFailureRun = await latestOffsiteRun();
       expect(storageFailureRun.status).toBe("error");
-      expect(storageFailureRun.error).toContain("test App Storage read failure");
+      expect(storageFailureRun.error).toMatch(/backup did not complete/i);
+      expect(storageFailureRun.error).not.toContain("test App Storage read failure");
       expect(await readSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT)).toBe(
         storageFailureFullAt,
       );
