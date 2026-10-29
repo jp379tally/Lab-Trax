@@ -312,7 +312,7 @@ describe("doctor payment accounts", () => {
     const whole = accounts.find((account) => !account.isDoctorAccount)!;
     const byId = new Map(accounts.map((account) => [account.id, account]));
     const selection = picked
-      ? pickInvoices(EMPTY_SELECTION, whole, ["saved-known", "saved-unassigned"], false)
+      ? pickInvoices(EMPTY_SELECTION, whole, ["saved-known", "saved-unassigned"], true)
       : selectCustomers(EMPTY_SELECTION, [whole]);
     const { storage } = memoryStorage();
     const key = "entire-practice-roundtrip";

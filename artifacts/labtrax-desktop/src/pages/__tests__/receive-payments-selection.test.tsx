@@ -799,8 +799,8 @@ describe("Receive Payments selection", () => {
       }>;
     expect(stored().map((entry) => entry.name).sort()).toEqual(["Mixed", "Monthly statements", "Old batch"]);
     expect(stored().find((entry) => entry.name === "Monthly statements")?.customers).toEqual([
-      { id: "alpha", name: "Alpha Dental", scope: { mode: "statement", invoiceIds: null } },
-      { id: "beta", name: "Beta Smiles", scope: { mode: "statement", invoiceIds: null } },
+      { id: "alpha", name: "Alpha Dental", accountKind: "practice", scope: { mode: "statement", invoiceIds: null } },
+      { id: "beta", name: "Beta Smiles", accountKind: "practice", scope: { mode: "statement", invoiceIds: null } },
     ]);
 
     const load = (name: string) => {
@@ -866,8 +866,8 @@ describe("Receive Payments selection", () => {
       customers: unknown[];
     }>;
     expect(stored.find((entry) => entry.name === "Partial")?.customers).toEqual([
-      { id: "alpha", name: "Alpha Dental", scope: { mode: "statement", invoiceIds: ["a1"] } },
-      { id: "gamma", name: "Gamma Ortho", scope: { mode: "invoices", invoiceIds: ["g1"] } },
+      { id: "alpha", name: "Alpha Dental", accountKind: "practice", scope: { mode: "statement", invoiceIds: ["a1"] } },
+      { id: "gamma", name: "Gamma Ortho", accountKind: "practice", scope: { mode: "invoices", invoiceIds: ["g1"] } },
     ]);
 
     const load = (name: string) => {
