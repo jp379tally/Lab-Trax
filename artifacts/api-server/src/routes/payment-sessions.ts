@@ -1,4 +1,4 @@
-import { finalizedInvoiceSql } from "../lib/recovery-billing-hold";
+import { finalizedInvoiceSql } from "../lib/historical-invoice-hold";
 import { Router } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -52,7 +52,10 @@ import {
   type PaymentReceiptData,
 } from "../lib/payment-receipts";
 import { SessionAdvisoryLockBundle } from "../lib/session-advisory-lock-bundle";
-import { loadCustomerLastPayments } from "../lib/customer-last-payments";
+import {
+  loadCustomerDoctorLastPayments,
+  loadCustomerLastPayments,
+} from "../lib/customer-last-payments";
 
 let heldProviderLocks = 0;
 const providerLockWaiters: Array<() => void> = [];
@@ -867,10 +870,11 @@ router.get(
       .filter((account): account is NonNullable<typeof account> =>
         !!account && Number(account.currentBalanceDue) > 0)
       .sort((a, b) => a.providerName.localeCompare(b.providerName));
-    const lastPayments = await loadCustomerLastPayments(
-      labOrganizationId,
-      accounts.map((account) => account.providerOrganizationId),
-    );
+    const providerIds = accounts.map((account) => account.providerOrganizationId);
+    const [lastPayments, doctorLastPayments] = await Promise.all([
+      loadCustomerLastPayments(labOrganizationId, providerIds),
+      loadCustomerDoctorLastPayments(labOrganizationId, providerIds),
+    ]);
 
     return ok(
       res,
@@ -881,6 +885,12 @@ router.get(
           // Most recent non-reversed payment received, by any payment path.
           lastPaymentAt: lastPayment?.paidAt ?? null,
           lastPaymentAmount: lastPayment?.amount ?? null,
+          doctorLastPayments: (doctorLastPayments.get(account.providerOrganizationId) ?? [])
+            .map((payment) => ({
+              doctorIdentity: payment.doctorIdentity,
+              lastPaymentAt: payment.paidAt,
+              lastPaymentAmount: payment.amount,
+            })),
         };
       }),
     );
@@ -941,10 +951,34 @@ router.get(
       existing.push(row);
       byProvider.set(providerId, existing);
     }
-    const lastPayments = await loadCustomerLastPayments(
-      labOrganizationId,
-      [...byProvider.keys()],
-    );
+    const providerIds = [...byProvider.keys()];
+    const [lastPayments, doctorLastPayments] = await Promise.all([
+      loadCustomerLastPayments(labOrganizationId, providerIds),
+      loadCustomerDoctorLastPayments(labOrganizationId, providerIds),
+    ]);
+    const profileRows = providerIds.length
+      ? await db
+          .select({
+            id: doctorProfiles.id,
+            doctorName: doctorProfiles.doctorName,
+            displayName: doctorProfiles.displayName,
+            providerOrganizationId: doctorProfiles.providerOrganizationId,
+          })
+          .from(doctorProfiles)
+          .where(
+            and(
+              eq(doctorProfiles.labOrganizationId, labOrganizationId),
+              inArray(doctorProfiles.providerOrganizationId, providerIds),
+            ),
+          )
+      : [];
+    const profilesByProvider = new Map<string, typeof profileRows>();
+    for (const profile of profileRows) {
+      if (!profile.providerOrganizationId) continue;
+      const profiles = profilesByProvider.get(profile.providerOrganizationId) ?? [];
+      profiles.push(profile);
+      profilesByProvider.set(profile.providerOrganizationId, profiles);
+    }
 
     return ok(
       res,
@@ -978,8 +1012,21 @@ router.get(
             // Most recent non-reversed payment received, by any payment path.
             lastPaymentAt: lastPayment?.paidAt ?? null,
             lastPaymentAmount: lastPayment?.amount ?? null,
+            doctorLastPayments: (doctorLastPayments.get(providerOrganizationId) ?? [])
+              .map((payment) => ({
+                doctorIdentity: payment.doctorIdentity,
+                lastPaymentAt: payment.paidAt,
+                lastPaymentAmount: payment.amount,
+              })),
             doctorNames: doctors.map((doctor) => doctor.doctorDisplayName),
             doctors,
+            doctorProfiles: (profilesByProvider.get(providerOrganizationId) ?? [])
+              .map((profile) => ({
+                id: profile.id,
+                doctorName: profile.doctorName,
+                doctorDisplayName: profile.displayName || profile.doctorName,
+              }))
+              .sort((a, b) => a.doctorDisplayName.localeCompare(b.doctorDisplayName)),
             outstandingInvoices: invoiceRows.map((invoice) => ({
               id: invoice.id,
               invoiceNumber: invoice.invoiceNumber,

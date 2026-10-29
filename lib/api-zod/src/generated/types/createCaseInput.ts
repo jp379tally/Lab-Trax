@@ -7,6 +7,7 @@
  */
 import type { CreateCaseInputInvoiceOverrideLinesItem } from './createCaseInputInvoiceOverrideLinesItem';
 import type { CreateCaseInputPriority } from './createCaseInputPriority';
+import type { CreateCaseInputProviderContactSnapshot } from './createCaseInputProviderContactSnapshot';
 import type { CreateCaseInputRestorationsItem } from './createCaseInputRestorationsItem';
 
 export interface CreateCaseInput {
@@ -22,6 +23,25 @@ export interface CreateCaseInput {
      * @pattern ^\d{4}-\d{2}-\d{2}$
      */
   receivedAt?: string;
+  /**
+     * Calendar date explicitly recorded for the scan.
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  scanDate?: string;
+  /**
+     * Due date explicitly extracted from the prescription; separate from lab scheduling.
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  prescriptionDueDate?: string;
+  /** True when an AI intake review explicitly supplied its received, lab due, and eligible prescription dates. The server persists the reviewed lab schedule without applying a second current-date cap. */
+  aiIntakeReviewedDates?: true;
+  /** Contact details reviewed for this case, independent of shared practice edits. */
+  providerContactSnapshot?: CreateCaseInputProviderContactSnapshot;
+  /**
+     * Notes saved on the initial draft invoice.
+     * @maxLength 10000
+     */
+  invoiceNotes?: string;
   status?: string | null;
   /** ID of the case being remade. */
   remakeOfCaseId?: string | null;

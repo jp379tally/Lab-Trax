@@ -19,13 +19,13 @@ describe("checkEmailAvailable", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("preserves the server's duplicate rejection for other email addresses", async () => {
+  it("does not report whether an email belongs to an existing account", async () => {
     const fetchMock = vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => ({ data: { available: false } }),
+      json: async () => ({ data: { available: true } }),
     } as Response);
 
-    await expect(checkEmailAvailable("taken@example.com")).resolves.toBe(false);
+    await expect(checkEmailAvailable("taken@example.com")).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/auth/check-email?email=taken%40example.com",
       { method: "GET" },

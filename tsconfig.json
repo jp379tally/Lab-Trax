@@ -31,6 +31,9 @@
       "path": "./lib/calendar-date"
     },
     {
+      "path": "./lib/dashboard-labels"
+    },
+    {
       "path": "./lib/provider-case-format"
     },
     {

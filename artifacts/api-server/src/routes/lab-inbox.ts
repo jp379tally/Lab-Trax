@@ -1,3 +1,5 @@
+import { productionMediaDiskStorage } from "../lib/production-media-multipart";
+import { copyProductionUpload, moveProductionUpload, writeProductionUpload } from "../lib/production-media-local-write";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
@@ -119,7 +121,7 @@ function providerInboxFileMatchesDeclaration(
   );
 }
 
-const inboxStorage = multer.diskStorage({
+const inboxStorage = productionMediaDiskStorage({
   destination: (_req, _file, cb) => {
     fs.mkdirSync(caseMediaDir, { recursive: true });
     cb(null, caseMediaDir);
@@ -132,7 +134,7 @@ const inboxStorage = multer.diskStorage({
       .slice(0, 60) || "file";
     cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`);
   },
-});
+}, "lab-inbox");
 
 const inboxUpload = multer({
   storage: inboxStorage,
@@ -601,9 +603,10 @@ router.post(
       if (fs.existsSync(uploadedPath)) {
         const trashDir = path.resolve(caseMediaDir, ".trash");
         fs.mkdirSync(trashDir, { recursive: true });
-        fs.renameSync(
+        await moveProductionUpload(
           uploadedPath,
           path.resolve(trashDir, `${Date.now()}__${path.basename(req.file.filename)}`),
+          "lab-inbox",
         );
       }
       throw err;
@@ -844,7 +847,7 @@ router.delete(
         const trashDir = path.resolve(caseMediaDir, ".trash");
         fs.mkdirSync(trashDir, { recursive: true });
         const trashName = `${Date.now()}__${path.basename(inboxFile.storagePath)}`;
-        fs.renameSync(srcPath, path.resolve(trashDir, trashName));
+        await moveProductionUpload(srcPath, path.resolve(trashDir, trashName), "lab-inbox");
       }
     }
 
@@ -927,7 +930,7 @@ router.delete(
           const srcPath = path.resolve(caseMediaDir, file.storagePath);
           if (fs.existsSync(srcPath)) {
             const trashName = `${Date.now()}__${path.basename(file.storagePath)}`;
-            fs.renameSync(srcPath, path.resolve(trashDir, trashName));
+            await moveProductionUpload(srcPath, path.resolve(trashDir, trashName), "lab-inbox");
           }
         }
       }
@@ -1006,7 +1009,7 @@ router.post(
       const dstPath = path.resolve(caseMediaDir, attachmentDiskFilename);
 
       if (srcPath && fs.existsSync(srcPath)) {
-        await copyFile(srcPath, dstPath);
+        await copyProductionUpload(srcPath, dstPath, "lab-inbox");
       } else {
         // Disk file missing — file was uploaded via the chunked/mobile path and
         // only lives in object storage.  Download it so the attachment gets its
@@ -1030,7 +1033,7 @@ router.post(
           objStream.stream.on("error", reject);
         });
         fs.mkdirSync(caseMediaDir, { recursive: true });
-        await writeFile(dstPath, Buffer.concat(chunks));
+        await writeProductionUpload(dstPath, Buffer.concat(chunks), "lab-inbox");
       }
 
       const resolvedMimeType = inboxFile.mimeType ?? "application/octet-stream";

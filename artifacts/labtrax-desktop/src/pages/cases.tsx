@@ -1,11 +1,18 @@
 import { formatRxNoteScanDate, IMPLANT_FIELDS, isImplantRestoration, sameClinicalHierarchy, type ImplantDetails } from "@workspace/case-taxonomy";
 import { ImplantDetailsControls, SavedImplantDetails } from "@/components/ImplantDetailsControls";
-import { invalidToothAssignmentTokens, expandToothAssignmentIdentifiers } from "@workspace/case-taxonomy";
-import { catalogToothMaterialOptions } from "@workspace/case-taxonomy";
+import { invalidToothAssignmentTokens, expandToothAssignmentIdentifiers, toothBridgeLabels } from "@workspace/case-taxonomy";
+import { archSelectionTeeth, catalogToothMaterialOptions, indicationCatalogContext, isToothIndication, selectedToothArch } from "@workspace/case-taxonomy";
 import { useGetCatalogTree, getGetCatalogTreeQueryKey } from "@workspace/api-client-react";
 import { isValidCalendarDate } from "@workspace/calendar-date";
 import { CaseRangeWindow } from "@/components/CaseRangeWindow";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useAiPanel } from "@/lib/ai-panel-context";
 import { useTableColumns, type ColumnDef } from "@/hooks/useTableColumns";
 import { useDockedDrawerHeight } from "@/hooks/useDockedDrawerHeight";
@@ -23,6 +30,7 @@ import {
   Barcode,
   Bookmark,
   Box,
+  CalendarDays,
   Check,
   Clock,
   ChevronDown,
@@ -165,6 +173,7 @@ import {
   ToothChart,
   parseToothField,
 } from "@/components/ToothChart";
+import { CaseChartPanes, CaseDetailsList, RestorationSummaryPane } from "@/components/CaseChartPanes";
 import {
   buildHighlightedToothValue,
   deriveRxSummary,
@@ -215,6 +224,8 @@ import {
   suggestPonticConnectorPairs,
   toothAssignmentSummary,
   copyToothAssignment,
+  type ToothAssignmentUnit,
+  incompatibleToothConnectorPairs,
   withPonticConnectorSuggestions,
   updateConnectorChoices,
   validateToothConnectors,
@@ -784,7 +795,7 @@ function ToothNumbersDisplay({ value }: { value: string }) {
     </div>
   );
 }
-const RETURN_COMPLETE_STATUSES = new Set(["complete", "delivered", "done"]);
+const RETURN_COMPLETE_STATUSES = new Set(["complete", "completed", "delivered", "done"]);
 
 type ReturnWizardStage =
   | "ask"
@@ -907,7 +918,9 @@ const ARCH_OPTIONS: Array<{ value: BillableArch; label: string }> = [
   { value: "lower", label: "Lower" },
   { value: "both", label: "Upper + Lower" },
 ];
-function isArchBasedRestoration(r: { restorationType?: string | null; restorationSubtype?: string | null }) {
+function isArchBasedRestoration(r: { restorationType?: string | null; restorationSubtype?: string | null; assignmentRole?: string }) {
+  const indication = r.assignmentRole || r.restorationType || "";
+  if (isToothIndication(indication)) return indicationCatalogContext(indication).archBased;
   return /(removable|denture|partial|flipper|valplast|flexible|ortho|night guard|retainer|aligner)/i.test(
     `${r.restorationType ?? ""} ${r.restorationSubtype ?? ""}`,
   );
@@ -1605,9 +1618,20 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
 
   // ── Restorations ─────────────────────────────────────────────────────────
   const [restorations, setRestorations] = useState<RestorationDraft[]>([]);
+  const [assignmentCaseShade, setAssignmentCaseShade] = useState("");
+  const [rowEditorOpen, setRowEditorOpen] = useState(false);
   const [restorationUndo, setRestorationUndo] = useState<RestorationDraft[] | null>(null);
   const [draftChartRow, setDraftChartRow] = useState<string | null>(null);
   const [assignmentTooth, setAssignmentTooth] = useState<string | null>(null);
+  const [assignmentCopyTemplate, setAssignmentCopyTemplate] = useState<ToothAssignmentUnit | null>(null);
+  const [assignmentCopyAnchor, setAssignmentCopyAnchor] = useState<string | null>(null);
+  const [assignmentSelectionAnchor, setAssignmentSelectionAnchor] = useState<string | null>(null);
+  const [pendingAssignmentCopy, setPendingAssignmentCopy] = useState<{
+    targets: string[];
+    template: ToothAssignmentUnit;
+  } | null>(null);
+  const [multiApplyMode, setMultiApplyMode] = useState(false);
+  const [multiApplyTargets, setMultiApplyTargets] = useState<string[]>([]);
   const assignmentCatalog = useGetCatalogTree({ labOrganizationId: form.labOrganizationId }, {
     query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: form.labOrganizationId }), enabled: !!form.labOrganizationId },
   });
@@ -1615,6 +1639,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const [restorationConnectorUndo, setRestorationConnectorUndo] = useState("");
 
   function addRestoration() {
+    setRowEditorOpen(true);
     setRestorationConnectorUndo(draftConnectors);
     setRestorationUndo(restorations);
     setRestorations((prev) => [
@@ -1628,34 +1653,254 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     setRestorationUndo(restorations);
     setRestorations((prev) => prev.filter((r) => r.id !== id));
   }
+
+  function applyQuickAssignmentCopy(targets: string[], template: ToothAssignmentUnit) {
+    if (mutation.isPending || targets.length === 0) return;
+    setRestorationConnectorUndo(draftConnectors);
+    setRestorationUndo(restorations);
+    const rows = restorations.flatMap((row) => {
+      const teeth = !isArchBasedRestoration(row) ? expandToothAssignmentIdentifiers(row.toothNumber) : [];
+      return teeth.length > 1
+        ? teeth.map((tooth) => ({ ...row, id: crypto.randomUUID(), toothNumber: tooth, quantity: "1" }))
+        : [row];
+    }).filter((row) => row.restorationType || row.toothNumber || row.material);
+    for (const tooth of targets) {
+      const copied = copyToothAssignment(template, tooth);
+      const replacement: RestorationDraft = {
+        ...(rows.find((row) => row.toothNumber === tooth && !isArchBasedRestoration(row)) ?? {
+          id: crypto.randomUUID(),
+          arch: "",
+        }),
+        toothNumber: tooth,
+        restorationType: "Crown",
+        assignmentRole: copied.restorationType,
+        material: copied.material ?? "",
+        restorationSubtype: copied.restorationSubtype ?? null,
+        shade: copied.shade || assignmentCaseShade,
+        quantity: "1",
+        arch: "",
+      };
+      const existing = rows.find((row) => row.toothNumber === tooth && !isArchBasedRestoration(row));
+      if (existing) {
+        const index = rows.indexOf(existing);
+        rows[index] = replacement;
+      } else {
+        rows.push(replacement);
+      }
+    }
+    const nextUnits = rows.filter((row) => row.assignmentRole).map((row) => ({
+      toothNumber: row.toothNumber,
+      restorationType: row.assignmentRole ?? row.restorationType,
+      material: row.material,
+      restorationSubtype: row.restorationSubtype ?? undefined,
+      shade: row.shade,
+      quantity: 1,
+    }));
+    const connectorState = withPonticConnectorSuggestions(draftConnectors, nextUnits, new Set(targets));
+    const compatiblePairs = new Set(
+      [...connectorState.active].filter((pair) => validateToothConnectors(pair, nextUnits).valid),
+    );
+    setDraftConnectors(updateConnectorChoices(connectorState, compatiblePairs));
+    setRestorations(rows);
+    setAssignmentCopyAnchor(template.toothNumber);
+    setPendingAssignmentCopy(null);
+    setAssignmentTooth(null);
+    toast.success(`Applied assignment to ${targets.map((tooth) => `#${tooth}`).join(", ")}.`);
+  }
+
+  function requestQuickAssignmentCopy(targets: string[]) {
+    if (!assignmentCopyTemplate || targets.length === 0) return;
+    const uniqueTargets = [...new Set(targets)];
+    const invalidTarget = uniqueTargets.some((tooth) => {
+      const number = Number(tooth);
+      return !Number.isInteger(number) || number < 1 || number > 32;
+    });
+    if (invalidTarget) {
+      setError("Quick copy can only target adult teeth numbered 1 through 32.");
+      return;
+    }
+    const validTargets = uniqueTargets.filter((tooth) => tooth !== assignmentCopyTemplate.toothNumber);
+    if (!validTargets.length) return;
+    const conflicts = validTargets.some((tooth) =>
+      restorations.some((row) => !isArchBasedRestoration(row) && parseToothField(row.toothNumber).has(tooth)),
+    );
+    if (conflicts) {
+      setPendingAssignmentCopy({ targets: validTargets, template: assignmentCopyTemplate });
+      return;
+    }
+    applyQuickAssignmentCopy(validTargets, assignmentCopyTemplate);
+  }
+
+  function handleAssignmentToothClick(tooth: string, modifiers?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (multiApplyMode) {
+      if (modifiers?.shiftKey && assignmentSelectionAnchor) {
+        const range = expandToothAssignmentIdentifiers(`${assignmentSelectionAnchor}-${tooth}`);
+        if (!range.length) { setError("Shift-selection ranges must stay within one arch."); return; }
+        setMultiApplyTargets((current) => [...new Set([...current, ...range])]);
+      } else {
+        setAssignmentSelectionAnchor(tooth);
+        setMultiApplyTargets((current) =>
+          current.includes(tooth) ? current.filter((item) => item !== tooth) : [...current, tooth],
+        );
+      }
+      return;
+    }
+    if (modifiers?.ctrlKey || modifiers?.metaKey) {
+      if (assignmentCopyTemplate) requestQuickAssignmentCopy([tooth]);
+      else toast.info("Assign a tooth first to create copy settings.");
+      return;
+    }
+    if (modifiers?.shiftKey && (assignmentSelectionAnchor || assignmentCopyAnchor)) {
+      const range = expandToothAssignmentIdentifiers(`${assignmentSelectionAnchor || assignmentCopyAnchor}-${tooth}`);
+      if (!range.length) {
+        setError("Shift-selection ranges must stay within one arch.");
+        return;
+      }
+      setError(null);
+      setMultiApplyMode(true);
+      setMultiApplyTargets(range);
+      return;
+    }
+    if (!mutation.isPending) {
+      setAssignmentSelectionAnchor(tooth);
+      const source = restorations.find((row) => row.assignmentRole && parseToothField(row.toothNumber).has(tooth));
+      if (source?.assignmentRole) {
+        setAssignmentCopyTemplate({
+          toothNumber: tooth,
+          restorationType: source.assignmentRole,
+          material: source.material,
+          shade: source.shade,
+          restorationSubtype: source.restorationSubtype ?? undefined,
+        });
+        setAssignmentCopyAnchor(tooth);
+      }
+      setAssignmentTooth(tooth);
+    }
+  }
+
   function applyManualAssignment(payload: ToothActionPayload) {
     if (mutation.isPending) return;
+    if ((payload.kind === "add_crown" || payload.kind === "replace_tooth") && payload.arch) {
+      const current = payload.kind === "replace_tooth" ? restorations.find((row) => row.id === payload.restorationId) : undefined;
+      const indication = payload.kind === "add_crown" ? payload.restorationType : payload.role ?? current?.restorationType ?? "";
+      if (!isToothIndication(indication) || !indicationCatalogContext(indication).archBased) {
+        setError("Choose a supported arch restoration."); return;
+      }
+      const previous = current ?? restorations.find((row) => row.restorationType === indication && row.arch === payload.arch);
+      setRestorationConnectorUndo(draftConnectors); setRestorationUndo(restorations);
+      const row: RestorationDraft = {
+        ...(previous ?? { id: crypto.randomUUID() }), toothNumber: "", restorationType: indication,
+        assignmentRole: undefined, material: payload.material ?? previous?.material ?? "",
+        restorationSubtype: payload.restorationSubtype ?? previous?.restorationSubtype ?? null,
+        shade: payload.shade ?? previous?.shade ?? assignmentCaseShade, quantity: "1", arch: payload.arch,
+      };
+      setRestorations((rows) => previous ? rows.map((candidate) => candidate.id === previous.id ? row : candidate) : [...rows, row]);
+      setMultiApplyMode(false); setMultiApplyTargets([]); setAssignmentTooth(null);
+      return;
+    }
+    if (payload.kind === "remove_restoration" && payload.restorationId &&
+        restorations.some((row) => row.id === payload.restorationId && isArchBasedRestoration(row))) {
+      setRestorationUndo(restorations); setRestorationConnectorUndo(draftConnectors);
+      setRestorations((rows) => rows.filter((row) => row.id !== payload.restorationId));
+      setAssignmentTooth(null); return;
+    }
+    if (payload.kind === "replace_tooth" && payload.role && isToothIndication(payload.role) &&
+        restorations.some((row) => row.id === payload.restorationId && isArchBasedRestoration(row))) {
+      setRestorationUndo(restorations); setRestorationConnectorUndo(draftConnectors);
+      setRestorations((rows) => rows.map((row) => row.id !== payload.restorationId ? row : {
+        ...row, toothNumber: payload.newToothNumber, restorationType: payload.role!,
+        assignmentRole: payload.role, material: payload.material ?? row.material,
+        restorationSubtype: payload.restorationSubtype ?? row.restorationSubtype,
+        shade: payload.shade ?? row.shade, arch: "", quantity: "1",
+      }));
+      setAssignmentTooth(null); return;
+    }
+    if (multiApplyMode && multiApplyTargets.length &&
+        (payload.kind === "add_crown" || payload.kind === "add_pontic")) {
+      const template: ToothAssignmentUnit = {
+        toothNumber: payload.toothId,
+        restorationType: payload.kind === "add_pontic" ? "Pontic" : payload.restorationType,
+        material: payload.material,
+        shade: payload.shade ?? assignmentCaseShade,
+        restorationSubtype: payload.restorationSubtype,
+      };
+      const targets = [...new Set(multiApplyTargets)];
+      setAssignmentCopyTemplate(template);
+      if (targets.some((tooth) => restorations.some((row) => !isArchBasedRestoration(row) && parseToothField(row.toothNumber).has(tooth)))) {
+        setPendingAssignmentCopy({ targets, template });
+        setAssignmentTooth(null);
+      } else {
+        applyQuickAssignmentCopy(targets, template);
+      }
+      setMultiApplyMode(false);
+      setMultiApplyTargets([]);
+      return;
+    }
     setRestorationConnectorUndo(draftConnectors); setRestorationUndo(restorations);
     let rows = restorations.flatMap((row) => {
       const teeth = !isArchBasedRestoration(row) ? expandToothAssignmentIdentifiers(row.toothNumber) : [];
       return teeth.length > 1 ? teeth.map((tooth) => ({ ...row, id: crypto.randomUUID(), toothNumber: tooth, quantity: "1" })) : [row];
     }).filter((row) => row.restorationType || row.toothNumber || row.material);
     function assign(tooth: string, role: string, material: string, shade?: string, subtype?: string | null) {
-      if (role !== "Crown" && role !== "Pontic") { setError("Confirm a prepared crown or pontic role before applying it."); return; }
+      if (!isToothIndication(role) || indicationCatalogContext(role).archBased) { setError("Choose a supported tooth indication."); return; }
       const previous = rows.find((row) => !isArchBasedRestoration(row) && row.toothNumber === tooth);
       const row: RestorationDraft = { ...(previous ?? { id: crypto.randomUUID(), arch: "" }), toothNumber: tooth,
-        restorationType: "Crown", assignmentRole: role, material, shade: shade ?? "", quantity: "1", arch: "",
+        restorationType: /^(Crown|Pontic|Veneer)$/.test(role) ? "Crown" : role, assignmentRole: role, material, shade: shade ?? assignmentCaseShade, quantity: "1", arch: "",
         restorationSubtype: subtype ?? previous?.restorationSubtype ?? null };
       rows = previous ? rows.map((candidate) => candidate.id === previous.id ? row : candidate) : [...rows, row];
     }
     const owner = restorations.find((row) => parseToothField(row.toothNumber).has(assignmentTooth ?? ""));
     if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
-      assign(payload.toothId, payload.kind === "add_pontic" ? "Pontic" : "Crown", payload.material, payload.shade, payload.restorationSubtype);
+      assign(payload.toothId, payload.kind === "add_pontic" ? "Pontic" : payload.restorationType, payload.material, payload.shade, payload.restorationSubtype);
+      setAssignmentCopyTemplate({
+        toothNumber: payload.toothId,
+        restorationType: payload.kind === "add_pontic" ? "Pontic" : payload.restorationType,
+        material: payload.material,
+        shade: payload.shade ?? "",
+        restorationSubtype: payload.restorationSubtype,
+      });
+      setAssignmentCopyAnchor(payload.toothId);
     } else if (payload.kind === "change_role" && owner) {
-      assign(payload.toothId, payload.role, owner.material, owner.shade, owner.restorationSubtype);
+      assign(payload.toothId, payload.role, owner.material, owner.shade || assignmentCaseShade, owner.restorationSubtype);
+      setAssignmentCopyTemplate({
+        toothNumber: payload.toothId,
+        restorationType: payload.role,
+        material: owner.material,
+        shade: owner.shade,
+        restorationSubtype: owner.restorationSubtype ?? undefined,
+      });
+      setAssignmentCopyAnchor(payload.toothId);
     } else if (payload.kind === "copy_assignment" && owner?.assignmentRole) {
-      for (const tooth of payload.toothNumbers) assign(tooth, owner.assignmentRole, owner.material, owner.shade, owner.restorationSubtype);
+      for (const tooth of payload.toothNumbers) assign(tooth, owner.assignmentRole, owner.material, owner.shade || assignmentCaseShade, owner.restorationSubtype);
     } else if (payload.kind === "replace_tooth" && owner?.assignmentRole) {
       rows = rows.filter((row) => row.toothNumber !== payload.oldToothId || isArchBasedRestoration(row));
-      assign(payload.newToothNumber, owner.assignmentRole, payload.material ?? owner.material, payload.shade ?? owner.shade, payload.restorationSubtype ?? owner.restorationSubtype);
+      assign(payload.newToothNumber, payload.role ?? owner.assignmentRole, payload.material ?? owner.material, payload.shade ?? (owner.shade || assignmentCaseShade), payload.restorationSubtype ?? owner.restorationSubtype);
     } else if (payload.kind === "remove_restoration" || payload.kind === "mark_missing") {
-      rows = rows.filter((row) => row.toothNumber !== payload.toothId || isArchBasedRestoration(row));
+      const targets = payload.kind === "mark_missing" && multiApplyMode && multiApplyTargets.length
+        ? multiApplyTargets : [payload.toothId];
+      rows = rows.filter((row) => !targets.includes(row.toothNumber) || isArchBasedRestoration(row));
+      if (payload.kind === "mark_missing") {
+        rows.push(...targets.map((toothNumber) => ({
+          id: crypto.randomUUID(), toothNumber, restorationType: "missing",
+          material: "", shade: "", quantity: "1", arch: "" as const, restorationSubtype: null,
+        })));
+        setMultiApplyMode(false);
+        setMultiApplyTargets([]);
+      }
     }
+    const nextUnits = rows.filter((row) => row.assignmentRole).map((row) => ({
+      toothNumber: row.toothNumber,
+      restorationType: row.assignmentRole ?? row.restorationType,
+      material: row.material,
+      restorationSubtype: row.restorationSubtype ?? undefined,
+      shade: row.shade,
+      quantity: 1,
+    }));
+    const nextConnectorState = withPonticConnectorSuggestions(draftConnectors, nextUnits);
+    const safeConnectorPairs = new Set(
+      [...nextConnectorState.active].filter((pair) => validateToothConnectors(pair, nextUnits).valid),
+    );
+    setDraftConnectors(updateConnectorChoices(nextConnectorState, safeConnectorPairs));
     setRestorations(rows); setAssignmentTooth(null);
   }
 
@@ -1985,7 +2230,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
       <div
-        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-xl mx-4 flex flex-col max-h-[90vh]"
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-7xl mx-4 flex flex-col max-h-[94vh]"
         role="dialog"
         aria-modal="true"
         aria-label="Add case"
@@ -2002,21 +2247,23 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 overflow-y-auto">
+        <form id="new-case-assignment-form" onSubmit={handleSubmit} className="new-case-workspace px-4 py-3 overflow-y-auto">
           {orgsQuery.isLoading && (
             <p className="text-sm text-muted-foreground">
               Loading organizations…
             </p>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <aside className="new-case-project space-y-4" aria-label="Project information">
+          <h3 className="text-sm font-semibold">Project information</h3>
+          <div className="grid grid-cols-1 gap-3 [&>*]:col-span-full">
             <div className="col-span-2">
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Case number
               </label>
               <div className="flex gap-2">
                 <input
-                  className="flex-1 h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
+                  className="min-w-0 flex-1 h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
                   value={form.caseNumber}
                   onChange={(e) => set("caseNumber", e.target.value)}
                   placeholder={form.labOrganizationId ? "" : "Select a lab first…"}
@@ -2026,7 +2273,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                   type="button"
                   onClick={regenerateCaseNumber}
                   disabled={!form.labOrganizationId}
-                  className="h-9 px-3 text-xs rounded-md bg-secondary hover:bg-secondary/80 text-muted-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="shrink-0 h-9 px-3 text-xs rounded-md bg-secondary hover:bg-secondary/80 text-muted-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Regenerate
                 </button>
@@ -2242,8 +2489,10 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
+          </aside>
+
           {/* ── Restorations section ─────────────────────────────────────── */}
-          <div>
+          <div className="new-case-assignment min-w-0">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-medium text-muted-foreground">
                 Restorations{" "}
@@ -2265,6 +2514,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                   setRestorations(restorationUndo);
                   setDraftConnectors(restorationConnectorUndo);
                   setRestorationUndo(null);
+                  toast.success("Last draft assignment and bridge changes restored.");
                 }}
                 className="text-xs text-primary disabled:opacity-40"
               >
@@ -2278,28 +2528,160 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               const encoded = serializeConnectorState(connectorState);
               const summary = toothAssignmentSummary(units, encoded);
               const validation = validateToothConnectors(encoded, units);
-              return <ToothChart
-                value={units.map((unit) => unit.toothNumber).join(", ")}
-                onChange={() => {}}
-                onToothClick={(tooth) => {
-                  if (!mutation.isPending) setAssignmentTooth(tooth);
-                }}
-                crownTeeth={new Set(units.filter((unit) => unit.restorationType === "Crown").map((unit) => unit.toothNumber))}
-                ponticTeeth={new Set(units.filter((unit) => unit.restorationType === "Pontic").map((unit) => unit.toothNumber))}
-                connectedPairs={connectorState.active}
-                connectorSuggestions={connectorState.suggested}
-                onConnectedPairsChange={(pairs) => {
-                  setRestorationUndo(restorations);
-                  setRestorationConnectorUndo(draftConnectors);
-                  setDraftConnectors(updateConnectorChoices(connectorState, pairs));
-                }}
-                connectorIssue={!validation.valid ? validation.errors[0] : summary.unresolvedPontics.length ? "Review unconnected pontics before saving." : null}
-                summaryText={`${summary.units} units · ${summary.groups.length} connected groups · Unsaved draft`}
-              />;
+              return (
+                <div className="@container/new-case-assignment"><div className="new-case-assignment-grid">
+                  <aside className="hidden" aria-hidden="true">
+                    <h3 className="text-sm font-semibold">Case details</h3>
+                    <dl className="space-y-2 text-xs">
+                      <div><dt className="text-muted-foreground">Case</dt><dd className="font-mono">{form.caseNumber || "Not set"}</dd></div>
+                      <div><dt className="text-muted-foreground">Patient</dt><dd>{[form.patientFirstName, form.patientLastName].filter(Boolean).join(" ") || "Not set"}</dd></div>
+                      <div><dt className="text-muted-foreground">Practice</dt><dd>{providerOrgs.find((org) => org.id === form.providerOrganizationId)?.displayName || providerOrgs.find((org) => org.id === form.providerOrganizationId)?.name || "Not set"}</dd></div>
+                      <div><dt className="text-muted-foreground">Doctor</dt><dd>{form.doctorName || "Not set"}</dd></div>
+                      <div><dt className="text-muted-foreground">Due</dt><dd>{form.dueDate || "Not set"}</dd></div>
+                    </dl>
+                    <p className="border-t border-border pt-2 text-[11px] text-muted-foreground">
+                      Assignment edits stay in this unsaved draft until you save the case.
+                    </p>
+                  </aside>
+                  <section className="min-w-0 bg-background p-1 sm:px-3" aria-label="Tooth and restoration assignment">
+                    <h3 className="mb-2 text-sm font-semibold">Tooth &amp; Restoration Assignment</h3>
+                    <ToothChart
+                      assignments={units}
+                      onArchSelect={(_arch, teeth) => {
+                        setMultiApplyMode(true); setMultiApplyTargets(teeth);
+                        setAssignmentSelectionAnchor(teeth[0]); setAssignmentTooth(null);
+                      }}
+                      value={[...new Set([...multiApplyTargets, ...(assignmentTooth ? [assignmentTooth] : [])])].join(", ")}
+                      onChange={() => {}}
+                      onToothClick={handleAssignmentToothClick}
+                      crownTeeth={new Set(units.filter((unit) => unit.restorationType === "Crown").map((unit) => unit.toothNumber))}
+                      ponticTeeth={new Set(units.filter((unit) => unit.restorationType === "Pontic").map((unit) => unit.toothNumber))}
+                      veneerTeeth={new Set(units.filter((unit) => unit.restorationType === "Veneer").map((unit) => unit.toothNumber))}
+                      missingTeeth={new Set(units.filter((unit) => unit.restorationType === "missing").map((unit) => unit.toothNumber))}
+                      connectedPairs={connectorState.active}
+                      connectorSuggestions={connectorState.suggested}
+                      blockedConnectorPairs={incompatibleToothConnectorPairs(units)}
+                      onConnectedPairsChange={(pairs) => {
+                        setRestorationUndo(restorations);
+                        setRestorationConnectorUndo(draftConnectors);
+                        setDraftConnectors(updateConnectorChoices(connectorState, pairs));
+                      }}
+                      connectorIssue={!validation.valid ? validation.errors[0] : summary.unresolvedPontics.length ? "Review unconnected pontics before saving." : null}
+                      summaryText={`${[...toothBridgeLabels(units, encoded), `${summary.units} units`, `${summary.groups.length} connected groups`, "Unsaved draft"].join(" · ")}`}
+                    />
+                    {pendingAssignmentCopy && (
+                      <div className="mt-3 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950" role="alert">
+                        <p>These teeth already have assignments: {pendingAssignmentCopy.targets.map((tooth) => `#${tooth}`).join(", ")}. Replace them with the copied role, product, and shade?</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" className="min-h-9 rounded-md border border-amber-600/30 px-3" onClick={() => setPendingAssignmentCopy(null)}>Keep existing</button>
+                          <button type="button" className="min-h-9 rounded-md bg-amber-800 px-3 font-medium text-white" onClick={() => applyQuickAssignmentCopy(pendingAssignmentCopy.targets, pendingAssignmentCopy.template)}>Replace selected assignments</button>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                  <aside className="new-case-actions border-l border-border bg-background p-3 space-y-3" aria-label="Assignment summary">
+                    <div>
+                      <h3 className="text-sm font-semibold">Assignment summary</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {summary.units} units · {summary.crowns} prepared crowns · {summary.pontics} pontics{summary.veneers ? ` · ${summary.veneers} veneer${summary.veneers === 1 ? "" : "s"}` : ""}
+                      </p>
+                      {toothBridgeLabels(units, encoded).map((label) => (
+                        <p key={label} className="mt-1.5 rounded-md bg-emerald-50 px-2 py-1.5 text-sm font-semibold text-emerald-900">{label}</p>
+                      ))}
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-semibold">Assigned restorations</h4>
+                      {units.length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">No tooth assignments yet.</p>
+                      ) : (
+                        <ul className="mt-1 max-h-56 space-y-1 overflow-y-auto text-xs">
+                          {units.map((unit) => (
+                            <li key={`${unit.arch || unit.toothNumber}-${unit.restorationType}`} className="rounded-md bg-secondary/50 px-2 py-1.5">
+                              <span className="font-semibold">{unit.arch ? `${unit.arch === "upper" ? "Upper" : "Lower"} arch` : `#${unit.toothNumber}`}</span> · {unit.restorationType}
+                              <span className="block pl-5 text-muted-foreground">
+                                {[unit.material, unit.shade].filter(Boolean).join(" · ") || "Product and shade need review"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-semibold">Bridge groups</h4>
+                      {summary.groups.length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">No connected units.</p>
+                      ) : (
+                        <ul className="mt-1 space-y-1 text-xs">
+                          {summary.groups.map((group) => <li key={group.join("-")} className="rounded-md bg-emerald-50 px-2 py-1.5 text-emerald-900">{group.map((tooth) => `#${tooth}`).join(" – ")}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                    <div className="space-y-2 border-t border-border pt-2">
+                      <h4 className="text-xs font-semibold">Case shade and copy settings</h4>
+                      <button type="button" className="min-h-11 w-full rounded-md border border-primary/40 px-3 text-sm font-medium"
+                        aria-pressed={multiApplyMode}
+                        onClick={() => { setMultiApplyMode((active) => !active); setMultiApplyTargets([]); }}>
+                        {multiApplyMode ? "Cancel tooth selection" : "Select teeth, then assign"}
+                      </button>
+                      {multiApplyMode && (
+                        <button type="button" disabled={multiApplyTargets.length === 0}
+                          className="min-h-11 w-full rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-40"
+                          onClick={() => setAssignmentTooth(multiApplyTargets[0])}>
+                          Assign {multiApplyTargets.length} selected {multiApplyTargets.length === 1 ? "tooth" : "teeth"}
+                        </button>
+                      )}
+                      <label className="block space-y-1 text-xs">
+                        <span className="text-muted-foreground">Default shade for new assignments</span>
+                        <input
+                          aria-label="Case shade for new assignments"
+                          value={assignmentCaseShade}
+                          onChange={(event) => setAssignmentCaseShade(event.target.value)}
+                          placeholder="e.g. A2"
+                          className="min-h-9 w-full rounded-md border border-border bg-background px-2"
+                        />
+                      </label>
+                      {assignmentCopyTemplate ? (
+                        <>
+                          <p className="rounded-md bg-primary/5 px-2 py-1.5 text-xs text-primary" role="status">
+                            Copy: {assignmentCopyTemplate.restorationType} · {assignmentCopyTemplate.material || "Material needed"} · {assignmentCopyTemplate.shade || "Case shade"}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">Ctrl/Cmd-click a tooth to copy. Shift-click to select a same-arch range, then use Assign selected teeth.</p>
+                          {multiApplyMode && (
+                          <button type="button" disabled={multiApplyTargets.length === 0}
+                              className="min-h-9 w-full rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground disabled:opacity-40"
+                              onClick={() => requestQuickAssignmentCopy(multiApplyTargets)}>
+                              Apply to {multiApplyTargets.length} selected {multiApplyTargets.length === 1 ? "tooth" : "teeth"}
+                            </button>
+                          )}
+                          <button type="button" className="text-xs text-muted-foreground underline"
+                            onClick={() => { setAssignmentCopyTemplate(null); setAssignmentCopyAnchor(null); setMultiApplyTargets([]); }}>
+                            Clear copy settings
+                          </button>
+                        </>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">Edit or assign a crown, pontic or veneer to set up reusable copy settings.</p>
+                      )}
+                    </div>
+                    {(!validation.valid || summary.unresolvedPontics.length > 0) && (
+                      <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950" role="alert">
+                        {!validation.valid && validation.errors.map((message) => <p key={message}>{message}</p>)}
+                        {summary.unresolvedPontics.length > 0 && <p>Connect or review pontics {summary.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")} before saving.</p>}
+                      </div>
+                    )}
+                    <p className="text-[11px] text-muted-foreground">Create case saves these assignments. Until then, all changes stay in this draft.</p>
+                  </aside>
+                </div></div>
+              );
             })()}
-            {assignmentTooth && <ToothActionDialog allowMarkMissing={false} toothId={assignmentTooth} isPending={mutation.isPending}
-              restorations={restorations.filter((row) => row.assignmentRole && parseToothField(row.toothNumber).has(assignmentTooth))
-                .map((row) => ({ ...row, restorationType: row.assignmentRole!, toothNumber: assignmentTooth, caseId: "", unitPrice: 0, quantity: 1 })) as CaseRestoration[]}
+            {assignmentTooth && <ToothActionDialog key={assignmentTooth} toothId={assignmentTooth}
+              catalog={assignmentCatalog.data?.data}
+              selectedTeeth={multiApplyMode ? multiApplyTargets : [assignmentTooth]}
+              selectionArch={selectedToothArch(multiApplyMode ? multiApplyTargets : [assignmentTooth])}
+              locallySelectedType={restorations.some((row) => row.restorationType === "missing" && row.toothNumber === assignmentTooth) ? "missing" : undefined}
+              caseShade={assignmentCaseShade || null}
+              isPending={mutation.isPending}
+              restorations={restorations.filter((row) => isArchBasedRestoration(row) || (!multiApplyMode && row.assignmentRole && parseToothField(row.toothNumber).has(assignmentTooth)))
+                .map((row) => ({ ...row, restorationType: row.assignmentRole || row.restorationType, caseId: "", unitPrice: 0, quantity: 1 })) as CaseRestoration[]}
               materialOptions={assignmentCatalog.data?.data
                 ? catalogToothMaterialOptions(assignmentCatalog.data.data).map((option) => ({ key: option.restorationSubtype, label: option.label, parentLabel: option.parentLabel }))
                 : getCatalogMaterialsForRestoration(undefined, { restorationType: "Crown" })}
@@ -2307,8 +2689,10 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               onClose={() => setAssignmentTooth(null)} onConfirm={applyManualAssignment} />}
 
             {restorations.length > 0 && (
-              <div className="space-y-2">
-                {restorations.map((r, idx) => (
+              <details className="mt-3 rounded-md border border-border p-2" open={rowEditorOpen} onToggle={(event) => setRowEditorOpen(event.currentTarget.open)}>
+                <summary className="cursor-pointer text-xs font-medium">Restoration row editor · {restorations.filter((row) => row.restorationType !== "missing").length} rows</summary>
+              <div className="mt-2 space-y-2">
+                {restorations.filter((row) => row.restorationType !== "missing").map((r, idx) => (
                   <div key={r.id} className="rounded-lg border border-border bg-secondary/40 p-2.5 space-y-2">
                     <div className="flex items-center justify-between gap-1">
                       <span className="text-[11px] font-medium text-muted-foreground">Row {idx + 1}</span>
@@ -2387,6 +2771,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                               <option value="">Needs review</option>
                               <option value="Crown">Prepared crown</option>
                               <option value="Pontic">Pontic</option>
+                              <option value="Veneer">Veneer</option>
                             </select>
                           </label>
                           <button
@@ -2402,6 +2787,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                               onChange={(value) => updateRestoration(r.id, "toothNumber", value)}
                               crownTeeth={r.assignmentRole === "Crown" ? parseToothField(r.toothNumber) : undefined}
                               ponticTeeth={r.assignmentRole === "Pontic" ? parseToothField(r.toothNumber) : undefined}
+                              veneerTeeth={r.assignmentRole === "Veneer" ? parseToothField(r.toothNumber) : undefined}
                             />
                           )}
                         </div>
@@ -2464,6 +2850,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                   </div>
                 ))}
               </div>
+              </details>
             )}
           </div>
 
@@ -2473,18 +2860,20 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             </p>
           )}
 
-          <div className="flex gap-3 pt-1 pb-1">
+        </form>
+          <div className="flex shrink-0 justify-end gap-3 border-t border-border bg-card px-5 py-3">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              className="h-10 px-6 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
+              form="new-case-assignment-form"
               disabled={mutation.isPending || checkingDupes}
-              className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              className="h-10 min-w-44 px-6 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
             >
               {(mutation.isPending || checkingDupes) && (
                 <Loader2 size={12} className="animate-spin" />
@@ -2498,7 +2887,6 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 : "Create case"}
             </button>
           </div>
-        </form>
       </div>
 
       {doctorMatches && (
@@ -2633,7 +3021,7 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 //                       token + OTP, server verifies both and soft-deletes.
 //                       (Wire field is still named `smsOtpCode` for backward
 //                       compatibility with older deployed servers/clients.)
-function CaseDeleteModal({
+export function CaseDeleteModal({
   caseIds,
   onClose,
   onSuccess,
@@ -2647,7 +3035,9 @@ function CaseDeleteModal({
   const [pin, setPin] = useState("");
   const [otp, setOtp] = useState("");
   const [deleteSessionToken, setDeleteSessionToken] = useState<string | null>(null);
+  const [recipientEmail, setRecipientEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(600);
 
@@ -2679,12 +3069,18 @@ function CaseDeleteModal({
     }
     setIsPending(true);
     setError(null);
+    setDeleteSessionToken(null);
+    setRecipientEmail(null);
     try {
-      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+      const r = await apiFetch<{
+        deleteSessionToken: string;
+        maskedRecipient: string;
+      }>("/cases/delete-initiate", {
         method: "POST",
         body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
       });
       setDeleteSessionToken(r.deleteSessionToken);
+      setRecipientEmail(r.maskedRecipient);
       setStep("confirm");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Incorrect PIN.");
@@ -2714,16 +3110,24 @@ function CaseDeleteModal({
     if (!pin || isPending) return;
     setIsPending(true);
     setError(null);
+    setDeliveryError(null);
     try {
-      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+      const r = await apiFetch<{
+        deleteSessionToken: string;
+        maskedRecipient: string;
+      }>("/cases/delete-initiate", {
         method: "POST",
         body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
       });
       setDeleteSessionToken(r.deleteSessionToken);
+      setRecipientEmail(r.maskedRecipient);
       setOtp("");
       setSecondsLeft(600);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not resend code.");
+      setDeleteSessionToken(null);
+      setRecipientEmail(null);
+      setOtp("");
+      setDeliveryError(e instanceof Error ? e.message : "Could not send the email code. Fix the issue and retry.");
     } finally {
       setIsPending(false);
     }
@@ -2814,7 +3218,7 @@ function CaseDeleteModal({
                 />
               </div>
               {error && (
-                <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                <div role="alert" data-testid="case-delete-pin-error" className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
                   {error.toLowerCase().includes("email address") ? (
                     <>
                       {error}{" "}
@@ -2856,7 +3260,13 @@ function CaseDeleteModal({
                 </div>
                 <div>
                   <p className="text-sm font-medium">Delete {label}?</p>
-                  <p className="text-sm text-muted-foreground mt-1">This will permanently remove {label} from the lab. An email code will be sent to the lab owner to confirm. This cannot be undone.</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    The verification email was sent to{" "}
+                    <span data-testid="case-delete-recipient" className="font-medium text-foreground">
+                      {recipientEmail ?? "the lab owner's email"}
+                    </span>
+                    . This will permanently remove {label} from the lab and cannot be undone.
+                  </p>
                 </div>
               </div>
             </div>
@@ -2867,7 +3277,7 @@ function CaseDeleteModal({
                 onClick={() => { setStep("otp"); setSecondsLeft(600); }}
                 className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 inline-flex items-center justify-center gap-1.5"
               >
-                Yes, send code
+                Continue to code
               </button>
             </div>
           </>
@@ -2881,7 +3291,13 @@ function CaseDeleteModal({
               </button>
             </div>
             <div className="px-6 py-5 space-y-4">
-              <p className="text-sm text-muted-foreground">A 6-digit code was sent to the lab owner's email. Enter it to confirm deletion of {label}.</p>
+              <p className="text-sm text-muted-foreground">
+                A 6-digit code was sent to{" "}
+                <span data-testid="case-delete-recipient" className="font-medium text-foreground">
+                  {recipientEmail ?? "the lab owner's email"}
+                </span>
+                . Enter it to confirm deletion of {label}.
+              </p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-otp" className="text-xs font-medium text-muted-foreground">
                   Email code{" "}
@@ -2904,8 +3320,13 @@ function CaseDeleteModal({
                 />
               </div>
               {error && <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>}
+              {deliveryError && (
+                <p role="alert" data-testid="case-delete-delivery-error" className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {deliveryError} No new code was sent. Correct the issue above, then retry sending the code.
+                </p>
+              )}
               <button type="button" onClick={() => void resendCode()} disabled={isPending} className="text-xs text-primary hover:underline disabled:opacity-50">
-                Resend code
+                {deliveryError ? "Retry sending code" : "Resend code"}
               </button>
             </div>
             <div className="flex gap-3 px-6 pb-5">
@@ -2913,7 +3334,7 @@ function CaseDeleteModal({
               <button
                 type="button"
                 onClick={() => void submitOtp()}
-                disabled={isPending || otp.length < 6 || secondsLeft === 0}
+                disabled={isPending || !deleteSessionToken || otp.length < 6 || secondsLeft === 0}
                 className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
               >
                 {isPending && <Loader2 size={13} className="animate-spin" />}
@@ -3336,10 +3757,10 @@ export default function CasesPage() {
           : STATUS_FILTERS.filter((s) => s.value !== "all");
       const label =
         locationOptions.find(
-          (s) =>
-            ("id" in s && s.id === variables.labLocationId) ||
-            s.value === variables.status,
-        )?.label ?? variables.status;
+          (s) => "id" in s && s.id === variables.labLocationId,
+        )?.label ??
+        locationOptions.find((s) => s.value === variables.status)?.label ??
+        variables.status;
       const base = `${updatedCount} case${updatedCount !== 1 ? "s" : ""} marked as ${label}.`;
       const successMsg = skippedLegacyCount > 0
         ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
@@ -5266,6 +5687,7 @@ function NoteComposer({
         value={noteText}
         onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
         placeholder="Add a note…"
+        aria-label="Case note"
         rows={3}
         className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
       />
@@ -5318,6 +5740,7 @@ function NoteComposer({
         <button
           type="button"
           title={isListeningNote ? "Stop dictation" : "Dictate note"}
+          aria-label={isListeningNote ? "Stop dictation" : "Dictate note"}
           onClick={isListeningNote ? stopNoteListening : startNoteListening}
           className={`h-7 w-7 rounded inline-flex items-center justify-center transition-colors ${isListeningNote ? "bg-destructive text-destructive-foreground animate-pulse" : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80"}`}
         >
@@ -5714,6 +6137,7 @@ export function CaseDrawer({
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeSuccessMsg, setRouteSuccessMsg] = useState<string | null>(null);
+  const routeInFlightRef = useRef(false);
   const routeSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (routeSuccessTimerRef.current !== null) clearTimeout(routeSuccessTimerRef.current);
@@ -5949,6 +6373,13 @@ export function CaseDrawer({
   // Interactive tooth chart dialog state
   const [toothDialogId, setToothDialogId] = useState<string | null>(null);
   const [toothDialogError, setToothDialogError] = useState<string | null>(null);
+  const [toothCopySourceId, setToothCopySourceId] = useState<string | null>(null);
+  const [toothCopyAnchor, setToothCopyAnchor] = useState<string | null>(null);
+  const [toothCopyTargets, setToothCopyTargets] = useState("");
+  const [toothCopyMessage, setToothCopyMessage] = useState("");
+  const [toothMultiSelect, setToothMultiSelect] = useState(false);
+  const [toothSelectedTargets, setToothSelectedTargets] = useState<string[]>([]);
+  const [toothSelectionAnchor, setToothSelectionAnchor] = useState<string | null>(null);
   const [connectorSaveError, setConnectorSaveError] = useState<string | null>(null);
   const [connectorDraft, setConnectorDraft] = useState<string | null>(null);
 
@@ -5962,6 +6393,7 @@ export function CaseDrawer({
     shade: string;
     quantity: number;
     unitPrice: string;
+    arch?: "upper" | "lower";
   };
   type PendingUpdate = {
     restorationId: string;
@@ -5969,7 +6401,8 @@ export function CaseDrawer({
     material?: string;
     restorationSubtype?: string;
     shade?: string;
-    restorationType?: "Crown" | "Pontic";
+    restorationType?: string;
+    arch?: "upper" | "lower" | null;
   };
   type PendingCaseEdit = {
     patientFirstName: string;
@@ -5988,10 +6421,12 @@ export function CaseDrawer({
   const [pendingCreates, setPendingCreates] = useState<PendingCreate[]>([]);
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
+  const [chartDraftChanged, setChartDraftChanged] = useState(false);
   const [toothUndo, setToothUndo] = useState<{
     creates: PendingCreate[]; deletes: Set<string>; updates: PendingUpdate[]; connectors: string | null;
   } | null>(null);
   function captureToothUndo() {
+    setChartDraftChanged(true);
     setToothUndo({
       creates: [...pendingCreates], deletes: new Set(pendingDeletes),
       updates: [...pendingUpdates], connectors: connectorDraft,
@@ -6029,6 +6464,8 @@ export function CaseDrawer({
   // after the server round-trip + cache refetch complete so there's no flicker).
   const [optimisticMissingAdds, setOptimisticMissingAdds] = useState<Set<string>>(new Set());
   const [optimisticMissingDeletes, setOptimisticMissingDeletes] = useState<Set<string>>(new Set());
+  const [quickDueDateOverride, setQuickDueDateOverride] = useState<string | null>(null);
+  const quickDueDateInputRef = useRef<HTMLInputElement | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // A partial save may commit the hierarchy before a later row write fails.
@@ -6298,8 +6735,11 @@ export function CaseDrawer({
       }
     }
     for (const id of optimisticMissingAdds) set.add(id);
+    for (const row of pendingCreates) {
+      if (row.restorationType === "missing") for (const id of parseToothField(row.toothNumber)) set.add(id);
+    }
     return set;
-  }, [data?.restorations, pendingDeletes, optimisticMissingAdds, optimisticMissingDeletes]);
+  }, [data?.restorations, pendingDeletes, pendingCreates, optimisticMissingAdds, optimisticMissingDeletes]);
 
   // Per-tooth restoration descriptions surfaced in the tooth-chart
   // tooltip so users immediately see what's already on the case.
@@ -6361,6 +6801,23 @@ export function CaseDrawer({
     return set;
   }, [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
 
+  // Display only: explicit Veneer rows, one tooth each.
+  const veneerTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.restorations ?? []) {
+      if (pendingDeletes.has(r.id)) continue;
+      const role = pendingUpdates.find((update) => update.restorationId === r.id)?.restorationType ?? r.restorationType;
+      if (!/^veneer$/i.test(role)) continue;
+      const ids = parseToothField(pendingUpdates.find((update) => update.restorationId === r.id)?.newToothNumber ?? r.toothNumber);
+      if (ids.size === 1) set.add([...ids][0]);
+    }
+    for (const c of pendingCreates) {
+      if (!/^veneer$/i.test(c.restorationType)) continue;
+      for (const id of parseToothField(c.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
+
 
   const editMutation = useMutation({
     mutationFn: (updates: typeof editForm) => {
@@ -6407,6 +6864,35 @@ export function CaseDrawer({
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
     },
     onError: (e: Error) => setEditError(e.message),
+  });
+
+  // Quick due-date edits use the same case PATCH endpoint as the full editor.
+  // Keep the current wall-clock due time when only the calendar day changes.
+  const quickDueDateMutation = useMutation({
+    mutationFn: (dueDate: string) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          dueDate,
+          dueTime: data?.dueTime ?? labCase.dueTime ?? null,
+        }),
+      }),
+    onMutate: (dueDate) => setQuickDueDateOverride(dueDate),
+    onSuccess: async (_result, dueDate) => {
+      const dueTime = data?.dueTime ?? labCase.dueTime ?? null;
+      qc.setQueryData<DetailedCase>(["case", labCase.id], (previous) =>
+        previous ? { ...previous, dueDate, dueTime } : previous,
+      );
+      setQuickDueDateOverride(null);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+      ]);
+    },
+    onError: (error: Error) => {
+      setQuickDueDateOverride(null);
+      toast.error(error.message || "Could not update the due date.");
+    },
   });
 
   const barcodeMutation = useMutation({
@@ -6470,27 +6956,35 @@ export function CaseDrawer({
         }),
       }),
     onSuccess: async (_result, { status }) => {
-      const prevBarcode = data?.casePanBarcode ?? labCase.casePanBarcode;
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["cases"] }),
-        qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
-        qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] }),
-      ]);
-      onCaseLocated?.(status);
-      setRouteStatus("");
-      setRouteError(null);
-      const msg =
-        status === "complete" && !!prevBarcode
-          ? "Case located successfully. Barcode released."
-          : "Case located successfully.";
-      setRouteSuccessMsg(msg);
-      if (routeSuccessTimerRef.current !== null) clearTimeout(routeSuccessTimerRef.current);
-      routeSuccessTimerRef.current = setTimeout(() => {
-        routeSuccessTimerRef.current = null;
-        setRouteSuccessMsg(null);
-      }, 3000);
+      try {
+        const prevBarcode = data?.casePanBarcode ?? labCase.casePanBarcode;
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ["cases"] }),
+          qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+          qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] }),
+        ]);
+        onCaseLocated?.(status);
+        setRouteStatus("");
+        setRouteError(null);
+        const msg =
+          status === "complete" && !!prevBarcode
+            ? "Case located successfully. Barcode released."
+            : "Case located successfully.";
+        setRouteSuccessMsg(msg);
+        if (routeSuccessTimerRef.current !== null) clearTimeout(routeSuccessTimerRef.current);
+        routeSuccessTimerRef.current = setTimeout(() => {
+          routeSuccessTimerRef.current = null;
+          setRouteSuccessMsg(null);
+        }, 3000);
+      } finally {
+        routeInFlightRef.current = false;
+      }
     },
-    onError: (e: Error) => setRouteError(e.message),
+    onError: (e: Error) => {
+      routeInFlightRef.current = false;
+      setRouteStatus("");
+      setRouteError(e.message);
+    },
   });
 
   const returnStepMutation = useMutation({
@@ -6658,6 +7152,38 @@ export function CaseDrawer({
     routeMutation.mutate(payload, {
       onSuccess: () => finishReturnAfterDueDateDecision(dueDateDeclined),
     });
+  }
+
+  function handleRouteStationChange(stationId: string) {
+    if (routeInFlightRef.current || routeMutation.isPending) return;
+    setRouteStatus(stationId);
+    setRouteError(null);
+    setRouteSuccessMsg(null);
+    if (!stationId) return;
+
+    const station = ROUTE_STATUSES.find((candidate) => candidate.id === stationId);
+    if (!station) {
+      setRouteStatus("");
+      setRouteError("Please select a valid station.");
+      return;
+    }
+
+    const status = station.value;
+    const labLocationId =
+      apiLocations && apiLocations.length > 0 ? station.id : null;
+    const caseIsComplete = RETURN_COMPLETE_STATUSES.has(currentStatus.toLowerCase());
+    const targetIsIntake = RETURN_INTAKE_STATUSES.has(status.toLowerCase());
+    if (caseIsComplete && targetIsIntake) {
+      setReturnPromptStatus(status);
+      setReturnPromptLabLocationId(labLocationId);
+      setReturnDueDate("");
+      setReturnDueTime("");
+      setReturnPromptStep("ask");
+      return;
+    }
+
+    routeInFlightRef.current = true;
+    routeMutation.mutate({ status: status as CaseStatus, labLocationId });
   }
 
   const acceptSuggestionMutation = useMutation({
@@ -6913,6 +7439,8 @@ export function CaseDrawer({
       qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
       qc.invalidateQueries({ queryKey: ["invoice-detail"] }),
       qc.invalidateQueries({ queryKey: ["invoices"] }),
+      qc.invalidateQueries({ queryKey: ["reports"] }),
+      qc.invalidateQueries({ queryKey: ["sales"] }),
     ]);
   }
 
@@ -6989,7 +7517,8 @@ export function CaseDrawer({
         material: pendingUpdates.find((update) => update.restorationId === restoration.id)?.material ?? restoration.material,
         restorationSubtype: pendingUpdates.find((update) => update.restorationId === restoration.id)?.restorationSubtype ?? restoration.restorationSubtype,
         shade: pendingUpdates.find((update) => update.restorationId === restoration.id)?.shade ?? restoration.shade,
-        arch: restoration.arch,
+        arch: pendingUpdates.find((update) => update.restorationId === restoration.id)?.arch !== undefined
+          ? pendingUpdates.find((update) => update.restorationId === restoration.id)!.arch : restoration.arch,
         quantity: pendingUpdates.some((update) => update.restorationId === restoration.id && update.restorationType) ? 1 : restoration.quantity,
       })),
     ...pendingCreates.map((restoration) => ({
@@ -6998,6 +7527,8 @@ export function CaseDrawer({
       material: restoration.material,
       restorationSubtype: restoration.restorationSubtype,
       shade: restoration.shade,
+      arch: restoration.arch,
+      quantity: restoration.quantity,
     })),
   ], [data?.restorations, pendingDeletes, pendingCreates, pendingUpdates]);
   const suggestedConnectorPairs = useMemo(
@@ -7083,6 +7614,7 @@ export function CaseDrawer({
     pendingRxSummaryEdit !== null;
 
   function handleDiscardChanges() {
+    setChartDraftChanged(false);
     setToothUndo(null);
     setConnectorDraft(null);
     setConnectorSaveError(null);
@@ -7127,6 +7659,8 @@ export function CaseDrawer({
     },
   ) {
     if (isSaving) return false;
+    const saveChartAtomically = chartDraftChanged &&
+      Boolean(pendingCreates.length || pendingUpdates.length || pendingDeletes.size || hasConnectorChanges);
     const assignmentChanged = pendingCreates.length || pendingUpdates.length || pendingDeletes.size || hasConnectorChanges;
     const previousErrors = new Set(validateToothConnectors(data?.bridgeConnectors, data?.restorations ?? []).errors);
     const newErrors = connectorValidation.errors.filter((error) => !previousErrors.has(error));
@@ -7168,9 +7702,14 @@ export function CaseDrawer({
         qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
         qc.invalidateQueries({ queryKey: ["invoice-detail"] }),
         qc.invalidateQueries({ queryKey: ["invoices"] }),
+        qc.invalidateQueries({ queryKey: ["reports"] }),
+        qc.invalidateQueries({ queryKey: ["sales"] }),
       ]);
 
     try {
+      // Non-chart editors retain their established row-save/retry behavior.
+      // A chart save includes these edits in the transaction below instead.
+      if (!saveChartAtomically) {
       // 1. Case detail patch (single atomic call)
       for (const row of data?.restorations ?? []) {
         const draft = editorDraft?.implantEdits?.[row.id];
@@ -7308,6 +7847,76 @@ export function CaseDrawer({
         }
       }
 
+      }
+      // The interactive chart and its generated invoice commit together. A
+      // refused/failed save leaves both records unchanged and keeps this draft.
+      if (saveChartAtomically) {
+        const clinicalTeeth = snapshotRxSummaryEdit?.teeth.split(/[\s,;]+/).map((tooth) => tooth.trim()).filter(Boolean);
+        await apiFetch(`/cases/${labCase.id}/tooth-chart`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            creates: snapshotCreates.map((row) => ({
+              localId: row.localId, toothNumber: row.toothNumber,
+              restorationType: row.restorationType, material: row.material || null,
+              restorationSubtype: row.restorationSubtype || null, shade: row.shade || null,
+              quantity: Number(row.quantity) || 1,
+              arch: row.arch ?? null,
+              ...Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, row[key] || null])),
+              ...(row.unitPrice ? { unitPrice: Number(row.unitPrice) } : {}),
+            })),
+            updates: snapshotUpdates.map((row) => ({
+              restorationId: row.restorationId, ...buildRestorationUpdateBody(row),
+            })),
+            deletes: snapshotDeletes,
+            bridgeConnectors: snapshotConnectorString || null,
+            ...(snapshotCaseEdit ? { caseDetails: {
+              patientFirstName: snapshotCaseEdit.patientFirstName,
+              patientLastName: snapshotCaseEdit.patientLastName,
+              doctorName: snapshotCaseEdit.doctorName,
+              priority: snapshotCaseEdit.priority,
+              ...(snapshotCaseEdit.receivedAt ? { receivedAt: snapshotCaseEdit.receivedAt } : {}),
+              ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate, dueTime: snapshotCaseEdit.dueTime || null } : {}),
+              ...(snapshotCaseEdit.providerOrganizationId ? { providerOrganizationId: snapshotCaseEdit.providerOrganizationId } : {}),
+              casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
+              rxNotes: snapshotCaseEdit.rxNotes.trim() ? snapshotCaseEdit.rxNotes : null,
+              gingivialShade: snapshotCaseEdit.gingivialShade.trim() || null,
+            } } : {}),
+            ...(snapshotRxSummaryEdit ? { hierarchy: {
+              restorationType: snapshotRxSummaryEdit.type.trim() || "Other",
+              restorationSubtype: snapshotRxSummaryEdit.restorationSubtype || null,
+              material: snapshotRxSummaryEdit.material || null,
+              toothNumbers: clinicalTeeth,
+              ...(snapshotRxSummaryEdit.changed.shade ? { shade: snapshotRxSummaryEdit.shade.trim() || null } : {}),
+              ...(snapshotRxSummaryEdit.changed.arch && snapshotRxSummaryEdit.arch
+                ? { arch: snapshotRxSummaryEdit.arch === "both" ? "upper_lower" : snapshotRxSummaryEdit.arch } : {}),
+              ...(snapshotRxSummaryEdit.changed.step ? { step: snapshotRxSummaryEdit.step || null } : {}),
+              ...(snapshotRxSummaryEdit.changed.stepShade
+                ? { stepShade: snapshotRxSummaryEdit.step === "wax_setup" ? snapshotRxSummaryEdit.stepShade.trim() || null : null } : {}),
+            } } : {}),
+            implants: (data?.restorations ?? []).flatMap((row) => {
+              const draft = editorDraft?.implantEdits?.[row.id];
+              const confirmed = savedImplantDrafts.current[row.id] ?? row;
+              return draft && IMPLANT_FIELDS.some((key) => (draft[key] || null) !== (confirmed[key] || null))
+                ? [{ restorationId: row.id, values: Object.fromEntries(IMPLANT_FIELDS.map((key) => [key, draft[key] || null])) }]
+                : [];
+            }),
+          }),
+        });
+        setPendingCreates([]);
+        setPendingUpdates([]);
+        setPendingDeletes(new Set());
+        setConnectorDraft(null);
+        setConnectorSaveError(null);
+        setChartDraftChanged(false);
+        setPendingCaseEdit(null);
+        setPendingRxSummaryEdit(null);
+        setPendingCaseEdit(null);
+        await invalidateAll().catch(() => {
+          toast.warning("The chart and invoice were saved. Their display could not refresh; reopen the case to see the confirmed values.");
+        });
+        return true;
+      }
+
       // 3. Deletes — remove from pending state immediately after each success
       const touchedTeeth = new Set<string>();
       for (const row of data?.restorations ?? []) {
@@ -7403,8 +8012,76 @@ export function CaseDrawer({
 
   function handleToothDialogStage(payload: ToothActionPayload) {
     if (isSaving) return;
-    if (payload.kind === "mark_missing") setToothUndo(null);
-    else captureToothUndo();
+    if ((payload.kind === "add_crown" || payload.kind === "replace_tooth") && payload.arch) {
+      const indication = payload.kind === "add_crown" ? payload.restorationType : payload.role;
+      if (!indication || !isToothIndication(indication) || !indicationCatalogContext(indication).archBased) {
+        setToothDialogError("Choose a supported arch restoration."); return;
+      }
+      const staged = pendingCreates.find((row) => row.arch === payload.arch && row.restorationType === indication);
+      const saved = (data?.restorations ?? []).find((row) =>
+        !pendingDeletes.has(row.id) && (payload.kind === "replace_tooth"
+          ? row.id === payload.restorationId
+          : row.arch === payload.arch && row.restorationType === indication));
+      captureToothUndo();
+      const values = { toothNumber: "", restorationType: indication, arch: payload.arch,
+        material: payload.material ?? saved?.material ?? staged?.material ?? "",
+        restorationSubtype: payload.restorationSubtype ?? saved?.restorationSubtype ?? staged?.restorationSubtype ?? undefined,
+        shade: payload.shade ?? saved?.shade ?? staged?.shade ?? "", quantity: 1 };
+      if (saved) {
+        setPendingUpdates((rows) => [...rows.filter((row) => row.restorationId !== saved.id),
+          { restorationId: saved.id, newToothNumber: "", ...values }]);
+      } else {
+        const created = { ...values, localId: staged?.localId ?? crypto.randomUUID(), unitPrice: "" };
+        setPendingCreates((rows) => staged ? rows.map((row) => row.localId === staged.localId ? created : row) : [...rows, created]);
+      }
+      setToothDialogId(null); setToothDialogError(null); setToothMultiSelect(false); setToothSelectedTargets([]);
+      return;
+    }
+    const assignmentTargets = toothMultiSelect && toothSelectedTargets.length ? toothSelectedTargets : ("toothId" in payload ? [payload.toothId] : []);
+    if (toothMultiSelect && (payload.kind === "add_crown" || payload.kind === "add_pontic") &&
+      assignmentTargets.some((tooth) => stagedToothAssignment(tooth) || missingTeethIds.has(tooth))) {
+      setToothDialogError("This selection contains assigned or missing teeth. Keep those records intact; use an existing tooth's Copy settings action to review replacements, or restore a missing tooth individually.");
+      return;
+    }
+    if (payload.kind === "copy_assignment" && payload.toothNumbers.some((tooth) => {
+      const target = stagedToothAssignment(tooth);
+      return target && parseToothField(target.toothNumber).size > 1;
+    })) {
+      setToothDialogError("A target belongs to a shared multi-tooth restoration row. Review and edit that row directly rather than adding a duplicate charge.");
+      return;
+    }
+    if (payload.kind === "replace_tooth" || payload.kind === "remove_restoration") {
+      const draft = pendingCreates.find((row) => row.localId === payload.restorationId);
+      const current = draft ?? data?.restorations?.find((row) => row.id === payload.restorationId);
+      if (current && parseToothField(current.toothNumber).size > 1) {
+        setToothDialogError("This is a shared multi-tooth restoration row. Edit it in the full restoration row editor so other teeth and charges remain intact.");
+        return;
+      }
+      if (draft) {
+        captureToothUndo();
+        setPendingCreates((rows) => payload.kind === "remove_restoration"
+          ? rows.filter((row) => row.localId !== draft.localId)
+          : rows.map((row) => row.localId !== draft.localId ? row : {
+            ...row, toothNumber: payload.newToothNumber,
+            restorationType: payload.role ?? row.restorationType,
+            arch: payload.arch ?? (payload.role ? undefined : row.arch),
+            material: payload.material ?? row.material,
+            restorationSubtype: payload.restorationSubtype ?? row.restorationSubtype,
+            shade: payload.shade ?? row.shade,
+          }));
+        setToothDialogId(null);
+        setToothDialogError(null);
+        return;
+      }
+    }
+    captureToothUndo();
+    if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
+      const missingRows = (data?.restorations ?? []).filter((row) =>
+        row.restorationType === "missing" && parseToothField(row.toothNumber).has(payload.toothId));
+      setPendingDeletes((previous) => new Set([...previous, ...missingRows.map((row) => row.id)]));
+      setPendingCreates((previous) => previous.filter((row) =>
+        row.restorationType !== "missing" || !parseToothField(row.toothNumber).has(payload.toothId)));
+    }
     const draftSource = "restorationId" in payload ? pendingCreates.find((row) => row.localId === payload.restorationId) : undefined;
     if (draftSource && payload.kind !== "copy_assignment") {
       if (payload.kind === "remove_restoration" || (payload.kind === "replace_tooth" && payload.newToothNumber !== draftSource.toothNumber)) {
@@ -7419,6 +8096,7 @@ export function CaseDrawer({
           setToothDialogError("That tooth already has an assignment."); return;
         }
         setPendingCreates((rows) => rows.map((row) => row.localId === draftSource.localId ? { ...row, toothNumber: payload.newToothNumber,
+          ...(payload.role !== undefined ? { restorationType: payload.role } : {}),
           ...(payload.material !== undefined ? { material: payload.material } : {}),
           ...(payload.shade !== undefined ? { shade: payload.shade } : {}),
           ...(payload.restorationSubtype !== undefined ? { restorationSubtype: payload.restorationSubtype } : {}) } : row));
@@ -7447,15 +8125,17 @@ export function CaseDrawer({
         restorationType: edit?.restorationType ?? stored.restorationType,
         material: edit?.material ?? stored.material, shade: edit?.shade ?? stored.shade,
         restorationSubtype: edit?.restorationSubtype ?? stored.restorationSubtype } : undefined);
-      if (!source || !/^(crown|pontic)$/i.test(source.restorationType) || !source.material?.trim()) {
-        setToothDialogError("Confirm an explicit crown or pontic and a catalog material before copying.");
+      if (!source || !/^(crown|pontic|veneer)$/i.test(source.restorationType) || !source.material?.trim()) {
+        setToothDialogError("Confirm an explicit crown, pontic or veneer and a catalog material before copying.");
         return;
       }
-      const existingTargets = (data?.restorations ?? []).filter((row) => !pendingDeletes.has(row.id) &&
-        /^(Crown|Pontic)$/i.test(row.restorationType) && payload.toothNumbers.includes(row.toothNumber));
+      const existingTargets = payload.toothNumbers.flatMap((tooth) => {
+        const row = stagedToothAssignment(tooth);
+        return row && "id" in row ? [row] : [];
+      });
       setPendingUpdates((previous) => [...previous.filter((row) => !existingTargets.some((target) => target.id === row.restorationId)),
         ...existingTargets.map((target) => ({ restorationId: target.id, newToothNumber: target.toothNumber,
-          restorationType: source.restorationType as "Crown" | "Pontic", material: source.material!, shade: source.shade ?? "",
+          restorationType: source.restorationType as "Crown" | "Pontic" | "Veneer", material: source.material!, shade: source.shade ?? "",
           restorationSubtype: source.restorationSubtype ?? undefined }))]);
       const newTargets = payload.toothNumbers.filter((tooth) => !existingTargets.some((target) => target.toothNumber === tooth));
       setPendingCreates((previous) => [
@@ -7471,46 +8151,72 @@ export function CaseDrawer({
       ]);
       setToothDialogId(null);
       setToothDialogError(null);
+      setToothSelectedTargets([]);
+      setToothMultiSelect(false);
     } else if (payload.kind === "add_crown") {
-      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const localId = crypto.randomUUID();
+      setToothCopySourceId(localId);
+      setToothCopyAnchor(payload.toothId);
+      setToothCopyMessage(`Copy settings: #${payload.toothId} ${payload.restorationType} · ${payload.material} · ${payload.shade || "No shade"}. Ctrl/Cmd-click a target to copy.`);
       setPendingCreates((prev) => [
         ...prev,
-        {
-          localId,
-          toothNumber: payload.toothId,
-          restorationType: "Crown",
+        ...assignmentTargets.map((toothNumber, index) => ({
+          localId: index === 0 ? localId : crypto.randomUUID(),
+          toothNumber,
+          restorationType: payload.restorationType,
           material: payload.material,
           restorationSubtype: payload.restorationSubtype,
           shade: payload.shade ?? "",
           quantity: 1,
           unitPrice: "",
-        },
+        })),
       ]);
       setToothDialogId(null);
       setToothDialogError(null);
+      setToothSelectedTargets([]);
+      setToothMultiSelect(false);
     } else if (payload.kind === "add_pontic") {
-      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const localId = crypto.randomUUID();
+      setToothCopySourceId(localId);
+      setToothCopyAnchor(payload.toothId);
+      setToothCopyMessage(`Copy settings: #${payload.toothId} Pontic · ${payload.material} · ${payload.shade || "No shade"}. Ctrl/Cmd-click a target to copy.`);
       setPendingCreates((prev) => [
         ...prev,
-        {
-          localId,
-          toothNumber: payload.toothId,
-          restorationType: "Pontic",
+        ...assignmentTargets.map((toothNumber, index) => ({
+          localId: index === 0 ? localId : crypto.randomUUID(),
+          toothNumber,
+          restorationType: "Pontic" as const,
           material: payload.material,
           restorationSubtype: payload.restorationSubtype ?? null,
           shade: payload.shade ?? "",
           quantity: 1,
           unitPrice: "",
-        },
+        })),
       ]);
       setToothDialogId(null);
       setToothDialogError(null);
+      setToothSelectedTargets([]);
+      setToothMultiSelect(false);
     } else if (payload.kind === "mark_missing") {
-      // Auto-save missing teeth immediately — no pending-changes save required.
-      setOptimisticMissingAdds((prev) => new Set([...prev, payload.toothId]));
+      const targets = toothMultiSelect && assignmentTargets.length ? assignmentTargets : [payload.toothId];
+      const owners = (data?.restorations ?? []).filter((row) => targets.some((tooth) => parseToothField(row.toothNumber).has(tooth)));
+      if (owners.some((row) => parseToothField(row.toothNumber).size > 1)) {
+        setToothDialogError("This tooth belongs to a shared multi-tooth row. Separate that row in the restoration editor first so other teeth and charges remain intact.");
+        return;
+      }
+      setPendingDeletes((previous) => new Set([...previous, ...owners.map((row) => row.id)]));
+      setPendingUpdates((previous) => previous.filter((row) => !owners.some((owner) => owner.id === row.restorationId)));
+      setPendingCreates((previous) => [
+        ...previous.filter((row) => !targets.some((tooth) => parseToothField(row.toothNumber).has(tooth))),
+        ...targets.map((toothNumber) => ({ localId: crypto.randomUUID(), toothNumber, restorationType: "missing",
+          material: "", shade: "", quantity: 1, unitPrice: "0" })),
+      ]);
+      setConnectorDraft(updateConnectorChoices(stagedConnectorState,
+        new Set([...stagedConnectorState.active].filter((pair) => !pair.split("-").some((tooth) => targets.includes(tooth))))));
+      setToothMultiSelect(false);
+      setToothSelectedTargets([]);
       setToothDialogId(null);
       setToothDialogError(null);
-      saveMissingMutation.mutate({ kind: "add", toothId: payload.toothId });
     } else if (payload.kind === "remove_restoration") {
       if (payload.restorationId) {
         setPendingDeletes((prev) => {
@@ -7526,15 +8232,9 @@ export function CaseDrawer({
             parseToothField(r.toothNumber).has(payload.toothId),
         );
         if (serverMissingRow) {
-          setToothUndo(null);
-          setOptimisticMissingDeletes((prev) => new Set([...prev, payload.toothId]));
+          setPendingDeletes((previous) => new Set([...previous, serverMissingRow.id]));
           setToothDialogId(null);
           setToothDialogError(null);
-          saveMissingMutation.mutate({
-            kind: "remove",
-            toothId: payload.toothId,
-            restorationId: serverMissingRow.id,
-          });
           return;
         } else if (optimisticMissingAdds.has(payload.toothId)) {
           // Still in-flight add — cancel the optimistic add.
@@ -7558,19 +8258,97 @@ export function CaseDrawer({
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "replace_tooth") {
-      setPendingUpdates((prev) => [
-        ...prev,
+      setPendingUpdates((prev) => {
+        const previous = prev.find((row) => row.restorationId === payload.restorationId);
+        return [
+        ...prev.filter((row) => row.restorationId !== payload.restorationId),
         {
+          ...previous,
           restorationId: payload.restorationId,
           newToothNumber: payload.newToothNumber,
-          material: payload.material,
-          restorationSubtype: payload.restorationSubtype,
-          shade: payload.shade,
+          restorationType: payload.role && isToothIndication(payload.role) ? payload.role : previous?.restorationType,
+          material: payload.material ?? previous?.material,
+          restorationSubtype: payload.restorationSubtype ?? previous?.restorationSubtype,
+          shade: payload.shade ?? previous?.shade,
+          ...(payload.arch !== undefined ? { arch: payload.arch } : payload.role && isToothIndication(payload.role) ? { arch: null } : {}),
         },
-      ]);
+      ]; });
       setToothDialogId(null);
       setToothDialogError(null);
     }
+  }
+
+  function stagedToothAssignment(tooth: string) {
+    const draft = pendingCreates.find((row) => parseToothField(row.toothNumber).has(tooth));
+    if (draft) return { ...draft, id: draft.localId };
+    for (const row of data?.restorations ?? []) {
+      if (pendingDeletes.has(row.id)) continue;
+      const edit = pendingUpdates.find((entry) => entry.restorationId === row.id);
+      const projected = {
+        ...row, toothNumber: edit?.newToothNumber ?? row.toothNumber,
+        restorationType: edit?.restorationType ?? row.restorationType,
+        material: edit?.material ?? row.material, shade: edit?.shade ?? row.shade,
+        restorationSubtype: edit?.restorationSubtype ?? row.restorationSubtype,
+      };
+      if (parseToothField(projected.toothNumber).has(tooth)) return projected;
+    }
+    return undefined;
+  }
+
+  function requestSavedToothCopy(targets: string[]) {
+    if (isSaving) return;
+    const source = toothCopyAnchor ? stagedToothAssignment(toothCopyAnchor) : undefined;
+    if (!source || source.id !== toothCopySourceId || !/^(crown|pontic|veneer)$/i.test(source.restorationType) || !source.material?.trim()) {
+      setToothCopyMessage("Click an assigned crown, pontic or veneer first to choose its copy settings.");
+      return;
+    }
+    const unique = [...new Set(targets)].filter((tooth) => tooth !== toothCopyAnchor);
+    if (!unique.length) return;
+    if (unique.some((tooth) => !!stagedToothAssignment(tooth))) {
+      setToothCopyTargets(unique.join(", "));
+      setToothDialogId(toothCopyAnchor);
+      setToothDialogError(null);
+      setToothCopyMessage("Review the target assignments in the copy dialog before replacing them.");
+      return;
+    }
+    handleToothDialogStage({ kind: "copy_assignment", restorationId: source.id, toothNumbers: unique });
+    setToothSelectedTargets([]);
+    setToothMultiSelect(false);
+    setToothCopyMessage(`Copied ${source.restorationType}, ${source.material}, ${source.shade || "no shade"} to ${unique.map((tooth) => `#${tooth}`).join(", ")}. Save changes to commit.`);
+  }
+
+  function handleSavedChartTooth(tooth: string, modifiers?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (isSaving) return;
+    if (toothMultiSelect) {
+      if (modifiers?.shiftKey && toothSelectionAnchor) {
+        const range = expandToothAssignmentIdentifiers(`${toothSelectionAnchor}-${tooth}`);
+        if (!range.length) { setToothCopyMessage("Shift-selection must stay within one arch."); return; }
+        setToothSelectedTargets((selected) => [...new Set([...selected, ...range])]);
+      } else {
+        setToothSelectionAnchor(tooth);
+        setToothSelectedTargets((selected) => selected.includes(tooth) ? selected.filter((id) => id !== tooth) : [...selected, tooth]);
+      }
+      return;
+    }
+    if (modifiers?.shiftKey && toothCopyAnchor) {
+      const range = expandToothAssignmentIdentifiers(`${toothCopyAnchor}-${tooth}`);
+      if (!range.length) { setToothCopyMessage("Shift-selection must stay within one arch."); return; }
+      setToothSelectedTargets(range);
+      setToothSelectionAnchor(toothCopyAnchor);
+      setToothMultiSelect(true);
+      setToothCopyMessage(`Selected teeth #${range.join(", #")}. Selection has not changed any restoration. Choose Assign or Copy settings to apply an edit.`);
+      return;
+    }
+    if (modifiers?.ctrlKey || modifiers?.metaKey) { requestSavedToothCopy([tooth]); return; }
+    const source = stagedToothAssignment(tooth);
+    if (source && /^(crown|pontic|veneer)$/i.test(source.restorationType)) {
+      setToothCopySourceId(source.id);
+      setToothCopyAnchor(tooth);
+      setToothCopyMessage(`Copy settings: #${tooth} ${source.restorationType} · ${source.material || "Material needs review"} · ${source.shade || "No shade"}. Ctrl/Cmd-click to copy; Shift-click for a same-arch range.`);
+    }
+    setToothCopyTargets("");
+    setToothDialogId(tooth);
+    setToothDialogError(null);
   }
 
   // Each entry carries its own optional note (already trimmed) so a note is
@@ -7983,6 +8761,56 @@ export function CaseDrawer({
     return matching.length === 1 ? matching[0].label : null;
   })();
 
+  const savedChartToolbar = (
+    <div className="mb-3 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="min-h-11 rounded-md border px-3 text-sm disabled:opacity-40" disabled={!toothUndo || isSaving}
+          onClick={() => {
+            if (!toothUndo) return;
+            setPendingCreates(toothUndo.creates);
+            setPendingDeletes(toothUndo.deletes);
+            setPendingUpdates(toothUndo.updates);
+            setConnectorDraft(toothUndo.connectors);
+            setToothUndo(null);
+            setConnectorSaveError(null);
+            setToothCopySourceId(null);
+            setToothCopyAnchor(null);
+            setToothSelectionAnchor(null);
+            setToothSelectedTargets([]);
+            setToothMultiSelect(false);
+            setToothCopyMessage("Undo restored the unsaved tooth edits and connector choices. Click an assigned tooth to choose copy settings.");
+          }}>Undo unsaved tooth edit</button>
+        <button type="button" disabled={isSaving} aria-pressed={toothMultiSelect}
+          className="min-h-11 rounded-md border px-3 text-sm disabled:opacity-40"
+          onClick={() => { setToothMultiSelect((active) => !active); setToothSelectedTargets([]); setToothSelectionAnchor(null); }}>
+          {toothMultiSelect ? "Cancel tooth selection" : "Select multiple teeth"}
+        </button>
+        {toothMultiSelect && <button type="button" disabled={isSaving || !toothSelectedTargets.length}
+          className="min-h-11 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-40"
+          onClick={() => {
+            const arch = selectedToothArch(toothSelectedTargets);
+            const wholeArch = arch && archSelectionTeeth(arch).every((tooth) => toothSelectedTargets.includes(tooth));
+            if (!wholeArch && toothSelectedTargets.some((tooth) => stagedToothAssignment(tooth) || missingTeethIds.has(tooth))) {
+              setToothCopyMessage("Select unassigned teeth to add restorations. Use Copy settings with replacement review for existing assignments.");
+              return;
+            }
+            setToothDialogError(null);
+            setToothDialogId(toothSelectedTargets[0]);
+          }}>Assign {toothSelectedTargets.length} selected teeth</button>}
+        {toothMultiSelect && toothCopySourceId && <button type="button" disabled={isSaving || !toothSelectedTargets.length}
+          className="min-h-11 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-40"
+          onClick={() => requestSavedToothCopy(toothSelectedTargets)}>Copy settings to {toothSelectedTargets.length} selected teeth</button>}
+      </div>
+      {toothCopyMessage && <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950" role="status">{
+        toothCopyMessage.startsWith("Copy settings:") ? (() => {
+          const source = toothCopyAnchor ? stagedToothAssignment(toothCopyAnchor) : undefined;
+          return source?.id === toothCopySourceId
+            ? `Copy settings: #${toothCopyAnchor} ${source.restorationType} · ${source.material || "Material needs review"} · ${source.shade || "No shade"}. Ctrl/Cmd-click to copy; Shift-click to select a same-arch range.`
+            : "Choose an assigned tooth again to select its current copy settings.";
+        })() : toothCopyMessage
+      }</p>}
+    </div>
+  );
   const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
     { id: "lab-slip", label: "Lab Slip" },
     { id: "restorations", label: "Restorations", count: restorationCount },
@@ -7991,11 +8819,31 @@ export function CaseDrawer({
     { id: "invoice", label: "Invoice" },
     { id: "history", label: "History", count: (data?.events?.length ?? 0) + (data?.originalCaseEvents?.length ?? 0) + (data?.remakeChildrenEvents?.reduce((s, rc) => s + rc.events.length, 0) ?? 0) || undefined },
   ];
+  const activateTab = (tabId: CaseTab) => {
+    if (tabId === activeTab) return;
+    const proceed = () => {
+      if (tabId !== "lab-slip") cancelCaseEdit();
+      setActiveTab(tabId);
+      queueMicrotask(() => document.getElementById(`case-tab-${tabId}`)?.focus());
+    };
+    if (activeTab !== "invoice" || !guardNavigation(proceed)) proceed();
+  };
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const currentIndex = tabs.findIndex((tab) => tab.id === activeTab);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = tabs.length - 1;
+    if (nextIndex == null) return;
+    event.preventDefault();
+    activateTab(tabs[nextIndex].id);
+  };
 
   return (
     <div ref={drawerLayoutRef} className={docked ? "fixed inset-0 z-50 flex lg:sticky lg:inset-auto lg:z-auto lg:top-4 lg:w-[460px] lg:max-w-[46vw] lg:shrink-0 lg:h-[var(--case-drawer-height,calc(100dvh-2rem))]" : "fixed inset-0 z-50 flex"}>
       <div className={`flex-1 bg-foreground/30 ${docked ? "lg:hidden" : ""}`} onClick={handleCloseWithGuard} />
-      <aside data-testid="case-drawer" className={`@container/drawer w-full ${docked ? "max-w-[700px] lg:max-w-none border border-border lg:rounded-xl overflow-hidden" : "max-w-[700px] border-l border-border shadow-2xl"} bg-card h-full flex flex-col${(data?.priority ?? labCase.priority) === "rush" ? " text-destructive [&_*]:text-destructive" : ""}`}>
+      <aside data-testid="case-drawer" className={`@container/drawer w-full ${docked ? "max-w-[700px] lg:max-w-none border border-border lg:rounded-xl overflow-hidden" : "max-w-[1280px] border-l border-border shadow-2xl"} bg-card h-full flex flex-col${(data?.priority ?? labCase.priority) === "rush" ? " text-destructive [&_*]:text-destructive" : ""}`}>
         {/* Header */}
         <header className="relative flex flex-wrap items-start justify-between gap-3 px-5 py-3 border-b border-border shrink-0">
           {docked && onExpand && <div className="w-full flex justify-end"><button type="button" onClick={onExpand} className="inline-flex items-center gap-1.5 text-sm font-medium rounded border px-2 py-1"><ExternalLink size={14} />Open Case</button></div>}
@@ -8097,8 +8945,9 @@ export function CaseDrawer({
               {user?.userType !== "provider" && data?.viewerIsLabMember !== false && <>
               <select
                 value={routeStatus}
-                onChange={(e) => { setRouteStatus(e.target.value); setRouteError(null); }}
+                onChange={(e) => handleRouteStationChange(e.target.value)}
                 aria-label="Move case to station"
+                disabled={routeMutation.isPending}
                 className="flex-1 min-w-0 basis-36 h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                 data-testid="locate-case-select"
               >
@@ -8120,35 +8969,12 @@ export function CaseDrawer({
                   });
                 })()}
               </select>
-              <button
-                type="button"
-                disabled={!routeStatus || routeMutation.isPending}
-                data-testid="locate-case-submit"
-                onClick={() => {
-                  const station = ROUTE_STATUSES.find((s) => s.id === routeStatus);
-                  const status = station?.value;
-                  if (status) {
-                    const labLocationId =
-                      apiLocations && apiLocations.length > 0 ? (station?.id ?? null) : null;
-                    const caseIsComplete = RETURN_COMPLETE_STATUSES.has(currentStatus.toLowerCase());
-                    const targetIsIntake = RETURN_INTAKE_STATUSES.has(status.toLowerCase());
-                    if (caseIsComplete && targetIsIntake) {
-                      setReturnPromptStatus(status);
-                      setReturnPromptLabLocationId(labLocationId);
-                      setReturnDueDate("");
-                      setReturnDueTime("");
-                      setReturnPromptStep("ask");
-                    } else {
-                      routeMutation.mutate({ status: status as CaseStatus, labLocationId });
-                    }
-                  } else {
-                    setRouteError("Please select a valid station.");
-                  }
-                }}
-                className="h-8 px-3.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5 shrink-0"
-              >
-                {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}
-              </button>
+              {routeMutation.isPending && (
+                <span role="status" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" />
+                  Locating…
+                </span>
+              )}
               </>}
             </div>
             {routeError && <p className="mt-1.5 text-xs text-destructive break-words">{routeError}</p>}
@@ -8443,7 +9269,11 @@ export function CaseDrawer({
         )}
 
         {/* Tab navigation */}
-        <nav className="flex items-center border-b border-border px-2 shrink-0 overflow-x-auto">
+        <nav
+          role="tablist"
+          aria-label="Case details"
+          className="flex items-center border-b border-border px-2 shrink-0 overflow-x-auto"
+        >
           {tabs.map((tab, index) => (
             <div key={tab.id} className="flex items-center">
               {index > 0 && (
@@ -8454,15 +9284,14 @@ export function CaseDrawer({
               )}
               <button
                 type="button"
+                id={`case-tab-${tab.id}`}
+                role="tab"
+                aria-controls="case-detail-panel"
+                aria-selected={activeTab === tab.id}
+                tabIndex={activeTab === tab.id ? 0 : -1}
                 disabled={isSaving}
-                onClick={() => {
-                  if (tab.id === activeTab) return;
-                  const proceed = () => {
-                    if (tab.id !== "lab-slip") cancelCaseEdit();
-                    setActiveTab(tab.id);
-                  };
-                  if (activeTab !== "invoice" || !guardNavigation(proceed)) proceed();
-                }}
+                onClick={() => activateTab(tab.id)}
+                onKeyDown={handleTabKeyDown}
                 className={`px-3.5 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1.5 ${
                   activeTab === tab.id
                     ? "border-primary text-primary"
@@ -8487,7 +9316,15 @@ export function CaseDrawer({
         </nav>
 
         {/* Tab content */}
-        <div data-testid="case-detail-body" inert={isSaving} className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+        <div
+          id="case-detail-panel"
+          role="tabpanel"
+          aria-labelledby={`case-tab-${activeTab}`}
+          tabIndex={0}
+          data-testid="case-detail-body"
+          inert={isSaving}
+          className="flex-1 min-h-0 min-w-0 overflow-y-auto"
+        >
 
           {/* ── OVERVIEW ── */}
           {activeTab === "lab-slip" && (() => {
@@ -8736,20 +9573,70 @@ export function CaseDrawer({
                 </div>
                 <div data-testid="case-details-metadata" className="@container text-xs mb-3 rounded-lg border border-border bg-secondary/30 p-2.5">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2 @[640px]:flex-nowrap @[640px]:gap-x-2">
-                  <span data-testid="case-details-date-created" className="font-bold min-w-[9rem] flex-1">
+                  <div data-testid="case-details-dates" className="flex min-w-[9rem] flex-1 flex-col items-start gap-1">
+                  <span data-testid="case-details-date-created" className="font-bold">
                     Date Created:{" "}
                     <span>{formatDate(data?.createdAt ?? labCase.createdAt)}</span>
                   </span>
-                  <span data-testid="case-details-metadata-divider" aria-hidden="true" className="hidden @[640px]:block w-px h-4 bg-border shrink-0" />
-                  <span data-testid="case-details-due-date" className="font-bold min-w-[9rem] flex-1">
-                    Due Date:{" "}
+                  <span data-testid="case-details-due-date" className="inline-flex flex-wrap items-center gap-2 text-2xl leading-tight font-bold">
+                    <span>Due Date:</span>
                     <span>
                       {formatDueDate(
-                        pendingCaseEdit?.dueDate ?? (data?.dueDate ?? labCase.dueDate),
+                        quickDueDateOverride ?? pendingCaseEdit?.dueDate ?? (data?.dueDate ?? labCase.dueDate),
                         pendingCaseEdit?.dueTime ?? (data?.dueTime ?? labCase.dueTime),
                       )}
                     </span>
+                    {!editMode && pendingCaseEdit === null && (
+                      <span className="inline-flex items-center">
+                        <button
+                          type="button"
+                          data-testid="case-details-due-date-picker-button"
+                          aria-label={quickDueDateMutation.isPending ? "Saving due date" : "Change due date"}
+                          title="Change due date"
+                          disabled={!data || quickDueDateMutation.isPending}
+                          onClick={() => {
+                            const input = quickDueDateInputRef.current;
+                            if (!input) return;
+                            const showPicker = (input as HTMLInputElement & { showPicker?: () => void }).showPicker;
+                            try {
+                              if (showPicker) {
+                                showPicker.call(input);
+                                return;
+                              }
+                            } catch {
+                              // Fall back to the native input click where
+                              // showPicker is unavailable or disallowed.
+                            }
+                            input.click();
+                          }}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-50"
+                        >
+                          {quickDueDateMutation.isPending
+                            ? <Loader2 size={17} className="animate-spin" aria-hidden="true" />
+                            : <CalendarDays size={17} aria-hidden="true" />}
+                        </button>
+                        <input
+                          ref={quickDueDateInputRef}
+                          type="date"
+                          data-testid="case-details-due-date-picker-input"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                          className="sr-only"
+                          value={(quickDueDateOverride ?? data?.dueDate ?? labCase.dueDate ?? "").slice(0, 10)}
+                          onChange={(event) => {
+                            const nextDueDate = event.currentTarget.value;
+                            if (
+                              !nextDueDate ||
+                              !isValidCalendarDate(nextDueDate) ||
+                              nextDueDate === (data?.dueDate ?? labCase.dueDate ?? "").slice(0, 10)
+                            ) return;
+                            quickDueDateMutation.mutate(nextDueDate);
+                          }}
+                        />
+                      </span>
+                    )}
                   </span>
+                  </div>
                   <span data-testid="case-details-metadata-divider" aria-hidden="true" className="hidden @[640px]:block w-px h-4 bg-border shrink-0" />
                   {(() => {
                     const effRush =
@@ -8832,6 +9719,7 @@ export function CaseDrawer({
                           type="submit"
                           disabled={caseNumberSaving}
                           className="h-6 w-6 rounded flex items-center justify-center hover:bg-primary/10 text-primary disabled:opacity-50"
+                          aria-label="Save case number"
                           title="Save case number"
                         >
                           {caseNumberSaving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
@@ -8841,6 +9729,7 @@ export function CaseDrawer({
                           onClick={() => { setCaseNumberEditMode(false); setCaseNumberError(null); }}
                           disabled={caseNumberSaving}
                           className="h-6 w-6 rounded flex items-center justify-center hover:bg-secondary text-muted-foreground disabled:opacity-50"
+                          aria-label="Cancel case number edit"
                           title="Cancel"
                         >
                           <X size={11} />
@@ -8864,6 +9753,7 @@ export function CaseDrawer({
                               setTimeout(() => caseNumberInputRef.current?.focus(), 50);
                             }}
                             className="h-5 w-5 rounded flex items-center justify-center hover:bg-secondary text-muted-foreground/50 hover:text-muted-foreground"
+                            aria-label="Edit case number"
                             title="Edit case number"
                           >
                             <Pencil size={10} />
@@ -9129,6 +10019,7 @@ export function CaseDrawer({
                                   if (e.key === "Escape") { setBarcodeEditMode(false); }
                                 }}
                                 placeholder="Scan or type barcode… (blank to clear)"
+                                aria-label="Case pan barcode"
                                 className="w-full h-7 pl-7 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                                 autoComplete="off"
                               />
@@ -9137,6 +10028,7 @@ export function CaseDrawer({
                               type="button"
                               onClick={() => commitBarcodeEdit()}
                               className="h-7 w-7 rounded flex items-center justify-center text-primary hover:bg-primary/10 transition-colors shrink-0"
+                              aria-label="Save barcode"
                               title="Save barcode"
                             >
                               <Check size={13} />
@@ -9145,6 +10037,7 @@ export function CaseDrawer({
                               type="button"
                               onClick={() => setBarcodeEditMode(false)}
                               className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground hover:bg-secondary transition-colors shrink-0"
+                              aria-label="Cancel barcode edit"
                               title="Cancel"
                             >
                               <X size={13} />
@@ -9187,6 +10080,11 @@ export function CaseDrawer({
                             setTimeout(() => barcodeInlineInputRef.current?.focus(), 30);
                           }}
                           className="group flex items-center gap-1.5 text-sm font-mono mt-0.5 text-left w-full transition-colors min-h-[1.5rem] disabled:opacity-60 disabled:cursor-wait"
+                          aria-label={
+                            barcodeMutation.isPending
+                              ? "Saving barcode"
+                              : `Edit barcode ${optimisticBarcode ?? data?.casePanBarcode ?? labCase.casePanBarcode ?? ""}`.trim()
+                          }
                           title={barcodeMutation.isPending ? "Saving…" : "Click to edit barcode"}
                         >
                           <span className={
@@ -9734,18 +10632,43 @@ export function CaseDrawer({
                     </h3>
                     {(
                       <div className="space-y-3">
-                        {!caseIsRemovable && (
+                        {(
+                          <CaseChartPanes
+                            label="Rx summary: case details, chart and restorations"
+                            details={<CaseDetailsList rows={[
+                              ["Case", labCase.caseNumber],
+                              ["Patient", `${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`.trim()],
+                              ["Doctor", pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName],
+                              ["Due", formatDueDate(labCase.dueDate, labCase.dueTime)],
+                            ]} />}
+                            chart={<div>
+                          {savedChartToolbar}
                           <ToothChart
-                            value={[highlightValue, ...Array.from(missingTeethIds)]
-                              .filter(Boolean)
-                              .join(",")}
+                            assignments={connectorUnits}
+                            onArchSelect={(arch, teeth) => {
+                              setToothMultiSelect(true); setToothSelectedTargets(teeth);
+                              setToothSelectionAnchor(teeth[0]); setToothDialogId(null);
+                              setToothCopyMessage(`${arch === "upper" ? "Upper" : "Lower"} arch selected. Selection alone changes neither assignments nor billing.`);
+                            }}
+                            value={toothMultiSelect ? toothSelectedTargets.join(", ") : toothDialogId ?? ""}
                             onChange={() => {}}
-                            readOnly
+                            onToothClick={handleSavedChartTooth}
+                            onConnectedPairsChange={handleConnectedPairsChange}
                             showPrimary={false}
                             crownTeeth={crownTeeth}
                             ponticTeeth={ponticTeeth}
+                            veneerTeeth={veneerTeeth}
                             missingTeeth={missingTeethIds}
-                            connectedPairs={parseConnectorState(data?.bridgeConnectors ?? (labCase as any).bridgeConnectors).active}
+                            connectedPairs={effectiveConnectedPairs}
+                            connectorSuggestions={stagedConnectorState.suggested}
+                            connectorIssue={connectorSaveError ?? (connectorValidation.valid ? null : connectorValidation.errors[0])}
+                          />
+                            </div>}
+                            summary={<RestorationSummaryPane
+                              headline={`${assignmentSummary.units} units · ${assignmentSummary.crowns} prepared crowns · ${assignmentSummary.pontics} pontics${assignmentSummary.veneers ? ` · ${assignmentSummary.veneers} veneer${assignmentSummary.veneers === 1 ? "" : "s"}` : ""}`}
+                              bridgeLabels={toothBridgeLabels(connectorUnits, stagedConnectorString)}
+                              rows={connectorUnits}
+                            />}
                           />
                         )}
                       </div>
@@ -9835,29 +10758,28 @@ export function CaseDrawer({
               </div>
 
               {/* Interactive chart — primary entry point for the click-driven workflow. */}
-              <button type="button" className="text-xs text-primary mb-2 disabled:opacity-40"
-                disabled={!toothUndo || isSaving}
-                onClick={() => {
-                  if (!toothUndo) return;
-                  setPendingCreates(toothUndo.creates);
-                  setPendingDeletes(toothUndo.deletes);
-                  setPendingUpdates(toothUndo.updates);
-                  setConnectorDraft(toothUndo.connectors);
-                  setToothUndo(null);
-                  setConnectorSaveError(null);
-                }}>
-                Undo unsaved tooth edit
-              </button>
+              {savedChartToolbar}
+              <CaseChartPanes
+                label="Restorations: case details, chart and summary"
+                details={<CaseDetailsList rows={[
+                  ["Case", labCase.caseNumber],
+                  ["Patient", `${data?.patientFirstName ?? labCase.patientFirstName} ${data?.patientLastName ?? labCase.patientLastName}`.trim()],
+                  ["Doctor", data?.doctorName ?? labCase.doctorName],
+                  ["Due", formatDueDate(data?.dueDate ?? labCase.dueDate, labCase.dueTime)],
+                ]} />}
+                chart={
               <ToothChart
-                value={[...Array.from(billedTeeth), ...Array.from(missingTeethIds)].join(", ")}
+                assignments={connectorUnits}
+                onArchSelect={(arch, teeth) => {
+                  setToothMultiSelect(true); setToothSelectedTargets(teeth);
+                  setToothSelectionAnchor(teeth[0]); setToothDialogId(null);
+                  setToothCopyMessage(`${arch === "upper" ? "Upper" : "Lower"} arch selected. Selection alone changes neither assignments nor billing.`);
+                }}
+                value={toothMultiSelect ? toothSelectedTargets.join(", ") : toothDialogId ?? ""}
                 onChange={() => {}}
                 billedTeeth={billedTeeth}
                 billedTeethTypes={billedTeethTypes}
-                onToothClick={(toothId) => {
-                  if (isSaving) return;
-                  setToothDialogId(toothId);
-                  setToothDialogError(null);
-                }}
+                onToothClick={handleSavedChartTooth}
                 connectedPairs={effectiveConnectedPairs}
                 connectorSuggestions={stagedConnectorState.suggested}
                 connectorIssue={
@@ -9872,7 +10794,16 @@ export function CaseDrawer({
                 onConnectedPairsChange={handleConnectedPairsChange}
                 crownTeeth={crownTeeth}
                 ponticTeeth={ponticTeeth}
+                veneerTeeth={veneerTeeth}
                 missingTeeth={missingTeethIds}
+              />
+                }
+                summary={<RestorationSummaryPane
+                  headline={`${assignmentSummary.units} units · ${assignmentSummary.crowns} prepared crowns · ${assignmentSummary.pontics} pontics${assignmentSummary.veneers ? ` · ${assignmentSummary.veneers} veneer${assignmentSummary.veneers === 1 ? "" : "s"}` : ""} · ${hasPendingChanges ? "Unsaved changes" : "Saved"}`}
+                  bridgeLabels={toothBridgeLabels(connectorUnits, stagedConnectorString)}
+                  rows={connectorUnits}
+                  warning={connectorSaveError ?? (connectorValidation.valid ? null : connectorValidation.errors[0])}
+                />}
               />
 
               {showAddRest && (
@@ -10299,7 +11230,7 @@ export function CaseDrawer({
               )}
               {!isLoading && (
                 <div className="space-y-2" data-testid="attachment-sections">
-                  <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary/20 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-section bg-secondary/20 px-3 py-2">
                     <button
                       type="button"
                       onClick={toggleAllAttachmentSections}
@@ -10340,7 +11271,7 @@ export function CaseDrawer({
                     return (
                       <section
                         key={section}
-                        className="rounded-md border border-border"
+                        className="rounded-md border border-section"
                         data-testid={`attachment-section-${section}`}
                       >
                         <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -10375,7 +11306,7 @@ export function CaseDrawer({
                           </label>
                         </div>
                         {expanded && (
-                          <div id={contentId} className="space-y-2 border-t border-border p-2">
+                          <div id={contentId} className="space-y-2 border-t border-section p-2">
                             {attachments.map((attachment) => (
                               <AttachmentRow
                                 key={attachment.id}
@@ -11067,6 +11998,7 @@ export function CaseDrawer({
                                     ) : isVid ? (
                                       <button
                                         type="button"
+                                        aria-label={`Play ${metadata.fileName ?? "video"}`}
                                          onClick={openVideo}
                                         className="block group relative"
                                         title={`Play ${metadata.fileName ?? "video"}`}
@@ -11573,10 +12505,23 @@ export function CaseDrawer({
       {/* Tooth chart action dialog */}
       {toothDialogId !== null && (
         <ToothActionDialog
+          catalog={catalogQuery.data}
+          selectedTeeth={toothMultiSelect ? toothSelectedTargets : [toothDialogId]}
+          selectionArch={selectedToothArch(toothMultiSelect ? toothSelectedTargets : [toothDialogId])}
+          initialCopyTargets={toothCopyTargets}
           toothId={toothDialogId}
-          restorations={(data?.restorations ?? []).filter(
-            (r) => r.restorationType !== "missing",
-          )}
+          restorations={[
+            ...(data?.restorations ?? []).filter((row) => row.restorationType !== "missing" && !pendingDeletes.has(row.id)).map((row) => {
+              const edit = pendingUpdates.find((entry) => entry.restorationId === row.id);
+              return { ...row, toothNumber: edit?.newToothNumber ?? row.toothNumber,
+                restorationType: edit?.restorationType ?? row.restorationType,
+                material: edit?.material ?? row.material, shade: edit?.shade ?? row.shade,
+                restorationSubtype: edit?.restorationSubtype ?? row.restorationSubtype,
+                arch: edit?.arch !== undefined ? edit.arch : row.arch };
+            }),
+            ...pendingCreates.map((row) => ({ ...row, id: row.localId, caseId: labCase.id,
+              quantity: Number(row.quantity) || 1, unitPrice: Number(row.unitPrice) || 0 })),
+          ]}
           isPending={false}
           error={toothDialogError}
           onClose={() => {
@@ -12336,6 +13281,7 @@ function PendingRestorationRow({
           type="button"
           onClick={onRemove}
           className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors mt-0.5"
+          aria-label={`Remove unsaved ${pending.restorationType} for tooth ${pending.toothNumber}`}
           title="Remove (not saved yet)"
         >
           <X size={13} />
@@ -12539,6 +13485,7 @@ function RestorationRow({
                   type="button"
                   onClick={openPriceEditor}
                   className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={`Edit price for ${r.restorationType}, tooth ${r.toothNumber}`}
                   title="Edit price"
                 >
                   <Pencil size={12} />
@@ -12548,6 +13495,7 @@ function RestorationRow({
                 type="button"
                 onClick={() => setConfirmDelete(true)}
                 className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors"
+                aria-label={`Delete ${r.restorationType} for tooth ${r.toothNumber}`}
                 title="Delete restoration"
               >
                 <Trash2 size={13} />
@@ -12583,6 +13531,7 @@ function RestorationRow({
                 type="number"
                 min="0"
                 step="0.01"
+                aria-label={`Override unit price for ${r.restorationType}, tooth ${r.toothNumber}`}
                 value={priceInput}
                 onChange={(e) => setPriceInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") savePriceEdit(); if (e.key === "Escape") cancelPriceEditor(); }}
@@ -12612,6 +13561,7 @@ function RestorationRow({
           <div>
             <input
               type="text"
+              aria-label={`Reason for price override on ${r.restorationType}, tooth ${r.toothNumber}`}
               value={reasonInput}
               onChange={(e) => setReasonInput(e.target.value)}
               placeholder="Reason (optional)"
@@ -12640,6 +13590,7 @@ function RestorationRow({
                 type="number"
                 min="0"
                 step="0.01"
+                aria-label={`Fee schedule price for ${r.restorationType}, tooth ${r.toothNumber}`}
                 value={feeScheduleInput}
                 onChange={(e) => setFeeScheduleInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") saveFeeSchedulePrice(); }}
@@ -13173,6 +14124,7 @@ export function AttachmentRow({
         maxLength={1000}
         rows={2}
         autoFocus
+        aria-label={`Note for ${attachment.fileName}`}
         placeholder="Add a note about this file…"
         className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
       />
@@ -13308,6 +14260,11 @@ export function AttachmentRow({
             onClick={onToggleVisibility}
             disabled={visibilityMutation.isPending}
             className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-50"
+            aria-label={
+              isInternal
+                ? `Share ${attachment.fileName} with provider`
+                : `Mark ${attachment.fileName} as lab-only`
+            }
             title={
               isInternal
                 ? "Share with the provider"
@@ -13329,6 +14286,7 @@ export function AttachmentRow({
               type="button"
               onClick={() => setScanViewerOpen(true)}
               className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+              aria-label={`Open ${attachment.fileName} in 3D viewer`}
               title="Open in 3D viewer"
             >
               <ExternalLink size={13} />
@@ -13342,6 +14300,7 @@ export function AttachmentRow({
                   : onVideoClick!(href, attachment.fileType || undefined, attachment.fileName)
               }
               className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+              aria-label={`Play ${attachment.fileName}`}
               title="Play video"
             >
               <Play size={13} />
@@ -13352,6 +14311,7 @@ export function AttachmentRow({
               onClick={handleElectronPreview}
               disabled={isPreviewing}
               className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-50"
+              aria-label={`Preview ${attachment.fileName}`}
               title="Preview file"
             >
               {isPreviewing ? (
@@ -13377,6 +14337,7 @@ export function AttachmentRow({
           onClick={onDelete}
           disabled={deleteMutation.isPending}
           className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive disabled:opacity-50"
+          aria-label={`Delete attachment ${attachment.fileName}`}
           title="Delete attachment"
         >
           {deleteMutation.isPending ? (

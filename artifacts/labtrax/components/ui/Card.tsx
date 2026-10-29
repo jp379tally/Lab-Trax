@@ -8,6 +8,7 @@ import {
   type PressableProps,
 } from "react-native";
 import { useTheme } from "@/lib/theme-context";
+import { BorderWidth } from "@/constants/tokens";
 
 interface CardProps
   extends Pick<
@@ -62,8 +63,8 @@ export function Card({
       backgroundColor: colors.surface,
       borderRadius: radius.lg,
       padding: paddingValue,
-      borderWidth: bordered ? StyleSheet.hairlineWidth : 0,
-      borderColor: colors.border,
+      borderWidth: bordered ? BorderWidth.section : 0,
+      borderColor: colors.sectionBorder,
     },
     shadows[elevation],
     style,

@@ -217,7 +217,7 @@ async function renderHistoryTab() {
   );
 
   // Wait for the case detail query to resolve, then open the History tab.
-  const historyTab = await screen.findByRole("button", { name: /History/i });
+  const historyTab = await screen.findByRole("tab", { name: /History/i });
   fireEvent.click(historyTab);
 }
 

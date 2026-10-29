@@ -5,8 +5,14 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { BackupRunResultState } from './backupRunResultState';
 
 export interface BackupRunResult {
+  runId?: string;
+  state?: BackupRunResultState;
+  archiveKind?: string | null;
+  partialFailure?: boolean;
+  warnings?: string | null;
   ok?: boolean;
   /** Backup archive size in bytes */
   size?: number;

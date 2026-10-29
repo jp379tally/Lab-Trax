@@ -1,5 +1,22 @@
-const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification, shell } = require("electron");
-const { shouldUseAutoUpdater } = require("./auto-updater-policy.cjs");
+const {
+  app,
+  BrowserWindow,
+  protocol,
+  net,
+  dialog,
+  ipcMain,
+  Notification,
+  shell,
+  Tray,
+  Menu,
+  nativeImage,
+} = require("electron");
+const {
+  shouldUseAutoUpdater,
+  resolveUpdateFeedUrl,
+  manualInstallerDetails: getManualInstallerDetails,
+} = require("./auto-updater-policy.cjs");
+const { buildMetadataFromStamp } = require("./build-metadata.cjs");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -10,6 +27,15 @@ const authStore = require("./auth-store.cjs");
 const { downloadBackupToFolder } = require("./backup-download.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
+
+// Honor an explicit Chromium profile directory before any persisted state is read.
+// Packaged verification uses this to avoid the OS user's actual app profile.
+const requestedUserData = app.commandLine?.getSwitchValue("user-data-dir");
+if (requestedUserData) {
+  if (!path.isAbsolute(requestedUserData)) throw new Error("user-data-dir must be absolute");
+  fs.mkdirSync(requestedUserData, { recursive: true });
+  app.setPath("userData", requestedUserData);
+}
 
 // --------------------------------------------------------------------------
 // Authenticated media bridge origin allowlist
@@ -203,6 +229,39 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const appDir = path.resolve(path.join(__dirname, "..", "dist", "electron-app"));
+const DEFAULT_UPDATE_FEED_URL = `${_MEDIA_API_ORIGIN}/downloads/`;
+
+function packagedBuildStamp() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(appDir, "build-stamp.json"), "utf8"));
+  } catch {
+    // Older installs predate the build stamp. Preserve their existing updater
+    // behavior; only a current build explicitly marked portable is fenced off.
+    return null;
+  }
+}
+
+function packagedUpdateChannel() {
+  const stamp = packagedBuildStamp();
+  return typeof stamp?.updateChannel === "string" ? stamp.updateChannel : null;
+}
+
+function resolvedUpdateFeedUrl() {
+  const stamp = packagedBuildStamp();
+  return resolveUpdateFeedUrl({
+    runtimeOverride: process.env.UPDATE_FEED_URL,
+    packagedFeed: stamp?.updateFeedUrl,
+    fallback: DEFAULT_UPDATE_FEED_URL,
+  });
+}
+
+function manualInstallerDetails() {
+  return getManualInstallerDetails({
+    isWindowsStore: process.windowsStore === true,
+    platform: process.platform,
+    feedUrl: resolvedUpdateFeedUrl(),
+  });
+}
 
 // Live auto-updater state. Mutated by the autoUpdater event handlers,
 // surfaced to the renderer through the `get-update-state` IPC handler and
@@ -234,22 +293,10 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  const feedUrl = process.env.UPDATE_FEED_URL;
-  if (feedUrl) {
-    // Runtime override: useful for local runbook testing (see docs/auto-update-runbook.md)
-    // where you want to point the running app at a local http-server feed
-    // without rebuilding. Normal production installs don't need this.
-    autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
-    updateState.feedUrl = feedUrl;
-    log.info(`Auto-updater feed URL (runtime override): ${feedUrl}`);
-  } else {
-    // No runtime override — electron-updater reads the generic provider URL
-    // baked into resources/app-update.yml at build time by
-    // scripts/desktop-build-publish.sh. This is the normal code-path for
-    // end-user installs: the URL points at GET /downloads/latest.yml on the
-    // production API server.
-    log.info("Auto-updater using feed URL from app-update.yml (baked at build time).");
-  }
+  const feedUrl = resolvedUpdateFeedUrl();
+  autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
+  updateState.feedUrl = feedUrl;
+  log.info(`Auto-updater using generic feed URL: ${feedUrl}`);
 
   autoUpdater.on("checking-for-update", () => {
     log.info("Checking for updates…");
@@ -347,6 +394,7 @@ function getAutoUpdaterOrNull() {
       isDev,
       isWindowsStore: process.windowsStore === true,
       skipAutoUpdater: process.env.LABTRAX_SKIP_AUTOUPDATER === "1",
+      updateChannel: packagedUpdateChannel(),
     })
   ) {
     return null;
@@ -359,10 +407,17 @@ function getAutoUpdaterOrNull() {
 }
 
 function snapshotUpdateState() {
+  const installer = manualInstallerDetails();
   return {
     ...updateState,
     currentVersion: app.getVersion(),
     autoUpdaterEnabled: getAutoUpdaterOrNull() !== null,
+    isWindowsStore: process.windowsStore === true,
+    isDevelopment: isDev,
+    skipAutoUpdater: process.env.LABTRAX_SKIP_AUTOUPDATER === "1",
+    updateChannel: packagedUpdateChannel(),
+    manualInstallerUrl: installer.url,
+    installerPlatform: installer.platform,
   };
 }
 
@@ -370,6 +425,91 @@ function snapshotUpdateState() {
 // focus-on-click, and notification delivery. Avoids relying on getAllWindows()[0]
 // which may return a preview window or be ordered non-deterministically.
 let mainWindow = null;
+let localBackupScheduleActive = false;
+let localBackupTray = null;
+let isQuitting = false;
+
+function openMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  createWindow();
+}
+
+function createLocalBackupTray() {
+  if (localBackupTray) return true;
+  if (typeof Tray !== "function" || !Menu?.buildFromTemplate || !nativeImage?.createFromPath) {
+    return false;
+  }
+  try {
+    const icon = nativeImage.createFromPath(path.join(__dirname, "icon.png"));
+    localBackupTray = new Tray(icon);
+    localBackupTray.setToolTip("LabTrax backup companion");
+    localBackupTray.setContextMenu(Menu.buildFromTemplate([
+      { label: "Open LabTrax", click: openMainWindow },
+      { type: "separator" },
+      {
+        label: "Quit LabTrax",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]));
+    localBackupTray.on("click", openMainWindow);
+    return true;
+  } catch (error) {
+    localBackupTray = null;
+    console.warn("[local-backup] system tray is unavailable", error);
+    return false;
+  }
+}
+
+function setLocalBackupLoginItem(enabled) {
+  if (
+    process.platform !== "win32" &&
+    process.platform !== "darwin"
+  ) return;
+  if (typeof app.setLoginItemSettings !== "function") return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      openAsHidden: false,
+    });
+  } catch (error) {
+    console.warn("[local-backup] could not update the per-user startup setting", error);
+  }
+}
+
+function setLocalBackupScheduleActive(enabled) {
+  localBackupScheduleActive = enabled === true;
+  const trayAvailable = localBackupScheduleActive ? createLocalBackupTray() : Boolean(localBackupTray);
+  if (localBackupScheduleActive && trayAvailable) {
+    setLocalBackupLoginItem(true);
+  } else if (!localBackupScheduleActive) {
+    setLocalBackupLoginItem(false);
+    // A schedule can be disabled from another signed-in session while this
+    // window is hidden. Bring the app back so the user is not left without a
+    // way to reopen or sign out.
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  }
+  return {
+    active: localBackupScheduleActive,
+    backgroundAvailable: !localBackupScheduleActive || trayAvailable,
+  };
+}
+
+function showMainWindow() {
+  openMainWindow();
+}
+
+function createTray() {
+  return createLocalBackupTray();
+}
 
 app.whenReady().then(() => {
   if (process.env.LABTRAX_BACKUP_DOWNLOAD_SMOKE === "1") {
@@ -423,13 +563,25 @@ app.whenReady().then(() => {
   registerPlatformAdminIpc();
   registerAuthIpc();
   registerMediaIpc();
-  createWindow();
+  const loginSettings = typeof app.getLoginItemSettings === "function"
+    ? app.getLoginItemSettings()
+    : null;
+  const startedForBackgroundBackup =
+    loginSettings?.openAtLogin === true &&
+    createLocalBackupTray();
+  if (loginSettings?.openAtLogin === true && !startedForBackgroundBackup) {
+    setLocalBackupLoginItem(false);
+  }
+  if (startedForBackgroundBackup) localBackupScheduleActive = true;
+  createTray();
+  createWindow({ hidden: startedForBackgroundBackup });
 
   if (
     shouldUseAutoUpdater({
       isDev,
       isWindowsStore: process.windowsStore === true,
       skipAutoUpdater: process.env.LABTRAX_SKIP_AUTOUPDATER === "1",
+      updateChannel: packagedUpdateChannel(),
     })
   ) {
     setupAutoUpdater();
@@ -437,10 +589,14 @@ app.whenReady().then(() => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else openMainWindow();
+  });
+  app.on("before-quit", () => {
+    isQuitting = true;
   });
 });
 
-function createWindow() {
+function createWindow({ hidden = false } = {}) {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -448,6 +604,7 @@ function createWindow() {
     minHeight: 600,
     title: "LabTrax",
     icon: path.join(__dirname, "icon.png"),
+    show: !hidden,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -456,6 +613,12 @@ function createWindow() {
   });
 
   mainWindow = win;
+  win.on("close", (event) => {
+    if (localBackupTray && !isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
   });
@@ -488,6 +651,9 @@ function createWindow() {
 }
 
 ipcMain.handle("get-app-version", () => app.getVersion());
+ipcMain.handle("get-build-metadata", () =>
+  buildMetadataFromStamp(packagedBuildStamp(), app.getVersion()),
+);
 
 ipcMain.handle("messenger:notify", (_event, payload) => {
   const { conversationId, senderName, body } = payload ?? {};
@@ -566,21 +732,16 @@ ipcMain.handle("backup:download-to-folder", async (event, request) => {
     return { ok: false, error: "A local backup is already running in this window." };
   }
   backupDownloadWindows.add(event.sender.id);
-  const controller = new AbortController();
-  const closed = () => controller.abort();
-  event.sender.once("destroyed", closed);
   try {
     return await downloadBackupToFolder(request, {
       isAllowedUrl: isAllowedMediaUrl,
       fetch: net.fetch.bind(net),
-      signal: controller.signal,
       onRunId: (runId) => {
         if (!event.sender.isDestroyed()) event.sender.send("backup:run-id", runId);
       },
       log: (metrics) => console.info("[local-backup]", metrics),
     });
   } finally {
-    event.sender.removeListener("destroyed", closed);
     backupDownloadWindows.delete(event.sender.id);
   }
 });
@@ -684,10 +845,46 @@ ipcMain.handle("download-update", async () => {
 ipcMain.handle("get-update-state", () => snapshotUpdateState());
 
 ipcMain.on("app:relaunch", () => {
+  isQuitting = true;
   app.relaunch();
   app.exit(0);
 });
 
+ipcMain.handle("backup:set-local-schedule-active", (event, enabled) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    return { active: false, backgroundAvailable: false };
+  }
+  return setLocalBackupScheduleActive(enabled === true);
+});
+
+ipcMain.handle("backup:is-folder-accessible", (event, folderPath) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof folderPath !== "string") {
+    return false;
+  }
+  const folder = folderPath.trim();
+  if (!folder || !path.isAbsolute(folder)) return false;
+  try {
+    if (!fs.statSync(folder).isDirectory()) return false;
+    fs.accessSync(folder, fs.constants.W_OK);
+    return true;
+  } catch {
+    // Do not create missing directories here. In particular, a disconnected
+    // USB target must not silently become a same-named folder on the system
+    // disk.
+    return false;
+  }
+});
+
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin" && !localBackupScheduleActive && !isQuitting) {
+    app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
+  if (localBackupTray) {
+    localBackupTray.destroy();
+    localBackupTray = null;
+  }
 });

@@ -1,3 +1,27 @@
+import { backupContinuationOrAdmin, issueBackupContinuation } from "../lib/backup-continuation";
+import { productionMediaDiskStorage } from "../lib/production-media-multipart";
+import { writeProductionUpload, copyProductionUpload } from "../lib/production-media-local-write";
+import {
+  getAllowedBackupScheduleIntervalsMinutes,
+  getBackupSourceEnvironment,
+  requireMatchingBackupSource,
+  requireProductionApplicationBackup,
+} from "../lib/backup-source";
+import {
+  startManualBackupJob,
+  cancelManualBackupJob,
+  finishManualBackupJob,
+  getManualBackupJobSignal,
+  registerManualBackupCleanup,
+} from "../lib/manual-backup-job";
+import {
+  cancelManualBackupRun,
+  reconnectManualBackupSession,
+  claimManualBackupFinalization,
+  manualBackupRunAccessibleTo,
+} from "../lib/backup-live-status-store";
+import { ensureStartupDbConstraints } from "../lib/db-constraints";
+import { safeBackupError } from "../lib/backup-phase";
 import express, {
   Router,
   type IRouter,
@@ -26,17 +50,27 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import archiver from "archiver";
 import {
   getDesktopInstallerMetadata,
+  getDesktopUpdatePayloadHandle,
   getDesktopInstallerSlots,
   getDesktopInstallerDownloadInfo,
   uploadDesktopInstaller,
+  uploadDesktopUpdatePayloadFromPath,
+  uploadDesktopUpdateManifest,
+  verifyWindowsUpdatePayload,
   installerKindFromUrl,
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
+import { getPublishedDesktopVersion } from "../lib/published-desktop-version";
+import {
+  validateDesktopUpdateFeed,
+  validateDesktopUpdatePayloadFile,
+} from "../lib/desktop-update-feed";
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import {
   dispatchDatabaseIdentityAlert,
@@ -77,13 +111,11 @@ import { softDeleteLegacyCases } from "../lib/legacy-case-delete.js";
 import {
   SDR1_ORG_ID,
   SDR1_CLEANUP_CONFIRM,
+  SDR1_CLEANUP_AVAILABLE,
+  SDR1_CLEANUP_UNAVAILABLE_MESSAGE,
   classifySdr1LegacyRows,
   namesMatch,
 } from "../lib/sdr1-legacy-cleanup";
-import {
-  RECOVERY_DATA_UNAVAILABLE_MESSAGE,
-  recoveryDataAvailable,
-} from "../lib/recovery-billing-scope";
 import {
   createVerificationCode,
   verifyCode,
@@ -111,12 +143,14 @@ import { eq, and, inArray, or, isNull, isNotNull, sql, desc, count, type SQL } f
 import { users, userSessions, labCases, labLocations, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, rxDoctorPracticeMemory, bankTransactions, invoices, notifications, labAuthorizationTemplates, practiceAuthorizationDocuments, scanJobs, scanOutputs } from "@workspace/db";
 import { getOneDriveStatus, downloadFileFromOneDrive, oneDriveItemIdFromPath } from "../lib/onedrive";
 import { streamLabScopedBackupDownload } from "../lib/lab-scoped-backup";
-import { runBackup, generateBackupForDownload, recordDesktopReportedBackupRun, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getBackupScheduleState, getFullArchiveIntervalMinutes, getOffsiteProtectionStatus, getOffsiteFreshness, getUndeliveredBackupAlert, getBackupAlertDeliveryLog, findUndeliveredBackupAlert, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, parseAndValidateBackupManifest, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import { runBackup, generateManualBrowserBackupArchive, streamManualBrowserBackupArchive, cleanupManualBrowserBackupArchive, generateBackupForDownload, recordDesktopReportedBackupRun, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getBackupScheduleState, getFullArchiveIntervalMinutes, getOffsiteProtectionStatus, getOffsiteFreshness, reconcileOffsiteBackupAlerts, getUndeliveredBackupAlert, getBackupAlertDeliveryLog, findUndeliveredBackupAlert, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, parseAndValidateBackupManifest, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_ROUTING_VERSION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_SCHEDULE_NEXT_DUE_AT, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import {
   finishBackupLiveRun,
   getBackupLiveStatus,
   withBackupRun,
 } from "../lib/backup-phase";
+import { fireOffsiteBackup } from "../lib/backup";
+import { logger } from "../lib/logger";
 import {
   backupErrorMessage,
   backupDownloadErrorMessage,
@@ -124,7 +158,17 @@ import {
   backupStatusErrorMessage,
   partialBackupMessage,
 } from "../lib/backup-error-copy";
-import { getGoogleDriveStatus } from "../lib/google-drive";
+import { downloadGoogleDriveBackupFile, getGoogleDriveStatus } from "../lib/google-drive";
+
+import {
+  SaveDatabaseProtectionRetention200Response,
+  SaveDatabaseProtectionRetentionBody,
+} from "@workspace/api-zod";
+import {
+  getDatabaseProtectionRetentionConfig,
+  getDatabaseProtectionRetentionStatus,
+  setDatabaseProtectionRetentionConfig,
+} from "../lib/database-protection-job";
 
 const asyncHandler = (handler: any) => (req: any, res: any, next: any) =>
   Promise.resolve(handler(req, res, next)).catch(next);
@@ -395,7 +439,13 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
       if (colonIdx > 0) {
         const hUserId = sessionHeader.slice(0, colonIdx);
         const hSessionId = sessionHeader.slice(colonIdx + 1);
-        if (req.user?.id === hUserId && hSessionId) {
+        const authenticatedSessionId = req.auth?.sessionId;
+        if (
+          req.user?.id === hUserId &&
+          hSessionId &&
+          authenticatedSessionId &&
+          hSessionId === authenticatedSessionId
+        ) {
           const key = `padmin_sess:${hUserId}:${hSessionId}`;
           try {
             const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
@@ -412,6 +462,19 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
     }
     next();
   });
+}
+
+function getManualBackupSessionHash(req: any): string | null {
+  if (req._backupContinuationSessionHash) return req._backupContinuationSessionHash;
+  const sessionId = req.auth?.sessionId;
+  if (typeof sessionId === "string" && sessionId) {
+    return createHash("sha256").update(`session:${sessionId}`).digest("hex");
+  }
+  const adminSecret = process.env.PLATFORM_ADMIN_SECRET;
+  if (adminSecret && req.headers["x-platform-admin-secret"] === adminSecret) {
+    return createHash("sha256").update(`shared-admin:${adminSecret}`).digest("hex");
+  }
+  return null;
 }
 
 export function requireAuthenticatedPlatformAdmin(req: any, res: any, next: any) {
@@ -541,9 +604,8 @@ async function readLegacyChatStore(): Promise<LegacyChatStore> {
 
 async function writeLegacyChatStore(store: LegacyChatStore) {
   await mkdir(path.dirname(legacyChatStorePath), { recursive: true });
-  await writeFile(legacyChatStorePath, JSON.stringify(store, null, 2), "utf8");
+  await writeProductionUpload(legacyChatStorePath, JSON.stringify(store, null, 2), "legacy-chat");
 }
-
 async function seedDefaultUsers() {
   const demoSeedPassword = resolveDemoSeedPassword(process.env);
   if (demoSeedPassword === null) {
@@ -597,7 +659,7 @@ async function seedDefaultUsers() {
 
 const casMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
 
-const caseMediaStorage = multer.diskStorage({
+const caseMediaStorage = productionMediaDiskStorage({
   destination: (_req, _file, cb) => {
     fs.mkdirSync(casMediaDir, { recursive: true });
     cb(null, casMediaDir);
@@ -610,7 +672,7 @@ const caseMediaStorage = multer.diskStorage({
       .slice(0, 60) || "media";
     cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`);
   },
-});
+}, "case-upload");
 
 const caseMediaUpload = multer({
   storage: caseMediaStorage,
@@ -769,6 +831,11 @@ const sendCaseUpdateTextRateLimit = createUserAndDestinationRateLimit({
   maxPerDestination: 10,
 });
 
+const rxImageAiRateLimit = createUserRateLimit({
+  windowMs: 60_000,
+  max: 10,
+  message: "Too many AI image requests. Please wait a moment and try again.",
+});
 export async function registerRoutes(): Promise<IRouter> {
   const router: IRouter = Router();
   await seedDefaultUsers();
@@ -786,6 +853,28 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     await loadAdminPinCache();
     return res.json({ isDefault: isAdminPinDefault() });
+  });
+
+  router.post("/admin/pin/verify", requireAuth, platformAdminUnlockRateLimit, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      res.status(403).json({ error: "Admin role required." });
+      return;
+    }
+
+    const pin = (req.body as Record<string, unknown> | undefined)?.pin;
+    if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) {
+      res.status(400).json({ error: "PIN must be exactly four digits." });
+      return;
+    }
+
+    await loadAdminPinCache();
+    if (pin !== getEffectiveAdminPin()) {
+      res.status(403).json({ error: "Incorrect admin PIN." });
+      return;
+    }
+
+    res.json({ ok: true as const });
   });
 
   router.post("/admin/pin/set", requireAuth, adminPinSetRateLimit, async (req, res) => {
@@ -1067,7 +1156,7 @@ export async function registerRoutes(): Promise<IRouter> {
       if (newOffset >= meta.fileSize) {
         const finalPath = path.resolve(casMediaDir, meta.finalName);
         try {
-          fs.renameSync(partPath, finalPath);
+          await copyProductionUpload(partPath, finalPath, "resumable-upload");
           try { fs.unlinkSync(metaPath); } catch { /* ignore */ }
         } catch (error: any) {
           console.error("Failed to finalize upload:", error?.message || error);
@@ -1181,149 +1270,73 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  async function getRepairableLabDirectoryData() {
-    const allUsers = await db.select().from(users);
-    const labAdmins = allUsers.filter(
-      (user) =>
-        user.userType === "lab" &&
-        user.role === "admin" &&
-        !!user.practiceName?.trim()
-    );
-
-    const labOrganizations = await db
-      .select()
-      .from(organizations)
-      .where(eq(organizations.type, "lab"));
-
-    const allLabMemberships = labOrganizations.length
-      ? await db
-          .select()
-          .from(organizationMemberships)
-          .where(
-            inArray(
-              organizationMemberships.labId,
-              labOrganizations.map((organization) => organization.id)
-            )
-          )
-      : [];
-
-    const activeMemberships = labOrganizations.length
-      ? await db
-          .select()
-          .from(organizationMemberships)
-          .where(
-            and(
-              inArray(
-                organizationMemberships.labId,
-                labOrganizations.map((organization) => organization.id)
-              ),
-              eq(organizationMemberships.status, "active")
-            )
-          )
-      : [];
-
-    const activeLabMemberIds = new Set(
-      activeMemberships.map((membership) => membership.userId)
-    );
-    const anyLabMemberIds = new Set(
-      allLabMemberships.map((membership) => membership.userId)
-    );
-
-    for (const adminUser of labAdmins) {
-      if (
-        !adminUser.id ||
-        activeLabMemberIds.has(adminUser.id) ||
-        anyLabMemberIds.has(adminUser.id)
-      ) {
-        continue;
-      }
-
-      const normalizedPracticeName = adminUser.practiceName!.trim().toLowerCase();
-      let organization =
-        labOrganizations.find(
-          (entry) =>
-            entry.createdByUserId === adminUser.id &&
-            (entry.displayName || entry.name).toLowerCase().trim() ===
-              normalizedPracticeName
-        ) ||
-        labOrganizations.find(
-          (entry) =>
-            (entry.displayName || entry.name).toLowerCase().trim() ===
-              normalizedPracticeName
-        );
-
-      if (!organization) {
-        const createdOrganization = await db.transaction(async (tx) => {
-          const platformAccountNumber = await allocatePlatformAccountNumber({
-            tx,
-          });
-          const [created] = await tx
-            .insert(organizations)
-            .values({
-              type: "lab",
-              name: adminUser.practiceName!.trim(),
-              displayName: adminUser.practiceName!.trim(),
-              billingEmail: adminUser.email || null,
-              phone: adminUser.practicePhone || adminUser.phone || null,
-              addressLine1: adminUser.practiceAddress || null,
-              createdByUserId: adminUser.id,
-              platformAccountNumber,
-            })
-            .returning();
-          return created;
-        });
-
-        organization = createdOrganization;
-        labOrganizations.push(createdOrganization);
-      }
-
-      const hasActiveMembership = activeMemberships.some(
-        (membership) =>
-          membership.labId === organization.id &&
-          membership.userId === adminUser.id &&
-          membership.status === "active"
-      );
-
-      if (!hasActiveMembership) {
-        const [createdMembership] = await db
-          .insert(organizationMemberships)
-          .values({
-            labId: organization.id,
-            userId: adminUser.id,
-            role: "owner",
-            status: "active",
-            approvedByUserId: adminUser.id,
-            joinedAt: new Date(),
-          })
-          .returning();
-
-        activeMemberships.push(createdMembership);
-      }
-
-      activeLabMemberIds.add(adminUser.id);
-    }
-
-    return {
-      allUsers,
-      labOrganizations,
-      activeMemberships,
-    };
-  }
-
   router.get("/health", (_req, res) => {
     res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  router.get("/labs/groups", requireAuth, async (_req, res) => {
+  router.get("/labs/groups", requireAuth, async (req, res) => {
     try {
-      const { allUsers, labOrganizations, activeMemberships } =
-        await getRepairableLabDirectoryData();
+      const userId = (req as any).auth?.userId as string | undefined;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
 
-      const memberUserIds = [
-        ...new Set(activeMemberships.map((membership) => membership.userId)),
+      const callerMemberships = await db
+        .select({ labId: organizationMemberships.labId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.userId, userId),
+            eq(organizationMemberships.status, "active"),
+            isNull(organizationMemberships.deletedAt)
+          )
+        );
+      const callerLabIds = [
+        ...new Set(callerMemberships.map((membership) => membership.labId)),
       ];
-      const memberUsers = allUsers.filter((user) => memberUserIds.includes(user.id));
-      const userMap = new Map(memberUsers.map((u) => [u.id, u]));
+      if (callerLabIds.length === 0) {
+        return res.json({ groups: [] });
+      }
+
+      const labOrganizations = await db
+        .select()
+        .from(organizations)
+        .where(
+          and(
+            inArray(organizations.id, callerLabIds),
+            eq(organizations.type, "lab"),
+          ),
+        );
+      const labOrganizationIds = labOrganizations.map((organization) => organization.id);
+      if (labOrganizationIds.length === 0) {
+        return res.json({ groups: [] });
+      }
+
+      const activeMemberships = await db
+        .select()
+        .from(organizationMemberships)
+        .where(
+          and(
+            inArray(organizationMemberships.labId, labOrganizationIds),
+            eq(organizationMemberships.status, "active"),
+            isNull(organizationMemberships.deletedAt)
+          )
+        );
+      const memberUserIds = [
+        ...new Set([
+          ...activeMemberships.map((membership) => membership.userId),
+          ...labOrganizations
+            .map((organization) => organization.createdByUserId)
+            .filter((createdByUserId): createdByUserId is string => !!createdByUserId),
+        ]),
+      ];
+      const memberUsers = memberUserIds.length
+        ? await db
+            .select({ id: users.id, username: users.username })
+            .from(users)
+            .where(inArray(users.id, memberUserIds))
+        : [];
+      const userMap = new Map(memberUsers.map((user) => [user.id, user]));
 
       const groups = labOrganizations
         .map((organization) => {
@@ -1363,10 +1376,10 @@ export async function registerRoutes(): Promise<IRouter> {
         })
         .filter(Boolean);
 
-      res.json({ groups });
+      return res.json({ groups });
     } catch (error: any) {
       console.error("List lab groups error:", error?.message || error);
-      res.status(500).json({ error: "Failed to fetch lab groups" });
+      return res.status(500).json({ error: "Failed to fetch lab groups" });
     }
   });
 
@@ -1512,7 +1525,6 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/doctors", doctorRoutes);
   router.use("/practices", practiceRoutes);
   router.use("/invoices", invoiceRoutes);
-  router.use("/billing-recovery", (await import("./recovery-billing")).default);
   router.use("/account-links", accountLinksRoutes);
   // Public secure statement link (from SMS). Authorization is the unguessable,
   // time-limited token, scoped to exactly one recipient — no session needed.
@@ -4318,7 +4330,7 @@ export async function registerRoutes(): Promise<IRouter> {
     return convertPdfBufferToImageDataUrls(Buffer.from(rawPdfBase64, "base64"), MAX_RX_PDF_PAGES, 30_000, signal);
   }
 
-  router.post(["/analyze-prescription", "/cases/analyze-rx"], optionalAuth, async (req, res) => {
+  router.post(["/analyze-prescription", "/cases/analyze-rx"], requireAuth, rxImageAiRateLimit, async (req, res) => {
     const controller = new AbortController();
     const startedAt = Date.now();
     const budgetMs = req.body?.desktopReader === true ? 105_000 : 65_000;
@@ -4426,13 +4438,18 @@ export async function registerRoutes(): Promise<IRouter> {
   "patientName": "Patient Full Name",
   "patientInitials": "PI",
   "caseType": "one of: Crown & Bridge, Removable, Implant, Orthodontic, Other",
+  "removableSubtype": "one of: partial, denture, flipper, repair_partial, repair_denture, repair, or null when not specified",
+  "arch": "upper, lower, or both only when the prescription identifies it",
   "toothIndices": "comma-separated tooth numbers like 3,5,14",
   "toothAssignments": [{"toothNumber":"single Universal number", "role":"prepared_crown, pontic, or unknown", "material":null, "shade":null, "roleEvidence":null, "requiresReview":true}],
+  "bridgeConnectors": "explicit adjacent tooth pairs such as 8-9, comma-separated; null unless the Rx explicitly shows or states the connection",
   "shade": "shade value like A2, B1, etc.",
   "gingivialShade": "for Removable cases: the gingival/tissue shade (e.g. 'Light Pink', 'Medium Pink', 'Dark Pink'). Use null for non-Removable cases and when not present.",
   "material": "one of: Zirconia, Porcelain Fused to Zirconia, Lithium Disilicate, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Wax, Other",
   "step": "one of: custom_tray, rims_and_plates, wax_setup, process, or null if no step can be inferred",
+  "scanDate": "date the scan was taken, only when explicitly shown (MM/DD/YYYY)",
   "dueDate": "MM/DD/YYYY format",
+  "platformCaseIdentifier": "source platform case/order identifier, not the lab Case Pan barcode",
   "isRush": false,
   "notes": "any additional notes or special instructions",
   "practiceName": "dental practice or office name",
@@ -4443,6 +4460,7 @@ export async function registerRoutes(): Promise<IRouter> {
 
 Important rules:
 - List per-tooth assignments only for teeth explicitly prescribed. Mark a role prepared_crown or pontic only when the prescription explicitly identifies that tooth's role. In roleEvidence quote the specific tooth/range and its role phrase, not a full sentence combining different roles. A range alone, bridge, missing tooth, tooth position, or connector is not role evidence. Use unknown and requiresReview=true for uncertain roles. Never guess a material or shade from nearby teeth. Copy material and shade only where the prescription explicitly applies them to that tooth.
+- Return bridgeConnectors only for connections explicitly drawn or written on the prescription; never infer a bridge from adjacent teeth or a pontic role alone. Return arch only when the prescribed appliance arch is explicit.
 - HANDWRITING: Many dental prescriptions are fully or partially handwritten. Examine every area of the image carefully, including margins, boxes, check marks, and stamps. Do not skip fields just because they are handwritten or hard to read — make your best effort to decipher handwritten text.
 - Read ALL pages if multiple images are provided
 - TOOTH CHART: For tooth numbers, use Universal Numbering System (1-32). When a tooth chart or tooth diagram is present, look for circled, marked, checked, or highlighted tooth positions and map them to Universal numbers — give the chart higher weight than any adjacent freehand number if there is a conflict. Also accept handwritten tooth numbers written outside any chart.
@@ -4486,7 +4504,10 @@ Important rules:
             patientName: nullableString,
             patientInitials: nullableString,
             caseType: nullableString,
+            removableSubtype: { anyOf: [{ type: "string" as const, enum: ["partial", "denture", "flipper", "repair_partial", "repair_denture", "repair"] }, { type: "null" as const }] },
+            arch: { anyOf: [{ type: "string" as const, enum: ["upper", "lower", "both"] }, { type: "null" as const }] },
             toothIndices: nullableString,
+            bridgeConnectors: nullableString,
             toothAssignments: {
               type: "array",
               items: {
@@ -4507,7 +4528,9 @@ Important rules:
             gingivialShade: nullableString,
             material: nullableString,
             step: { anyOf: [{ type: "string" as const, enum: ["custom_tray", "rims_and_plates", "wax_setup", "process"] }, { type: "null" as const }] },
+            scanDate: nullableString,
             dueDate: nullableString,
+            platformCaseIdentifier: nullableString,
             isRush: nullableBoolean,
             notes: nullableString,
             practiceName: nullableString,
@@ -4520,13 +4543,18 @@ Important rules:
             "patientName",
             "patientInitials",
             "caseType",
+            "removableSubtype",
+            "arch",
             "toothIndices",
+            "bridgeConnectors",
             "toothAssignments",
             "shade",
             "gingivialShade",
             "material",
             "step",
+            "scanDate",
             "dueDate",
+            "platformCaseIdentifier",
             "isRush",
             "notes",
             "practiceName",
@@ -4734,7 +4762,7 @@ Important rules:
     }
   });
 
-  router.post("/crop-document", optionalAuth, async (req, res) => {
+  router.post("/crop-document", requireAuth, rxImageAiRateLimit, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -5612,12 +5640,14 @@ Important rules:
   // string so callers can decide whether to surface an "update available" notice
   // without any installer metadata.
   router.get("/desktop/version", async (req, res) => {
-    const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
-    const dbRows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
-    const version = dbRows[0]?.value ?? envVersion;
+    const version = await getPublishedDesktopVersion(async () => {
+      const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+      const dbRows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
+      return dbRows[0]?.value ?? envVersion;
+    });
     return res.json({ version });
   });
 
@@ -6609,10 +6639,207 @@ Important rules:
     },
   );
 
+  // Publish the platform-specific generic update manifests after the GitHub
+  // release is public. macOS package ZIPs are copied to App Storage first,
+  // because installed clients use the generic API feed rather than GitHub auth.
+  const updatePayloadUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, callback) => callback(null, os.tmpdir()),
+      filename: (_req, _file, callback) =>
+        callback(null, `labtrax-update-${randomBytes(16).toString("hex")}.zip`),
+    }),
+    limits: { fileSize: 300 * 1024 * 1024, files: 1 },
+  });
+  router.post(
+    "/admin/desktop-installer/upload-update-payload",
+    platformAdminUserOrSecret,
+    (req, res, next) => {
+      if (!isPlatformAdmin(req)) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+      updatePayloadUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+          res.status(status).json({ error: err?.message || "Update package upload failed." });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const file = (req as any).file as
+        | { originalname: string; path: string; size: number }
+        | undefined;
+      try {
+        const body = req.body as Record<string, unknown>;
+        const version = typeof body.version === "string" ? body.version.trim() : "";
+        const expectedSha512 = typeof body.sha512 === "string" ? body.sha512.trim() : "";
+        const expectedSize = typeof body.size === "string" ? Number(body.size) : Number.NaN;
+        if (!version || validateInstallerVersion(version)) {
+          return res.status(400).json({ error: "Version must follow the format X.Y.Z." });
+        }
+        if (!file?.path || file.size < 4) {
+          return res.status(400).json({ error: "Attach one macOS update ZIP in the file field." });
+        }
+        const payloadValidation = await validateDesktopUpdatePayloadFile(
+          file.path,
+          file.originalname,
+          version,
+          expectedSha512,
+          expectedSize,
+        );
+        if (!payloadValidation.ok) {
+          return res.status(400).json({ error: payloadValidation.error });
+        }
+        const result = await uploadDesktopUpdatePayloadFromPath(
+          file.path,
+          file.originalname,
+          file.size,
+        );
+        return res.json({ success: true, version, ...result });
+      } catch (error: any) {
+        req.log?.error?.(
+          { err: error, fileName: file?.originalname },
+          "Failed to store macOS updater payload",
+        );
+        if (error instanceof DesktopInstallerNotConfiguredError) {
+          return res.status(503).json({ error: error.message });
+        }
+        return res.status(500).json({
+          error: error?.message || "Failed to store the macOS update ZIP.",
+        });
+      } finally {
+        if (file?.path) {
+          try {
+            await fs.promises.rm(file.path, { force: true });
+          } catch (error) {
+            req.log?.warn?.({ err: error }, "Failed to remove temporary macOS update upload");
+          }
+        }
+      }
+    },
+  );
+
+  const updateFeedUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 1024 * 1024, files: 2 },
+  });
+  router.post(
+    "/admin/desktop-installer/publish-update-feed",
+    platformAdminUserOrSecret,
+    (req, res, next) => {
+      if (!isPlatformAdmin(req)) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+      updateFeedUpload.fields([
+        { name: "windowsManifest", maxCount: 1 },
+        { name: "macManifest", maxCount: 1 },
+      ])(req, res, (err: any) => {
+        if (err) {
+          const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+          res.status(status).json({ error: err?.message || "Update manifest upload failed." });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const body = req.body as Record<string, unknown>;
+      const versionRaw = body.version;
+      const version = typeof versionRaw === "string" ? versionRaw.trim() : "";
+      if (!version || validateInstallerVersion(version)) {
+        return res.status(400).json({
+          error: validateInstallerVersion(version) || "Missing release version.",
+        });
+      }
+      const uploaded = (req as any).files as
+        | Record<string, Array<{ originalname: string; buffer: Buffer; size: number }>>
+        | undefined;
+      const windowsManifest = uploaded?.windowsManifest?.[0];
+      const macManifest = uploaded?.macManifest?.[0];
+      if (!windowsManifest?.buffer || !macManifest?.buffer) {
+        return res.status(400).json({
+          error: "Attach both windowsManifest (latest.yml) and macManifest (latest-mac.yml).",
+        });
+      }
+
+      const windowsValidation = validateDesktopUpdateFeed(
+        windowsManifest.buffer.toString("utf8"),
+        "windows",
+        version,
+      );
+      if (!windowsValidation.ok) {
+        return res.status(400).json({ error: `Invalid Windows update manifest: ${windowsValidation.error}` });
+      }
+      const macValidation = validateDesktopUpdateFeed(
+        macManifest.buffer.toString("utf8"),
+        "mac",
+        version,
+      );
+      if (!macValidation.ok) {
+        return res.status(400).json({ error: `Invalid macOS update manifest: ${macValidation.error}` });
+      }
+      const windowsInstaller = await getDesktopInstallerMetadata("exe");
+      if (!windowsInstaller) {
+        return res.status(409).json({ error: "Publish LabTrax-Setup.exe before the Windows update manifest." });
+      }
+      // Re-parse the integrity fields against the stored EXE stream; a
+      // manifest must never promote an installer that differs from its hash.
+      const windowsManifestFiles = windowsValidation.fileNames ?? [];
+      const expectedWindowsHash =
+        windowsManifest.buffer.toString("utf8").match(/^\s+sha512:\s*["']?([A-Za-z0-9+/=]+)["']?\s*$/m)?.[1] ?? "";
+      const expectedWindowsSizeRaw =
+        windowsManifest.buffer.toString("utf8").match(/^\s+size:\s*(\d+)\s*$/m)?.[1];
+      const expectedWindowsSize = expectedWindowsSizeRaw ? Number(expectedWindowsSizeRaw) : Number.NaN;
+      let windowsPayloadMatches = false;
+      try {
+        windowsPayloadMatches = await verifyWindowsUpdatePayload(
+          expectedWindowsHash,
+          expectedWindowsSize,
+        );
+      } catch (error) {
+        req.log?.error?.({ err: error }, "Failed to verify the Windows update installer");
+        return res.status(503).json({ error: "Could not verify the stored Windows installer." });
+      }
+      if (
+        windowsManifestFiles[0] !== "LabTrax-Setup.exe" ||
+        !windowsPayloadMatches
+      ) {
+        return res.status(409).json({ error: "Windows installer does not match latest.yml; refusing to publish the update feed." });
+      }
+      for (const fileName of macValidation.fileNames ?? []) {
+        const payload = await getDesktopUpdatePayloadHandle(fileName);
+        if (!payload) {
+          return res.status(409).json({ error: `Publish macOS update package ${fileName} before its manifest.` });
+        }
+      }
+
+      try {
+        await uploadDesktopUpdateManifest(windowsManifest.buffer, "windows");
+        await uploadDesktopUpdateManifest(macManifest.buffer, "mac");
+      } catch (error: any) {
+        req.log?.error?.({ err: error, version }, "Failed to publish desktop update manifests");
+        if (error instanceof DesktopInstallerNotConfiguredError) {
+          return res.status(503).json({ error: error.message });
+        }
+        return res.status(500).json({ error: "Failed to store the desktop update manifests." });
+      }
+
+      return res.json({
+        success: true,
+        version,
+        windowsFiles: windowsValidation.fileNames,
+        macFiles: macValidation.fileNames,
+      });
+    },
+  );
+
   // ── Scheduled / on-demand health check (Task #749) ─────────────────────────
   //
-  // Reports on the three independent pieces of the pipeline (storage,
-  // download URL, GitHub Release manifest) in one JSON document. Safe to
+  // Reports on installer storage, the download URL, GitHub Release metadata,
+  // and both API updater feeds in one JSON document. Safe to
   // poll on demand; the optional `?alert=1` query parameter additionally
   // dispatches the deduped admin alert if the report comes back unhealthy.
   router.get("/admin/desktop-installer/health", requireAuth, async (req, res) => {
@@ -8302,8 +8529,8 @@ Important rules:
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
-    if (!recoveryDataAvailable) {
-      return res.status(503).json({ error: RECOVERY_DATA_UNAVAILABLE_MESSAGE });
+    if (!SDR1_CLEANUP_AVAILABLE) {
+      return res.status(503).json({ error: SDR1_CLEANUP_UNAVAILABLE_MESSAGE });
     }
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
@@ -8698,7 +8925,7 @@ Important rules:
   });
 
   // ── Admin Backup: run now ─────────────────────────────────────────────────
-  router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/run", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -8709,12 +8936,21 @@ Important rules:
       (!requestedRunId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedRunId))) {
       return res.status(400).json({ error: "runId must be a valid backup run UUID." });
     }
-    if (requestedRunId && await getBackupLiveStatus(requestedRunId)) {
-      return res.status(409).json({ error: "This backup run ID has already been used." });
+    if (body.archiveKind === "database-only") {
+      res.status(400).json({ error: "In-app backups always include production records and original files. Records-only backups are not available." });
+      return;
     }
-    const destination = body.destination as BackupDestination | undefined;
+    const isBrowserDelivery = body.destination === "browser";
+    const destination = body.destination as BackupDestination | "browser" | undefined;
+    if (body.archiveKind !== undefined && body.archiveKind !== "full" && body.archiveKind !== "database-only") {
+      return res.status(400).json({ error: "archiveKind must be full or database-only." });
+    }
+    if (body.archiveKind === "database-only" && !isBrowserDelivery &&
+        destination !== "onedrive" && destination !== "google-drive") {
+      return res.status(400).json({ error: "Download database-only backups through backup/generate." });
+    }
     if (
-      destination !== "local" &&
+      !isBrowserDelivery && destination !== "local" &&
       destination !== "network" &&
       destination !== "onedrive" &&
       destination !== "google-drive"
@@ -8724,12 +8960,65 @@ Important rules:
       });
     }
     const destPath = typeof body.path === "string" ? body.path.trim() : undefined;
-    if ((destination === "local" || destination === "network") && !destPath) {
+    if (!isBrowserDelivery && (destination === "local" || destination === "network") && !destPath) {
       return res.status(400).json({ error: "path is required for local and network destinations." });
     }
+    const isSftpDestination = destination === "network" && !!destPath?.startsWith("sftp://");
     try {
       const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
-      const result = await withBackupRun(() => runBackup(triggeredBy, destination, destPath), requestedRunId);
+      const ownerId = typeof reqUser?.id === "string" ? reqUser.id : null;
+      const sessionHash = getManualBackupSessionHash(req);
+      if (isBrowserDelivery) {
+        if (!requestedRunId) return res.status(400).json({ error: "Browser backups require a client-generated runId." });
+        if (!sessionHash) {
+          return res.status(403).json({ error: "Sign in with an administrator account to start a cancellable browser backup." });
+        }
+        const archiveKind = body.archiveKind === "database-only" ? "database-only" : "full";
+        await startManualBackupJob(requestedRunId, {
+          destination: "browser",
+          archiveKind,
+          source: getBackupSourceEnvironment(),
+          actor: triggeredBy,
+        }, ownerId, sessionHash, async (signal) => {
+          await ensureStartupDbConstraints();
+          await generateManualBrowserBackupArchive(
+            triggeredBy,
+            requestedRunId,
+            archiveKind,
+            signal,
+            cleanup => registerManualBackupCleanup(requestedRunId, cleanup),
+          );
+        });
+        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running",
+          continuationToken: await issueBackupContinuation(requestedRunId, ownerId, sessionHash) });
+      }
+      // Cloud and SFTP work belongs to the server once accepted. Reusing the
+      // same claim/status contract lets the Desktop reconnect without keeping
+      // this initiating HTTP request alive.
+      if (((destination === "onedrive" || destination === "google-drive") || isSftpDestination) &&
+          body.respondAsync === true) {
+        if (!requestedRunId) return res.status(400).json({ error: "Asynchronous backups require a client-generated runId." });
+        if (!sessionHash) {
+          return res.status(403).json({ error: "Sign in with an administrator account to start a cancellable backup." });
+        }
+        await startManualBackupJob(requestedRunId, {
+          destination, archiveKind: String(body.archiveKind ?? "full"),
+          source: getBackupSourceEnvironment(), actor: triggeredBy,
+        }, ownerId, sessionHash, async (signal) => {
+          await ensureStartupDbConstraints();
+          return runBackup(triggeredBy, destination, destPath,
+            { archiveKind: body.archiveKind === "database-only" ? "database-only" : "full", cancellationSignal: signal });
+        });
+        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running",
+          continuationToken: await issueBackupContinuation(requestedRunId, ownerId, sessionHash) });
+      }
+      if (requestedRunId && await getBackupLiveStatus(requestedRunId)) {
+        return res.status(409).json({ error: "This backup run ID has already been used." });
+      }
+      const activeDestination = destination as BackupDestination;
+      const result = await withBackupRun(() => body.archiveKind === "database-only"
+        ? runBackup(triggeredBy, activeDestination, destPath, { archiveKind: "database-only" })
+        : runBackup(triggeredBy, activeDestination, destPath), requestedRunId);
       // A run that dropped content is not a clean success. The history list
       // already shows it amber; saying "Backup complete" here (and nowhere
       // else) is how a partial archive gets mistaken for a recovery point.
@@ -8748,7 +9037,7 @@ Important rules:
       });
     } catch (e: any) {
       const diagnostic = e?.message || "Backup failed.";
-      return res.status(500).json({
+      return res.status(e?.status === 409 ? 409 : 500).json({
         error: backupErrorMessage(diagnostic),
         diagnostic,
       });
@@ -8760,7 +9049,16 @@ Important rules:
   // (Electron or browser) can save the file locally. This is the correct path
   // for "Back up now → Local folder / USB" because the user's drive is on
   // their machine, not on the Linux server.
-  router.post("/admin/backup/generate", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/generate", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
+    if (req.query.archiveKind === "database-only") {
+      res.status(400).json({ error: "In-app backups always include production records and original files. Records-only backups are not available." });
+      return;
+    }
+
+    if (req.query.archiveKind !== undefined && req.query.archiveKind !== "full" && req.query.archiveKind !== "database-only") {
+      res.status(400).json({ error: "archiveKind must be full or database-only." });
+      return;
+    }
     if (!isPlatformAdmin(req)) {
       res.status(403).json({ error: "Admin access required." });
       return;
@@ -8785,7 +9083,10 @@ Important rules:
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.query.runId)
         ? req.query.runId
         : undefined;
-      await streamBackupDownload(triggeredBy, res, { recordHistory: !deferRecord, runId: requestedRunId });
+      await streamBackupDownload(triggeredBy, res, {
+        recordHistory: !deferRecord, runId: requestedRunId,
+        ...(req.query.archiveKind === "database-only" ? { archiveKind: "database-only" as const } : {}),
+      });
     } catch (e: any) {
       if (!res.headersSent) {
         const diagnostic = e?.message || "Backup failed.";
@@ -8821,6 +9122,10 @@ Important rules:
       const staleDaysRaw = staleDaysRow[0]?.value ?? null;
       const staleAfterDays =
         staleDaysRaw !== null ? parseInt(staleDaysRaw, 10) : DEFAULT_BACKUP_STALE_DAYS;
+      // The desktop polls this endpoint as its shared status refresh. Retire
+      // active failure alerts only when the same destination-backed freshness
+      // verdict says a complete production recovery point is currently fresh.
+      await reconcileOffsiteBackupAlerts(freshness);
       return res.json({
         ok: true,
         lastSuccessfulBackupAt,
@@ -8897,7 +9202,7 @@ Important rules:
           ? config.intervalMinutes
           : null;
       const effectiveDestination = offsiteActive
-        ? "onedrive"
+        ? offsite.destination
         : config.enabled
           ? config.destination
           : null;
@@ -8908,9 +9213,15 @@ Important rules:
       const newestArchive = freshness.newestArchive;
       const newestArchiveError = freshness.listingError;
       const archiveCount = freshness.archiveCount;
+      const [databaseRetention, databaseRetentionStatus] = await Promise.all([
+        getDatabaseProtectionRetentionConfig(),
+        getDatabaseProtectionRetentionStatus(),
+      ]);
 
       return res.json({
         ok: true,
+        sourceEnvironment: getBackupSourceEnvironment(),
+        allowedScheduleIntervalsMinutes: getAllowedBackupScheduleIntervalsMinutes(),
         interval,
         unit,
         destination: config.destination,
@@ -8929,6 +9240,7 @@ Important rules:
           running: offsite.running,
           intervalMinutes: offsite.intervalMinutes,
           lastVerifiedAt: offsite.lastVerifiedAt,
+          databaseProtection: offsite.databaseProtection,
           // Judged from the confirmed archive, not the database watermark.
           stale: offsite.enabled && freshness.stale,
           ageMinutes: freshness.ageMinutes,
@@ -8937,18 +9249,19 @@ Important rules:
           reason: freshness.reason,
           destinationUnreadable: freshness.destinationUnreadable,
         },
+        databaseRetention: { ...databaseRetention, status: databaseRetentionStatus },
         // Every alert attempt and its outcome, so an alert nobody could
         // receive is visible here instead of only in the server log.
         alertDelivery: {
           undelivered: findUndeliveredBackupAlert(alertLog),
           recent: alertLog.slice(0, 5),
         },
-        fullArchiveIntervalMinutes,
+        fullArchiveIntervalMinutes: offsite.databaseProtection ? null : fullArchiveIntervalMinutes,
         nextDueAt: scheduleState.nextDueAt?.toISOString() ?? null,
         lastAttemptAt: scheduleState.lastAttemptAt?.toISOString() ?? null,
         newestArchive,
         newestArchiveError,
-        newestArchiveErrorMessage: newestArchiveError ? backupStatusErrorMessage() : null,
+        newestArchiveErrorMessage: newestArchiveError ? "The selected backup destination could not be verified. A complete recovery point cannot currently be confirmed; review the connection and failure details." : null,
         newestArchiveErrorDiagnostic: newestArchiveError,
         archiveCount,
       });
@@ -8961,8 +9274,48 @@ Important rules:
     }
   });
 
+  // ── Admin Backup: owner-approved database-point retention ────────────────
+  router.put("/admin/backup/database-retention", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    if (getBackupSourceEnvironment() !== "production") {
+      return res.status(400).json({ error: "Database-point retention is only available for production OneDrive protection." });
+    }
+    const parsedBody = SaveDatabaseProtectionRetentionBody.safeParse(req.body);
+    if (!parsedBody.success) {
+      return res.status(400).json({ error: parsedBody.error.message });
+    }
+    const body = parsedBody.data;
+    if (body.enabled && body.confirmation !== "APPROVE_DATABASE_RETENTION") {
+      return res.status(400).json({ error: "Explicit owner approval is required to enable database-point cleanup." });
+    }
+    const current = await getDatabaseProtectionRetentionConfig();
+    const values = {
+      enabled: body.enabled,
+      keepAllWithinHours: body.keepAllWithinHours ?? current.keepAllWithinHours,
+      keepHourlyWithinDays: body.keepHourlyWithinDays ?? current.keepHourlyWithinDays,
+      keepDailyWithinDays: body.keepDailyWithinDays ?? current.keepDailyWithinDays,
+      safetyGraceHours: body.safetyGraceHours ?? current.safetyGraceHours,
+    };
+    const reqUser = (req as any).user;
+    const approvedBy = typeof reqUser?.id === "string" ? reqUser.id
+      : typeof reqUser?.username === "string" ? reqUser.username : null;
+    try {
+      const config = await setDatabaseProtectionRetentionConfig(values as {
+        enabled: boolean; keepAllWithinHours: number; keepHourlyWithinDays: number;
+        keepDailyWithinDays: number; safetyGraceHours: number;
+      }, body.enabled ? approvedBy : null);
+      return res.json(SaveDatabaseProtectionRetention200Response.parse({ ok: true, ...config }));
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "Invalid database retention policy.",
+      });
+    }
+  });
+
   // ── Admin Backup: schedule save ───────────────────────────────────────────
-  router.put("/admin/backup/schedule", platformAdminUserOrSecret, async (req, res) => {
+  router.put("/admin/backup/schedule", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -8989,7 +9342,7 @@ Important rules:
           ? parseInt(body.staleAlertRateLimitDays, 10)
           : null;
 
-    if (!Number.isFinite(intervalRaw) || intervalRaw <= 0) {
+    if (!Number.isInteger(intervalRaw) || intervalRaw <= 0) {
       return res.status(400).json({ error: "interval must be a positive integer." });
     }
     if (unit !== "minutes" && unit !== "hours") {
@@ -8999,13 +9352,19 @@ Important rules:
       return res.status(400).json({ error: "staleAfterDays must be an integer between 1 and 365." });
     }
     const intervalMinutes = toIntervalMinutes(intervalRaw, unit);
-    // The current desktop/browser menu offers 5, 10, 15 minutes and 1 hour.
-    // Keep older saved intervals writable so an unrelated edit can preserve a
-    // legacy schedule until the admin explicitly selects a new cadence.
-    const VALID_INTERVALS = [5, 10, 15, 30, 60, 120, 240, 480, 1440];
-    if (!VALID_INTERVALS.includes(intervalMinutes)) {
+    // Active schedules follow the cadence for the database bound to this
+    // server. Keep a disabled legacy interval writable so unrelated settings
+    // can be saved without silently activating or rewriting an old schedule.
+    const sourceEnvironment = getBackupSourceEnvironment();
+    const allowedIntervals = getAllowedBackupScheduleIntervalsMinutes(sourceEnvironment);
+    if (enabled && !allowedIntervals.includes(intervalMinutes)) {
+      const choices = allowedIntervals.map((minutes) =>
+        minutes % 60 === 0
+          ? `${minutes / 60} hour${minutes === 60 ? "" : "s"}`
+          : `${minutes} minutes`,
+      ).join(" or ");
       return res.status(400).json({
-        error: `Computed intervalMinutes (${intervalMinutes}) is not a supported value. Valid combinations: 5, 10, 15, 30 min, 1 h, 2 h, 4 h, 8 h, 24 h.`,
+        error: `Automatic backups for the ${sourceEnvironment} database must run every ${choices}.`,
       });
     }
     if (
@@ -9062,11 +9421,18 @@ Important rules:
     }
 
     try {
+      if (enabled && sourceEnvironment === "production" && destination === "google-drive") {
+        const connection = await getGoogleDriveStatus();
+        if (!connection.connected) return res.status(409).json({
+          error: connection.error ?? "Connect the existing LabTrax Google Drive integration before enabling this schedule.",
+        });
+      }
+      await db.transaction(async (tx) => {
       const upsert = async (key: string, value: string | null) => {
         if (value === null) {
-          await db.delete(systemSettings).where(eq(systemSettings.key, key));
+          await tx.delete(systemSettings).where(eq(systemSettings.key, key));
         } else {
-          await db
+          await tx
             .insert(systemSettings)
             .values({ key, value })
             .onConflictDoUpdate({ target: systemSettings.key, set: { value, updatedAt: new Date() } });
@@ -9076,6 +9442,7 @@ Important rules:
       await upsert(SETTING_BACKUP_SCHEDULE_DESTINATION, destination);
       await upsert(SETTING_BACKUP_SCHEDULE_PATH, destPath);
       await upsert(SETTING_BACKUP_SCHEDULE_ENABLED, enabled ? "true" : "false");
+      await upsert(SETTING_BACKUP_SCHEDULE_ROUTING_VERSION, "2");
       // Drop the persisted due time: it was computed from the previous
       // cadence, and honouring it would delay the new interval by up to a
       // full old interval. restartScheduledBackupJob re-anchors from now.
@@ -9089,6 +9456,7 @@ Important rules:
       if (staleAfterDaysRaw !== null && Number.isFinite(staleAfterDaysRaw) && staleAfterDaysRaw >= 1) {
         await upsert(SETTING_BACKUP_STALE_DAYS, String(staleAfterDaysRaw));
       }
+      });
 
       // Restart the in-process recurring job with the new settings.
       void restartScheduledBackupJob();
@@ -9105,18 +9473,18 @@ Important rules:
   });
 
   // ── Admin Backup: schedule disable ───────────────────────────────────────
-  router.delete("/admin/backup/schedule", platformAdminUserOrSecret, async (req, res) => {
+  router.delete("/admin/backup/schedule", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_BACKUP_SCHEDULE_ENABLED, value: "false" })
-        .onConflictDoUpdate({
-          target: systemSettings.key,
-          set: { value: "false", updatedAt: new Date() },
-        });
+      await db.transaction(async (tx) => {
+        for (const [key, value] of [[SETTING_BACKUP_SCHEDULE_ENABLED, "false"], [SETTING_BACKUP_SCHEDULE_ROUTING_VERSION, "2"]]) {
+          await tx.insert(systemSettings).values({ key, value }).onConflictDoUpdate({
+            target: systemSettings.key, set: { value, updatedAt: new Date() },
+          });
+        }
+      });
       void restartScheduledBackupJob();
       return res.json({ ok: true, enabled: false });
     } catch (e: unknown) {
@@ -9134,9 +9502,21 @@ Important rules:
   // admins can verify their SFTP or OneDrive config without waiting for the
   // interval. Local-folder schedules run from the desktop app and return a
   // clear error here.
-  router.post("/admin/backup/schedule/run-now", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/schedule/run-now", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
+    }
+    if (getBackupSourceEnvironment() === "production") {
+      // Work continues outside the HTTP request; polling the schedule exposes
+      // persisted phases and the verified/failed outcome. A busy job is not
+      // cancelled or replaced by this request.
+      void fireOffsiteBackup("interval").catch(() => {
+        logger.error("[backup] Requested production records/media protection could not start; check persisted protection status.");
+      });
+      return res.status(202).json({
+        ok: true, accepted: true, scope: "production-database-and-media",
+        message: "Production records and media protection requested. Check persisted protection status for progress, coverage and the verified outcome.",
+      });
     }
     try {
       const result = await runScheduledBackupNow();
@@ -9201,12 +9581,25 @@ Important rules:
     }
   });
 
+  // Reconnect/download recovery may authorize continuation only for the same
+  // run and authenticated owner/session, never for a new backup.
+  router.post("/admin/backup/continuation/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) return res.status(400).json({ error: "Invalid backup run ID." });
+    try {
+      const continuationToken = await issueBackupContinuation(runId, typeof (req as any).user?.id === "string" ? (req as any).user.id : null, getManualBackupSessionHash(req));
+      if (!continuationToken) return res.status(404).json({ error: "Backup unavailable. Reconnect the existing backup first." });
+      return res.json({ continuationToken });
+    } catch { return res.status(503).json({ error: "Could not reconnect this backup. Retry the existing run." }); }
+  });
+
   // ── Admin Backup: desktop-executed run report ─────────────────────────────
   // The LabTrax Desktop app executes local-folder schedules (it downloads the
   // backup and writes it to the chosen folder while the app is open), then
   // reports the outcome here so the run lands in backup_runs and a success
   // feeds the staleness watermark/alerts.
-  router.post("/admin/backup/desktop-run-report", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/desktop-run-report", backupContinuationOrAdmin("report", platformAdminUserOrSecret), async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -9232,6 +9625,39 @@ Important rules:
       return res.status(400).json({ error: "fileName is required for a successful run report." });
     }
     try {
+      let browserDelivery: NonNullable<Awaited<ReturnType<typeof getBackupLiveStatus>>>["delivery"];
+      if (downloadRunId && body.source === "manual") {
+        const live = await getBackupLiveStatus(downloadRunId);
+        browserDelivery = live?.delivery;
+        if (browserDelivery) {
+          if (status === "success" &&
+              (sizeBytes !== browserDelivery.size || fileName !== browserDelivery.fileName)) {
+            return res.status(400).json({
+              error: "The reported file name and byte count do not match the verified staged backup.",
+            });
+          }
+          const userId = typeof reqUser?.id === "string" ? reqUser.id : null;
+          const sessionHash = getManualBackupSessionHash(req);
+          if (!sessionHash ||
+              await manualBackupRunAccessibleTo(downloadRunId, userId, sessionHash) !== true) {
+            return res.status(409).json({ error: "This backup belongs to a different administrator session." });
+          }
+          if (live?.state === "completed") {
+            const [existing] = await db.select({ completedAt: backupRuns.completedAt })
+              .from(backupRuns).where(eq(backupRuns.downloadRunId, downloadRunId)).limit(1);
+            return res.json({ ok: true, completedAt: existing?.completedAt ?? new Date().toISOString() });
+          }
+          if (!sessionHash ||
+              !await claimManualBackupFinalization(downloadRunId, userId, sessionHash)) {
+            const current = await getBackupLiveStatus(downloadRunId);
+            return res.status(current?.state === "cancelled" ? 409 : 409).json({
+              error: current?.state === "cancelled"
+                ? "This backup was cancelled before delivery could be confirmed."
+                : "This backup is already being finalized or is no longer active.",
+            });
+          }
+        }
+      }
       const triggeredBy = body.source === "manual"
         ? `manual:desktop:${(reqUser as any)?.username || "admin"}`
         : `scheduler:desktop:${(reqUser as any)?.username || "admin"}`;
@@ -9248,6 +9674,15 @@ Important rules:
           : undefined,
       });
       await finishBackupLiveRun(downloadRunId, status === "success" && !result.rejected ? "completed" : "failed");
+      if (browserDelivery && downloadRunId) {
+        finishManualBackupJob(downloadRunId);
+        try {
+          await cleanupManualBrowserBackupArchive(downloadRunId, browserDelivery.sourceEnvironment);
+        } catch (error) {
+          req.log?.warn?.({ runId: downloadRunId, err: safeBackupError(error) },
+            "Confirmed browser backup stage cleanup will be retried after expiry");
+        }
+      }
 
       // When the desktop scheduler reports a failure — or claims a success the
       // server can tell is not a real backup (a placeholder-sized file) —
@@ -9290,6 +9725,13 @@ Important rules:
         } : {}),
       });
     } catch (e: unknown) {
+      if (downloadRunId) {
+        const live = await getBackupLiveStatus(downloadRunId).catch(() => undefined);
+        if (live?.state === "finalizing") {
+          await finishBackupLiveRun(downloadRunId, "failed").catch(() => undefined);
+          finishManualBackupJob(downloadRunId);
+        }
+      }
       const diagnostic = e instanceof Error ? e.message : "Failed to record backup run.";
       return res.status(500).json({
         error: backupSettingsErrorMessage("save"),
@@ -9298,9 +9740,117 @@ Important rules:
     }
   });
 
-  // Live phase/progress is deliberately transient and keyed by the opaque run
-  // UUID returned in X-Backup-Run-Id. It contains no archive names or paths.
-  router.get("/admin/backup/status/:runId", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/reconnect/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId ?? "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
+      return res.status(400).json({ error: "A valid backup run ID is required." });
+    }
+    const user = (req as any).user;
+    const userId = typeof user?.id === "string" ? user.id : null;
+    const sessionHash = getManualBackupSessionHash(req);
+    if (!sessionHash) return res.status(403).json({ error: "Sign in as the administrator who started this backup." });
+    const access = await reconnectManualBackupSession(runId, userId, sessionHash);
+    if (access === "forbidden") return res.status(404).json({ error: "This backup is not available to this administrator." });
+    if (access === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+    const status = await getBackupLiveStatus(runId);
+    if (!status) {
+      // The status reader can return undefined on a database outage. Confirm
+      // absence separately before allowing the client to discard its marker.
+      const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+      if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+      return res.status(503).json({ error: "Backup status cannot be confirmed. Retry before starting another backup." });
+    }
+    return res.json({ ok: true, runId, state: status.state, status });
+  });
+
+  router.post("/admin/backup/cancel/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId ?? "");
+    const user = (req as any).user;
+    const userId = typeof user?.id === "string" ? user.id : null;
+    const sessionHash = getManualBackupSessionHash(req);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
+      return res.status(400).json({ error: "A valid backup run ID is required." });
+    }
+    if (!sessionHash) {
+      return res.status(403).json({ error: "Only the administrator session that started this backup can cancel it." });
+    }
+    const access = await reconnectManualBackupSession(runId, userId, sessionHash);
+    if (access === "forbidden") return res.status(404).json({ error: "This backup is not available to this administrator." });
+    if (access === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+    const result = await cancelManualBackupRun(runId, userId, sessionHash);
+    if (result === "not_found") {
+      const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+      if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+      return res.status(409).json({ error: "Backup ownership changed. Retry cancellation before starting another backup." });
+    }
+    if (result === "terminal") {
+      const status = await getBackupLiveStatus(runId);
+      if (status?.state === "cancelled") return res.json({ ok: true, runId, state: "cancelled" });
+      if (!status) {
+        const confirmed = await reconnectManualBackupSession(runId, userId, sessionHash);
+        if (confirmed === "not_found") return res.json({ ok: true, runId, state: "unavailable" });
+        return res.status(503).json({ error: "Backup status cannot be confirmed. Check Recent Backups before starting another backup." });
+      }
+      return res.json({ ok: true, runId, state: status.state, status });
+    }
+    cancelManualBackupJob(runId);
+    await finishBackupLiveRun(runId, "cancelled");
+    const status = await getBackupLiveStatus(runId);
+    if (status?.delivery) {
+      try {
+        await cleanupManualBrowserBackupArchive(runId, status.delivery.sourceEnvironment);
+      } catch (error) {
+        req.log?.warn?.({ runId, err: safeBackupError(error) }, "Cancelled browser backup stage cleanup will be retried after expiry");
+      }
+    }
+    return res.json({ ok: true, runId, state: "cancelled" });
+  });
+
+  router.get("/admin/backup/download/:runId", backupContinuationOrAdmin("download", platformAdminUserOrSecret), requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId ?? "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
+      return res.status(400).json({ error: "A valid backup run ID is required." });
+    }
+    const user = (req as any).user;
+    const accessible = await manualBackupRunAccessibleTo(
+      runId,
+      typeof user?.id === "string" ? user.id : null,
+      getManualBackupSessionHash(req),
+    );
+    if (accessible === false) return res.status(404).json({ error: "The browser backup is not available." });
+    const status = await getBackupLiveStatus(runId);
+    if (!status?.delivery || status.state !== "awaiting_verification") {
+      return res.status(status?.state === "cancelled" ? 409 : 404).json({
+        error: status?.state === "cancelled"
+          ? "This backup was cancelled."
+          : "The browser backup is not ready for delivery.",
+      });
+    }
+    try {
+      await streamManualBrowserBackupArchive(
+        runId,
+        res,
+        getManualBackupJobSignal(runId) ?? new AbortController().signal,
+        status.delivery,
+      );
+    } catch (error) {
+      if (!res.headersSent) {
+        const diagnostic = error instanceof Error ? error.message : "Browser backup delivery failed.";
+        return res.status(500).json({ error: backupErrorMessage(diagnostic), diagnostic });
+      }
+      req.log?.warn?.({ runId, err: error }, "Browser backup delivery stream ended before completion");
+      if (!res.writableEnded) res.destroy();
+      return;
+    }
+    return;
+  });
+
+  // Live phase/progress is durable and keyed by the opaque run UUID created by
+  // the initiating client, so a refreshed renderer can reconnect safely.
+  router.get("/admin/backup/status/:runId", backupContinuationOrAdmin("status", platformAdminUserOrSecret), async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -9308,8 +9858,38 @@ Important rules:
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
       return res.status(400).json({ error: "A valid backup run ID is required." });
     }
+    const user = (req as any).user;
+    const accessible = await manualBackupRunAccessibleTo(
+      runId,
+      typeof user?.id === "string" ? user.id : null,
+      getManualBackupSessionHash(req),
+    );
+    if (accessible === false) return res.status(404).json({ error: "Backup progress is no longer available." });
     const status = await getBackupLiveStatus(runId);
     if (!status) return res.status(404).json({ error: "Backup progress is no longer available." });
+    if (status.state === "completed" || status.state === "failed" ||
+        status.state === "cancelled" || status.state === "stale") {
+      const [run] = await db.select().from(backupRuns)
+        .where(eq(backupRuns.downloadRunId, runId))
+        .orderBy(sql`${backupRuns.completedAt} DESC`).limit(1);
+      return res.json({
+        ...status,
+        ...(run?.status === "success" && status.state === "completed" ? {
+          result: {
+            ok: true, runId, size: run.sizeBytes, completedAt: run.completedAt,
+            fileName: run.fileName, archiveKind: run.archiveKind,
+            partialFailure: run.partialFailure, warnings: run.warnings,
+            mediaFileCount: run.mediaFileCount, attachmentRowCount: run.attachmentRowCount,
+          },
+        } : {}),
+        ...(status.state !== "completed" ? {
+          error: status.state === "cancelled"
+            ? "Backup cancelled. Incomplete output was discarded."
+            : run?.error ? backupErrorMessage(safeBackupError(run.error))
+              : "The backup worker stopped or lost contact. Check this run's history before starting another backup.",
+        } : {}),
+      });
+    }
     return res.json(status);
   });
 
@@ -9343,12 +9923,47 @@ Important rules:
     }
   });
 
-  // ── Admin Backup: download a history run from OneDrive ───────────────────
+  router.get("/admin/backup/history/by-download-run/:downloadRunId", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const downloadRunId = String(req.params.downloadRunId ?? "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(downloadRunId)) {
+      return res.status(400).json({ error: "A valid backup download run ID is required." });
+    }
+    try {
+      const [run] = await db.select({
+        downloadRunId: backupRuns.downloadRunId,
+        status: backupRuns.status,
+        completedAt: backupRuns.completedAt,
+      })
+        .from(backupRuns)
+        .where(eq(backupRuns.downloadRunId, downloadRunId))
+        .limit(1);
+      return res.json({
+        ok: true,
+        run: run ? {
+          downloadRunId: run.downloadRunId,
+          status: run.status,
+          completedAt: run.completedAt,
+        } : null,
+      });
+    } catch (e: unknown) {
+      const diagnostic = e instanceof Error ? e.message : "Failed to check backup history.";
+      req.log?.error({ err: diagnostic }, "[backup] Could not reconcile desktop backup history");
+      return res.status(500).json({
+        error: backupSettingsErrorMessage("history"),
+        diagnostic,
+      });
+    }
+  });
+
+  // ── Admin Backup: download a history run from a verified cloud destination ─
   // GET /admin/backup/history/:id/download
   // Protected by the same lab-admin gate as the history list.  Looks up the
-  // run by id, then proxies the OneDrive file back as application/octet-stream
+  // run by id, then proxies the OneDrive or Google Drive file back as application/octet-stream
   // so the desktop client can feed it directly into the restore pipeline.
-  // Returns 400 for non-OneDrive (or SFTP) runs; 404 if the id is unknown.
+  // Returns 400 for local/SFTP runs; 404 if the id is unknown.
   router.get("/admin/backup/history/:id/download", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
@@ -9372,9 +9987,9 @@ Important rules:
           error: "SFTP backups must be downloaded manually and restored via the file picker.",
         });
       }
-      if (run.destination !== "onedrive") {
+      if (run.destination !== "onedrive" && run.destination !== "google-drive") {
         return res.status(400).json({
-          error: "Only OneDrive backup runs can be downloaded via this endpoint.",
+          error: "Only OneDrive or Google Drive backup runs can be downloaded via this endpoint.",
         });
       }
       if (!run.fileName && !run.remoteItemId) {
@@ -9382,25 +9997,58 @@ Important rules:
           error: "This backup run has no file name recorded — it cannot be downloaded.",
         });
       }
+      const expectedSize = run.sizeBytes;
+      if (!Number.isSafeInteger(expectedSize) || (expectedSize ?? 0) <= 0) {
+        return res.status(400).json({
+          error: "This backup has no verified exact size — it cannot be downloaded.",
+        });
+      }
+      const fileName = run.fileName ?? "labtrax-backup.zip.enc";
+      const streamToResponse = async (
+        openStream: (signal: AbortSignal) => Promise<NodeJS.ReadableStream>,
+      ) => {
+        const controller = new AbortController();
+        const abortOnDisconnect = () => controller.abort();
+        res.once("close", abortOnDisconnect);
+        try {
+          const stream = await openStream(controller.signal);
+          res.setHeader("Content-Type", "application/octet-stream");
+          res.setHeader("Content-Disposition", `attachment; filename="${fileName.replace(/"/g, "")}"`);
+          res.setHeader("Content-Length", String(expectedSize));
+          await pipeline(stream, res);
+        } finally {
+          res.off("close", abortOnDisconnect);
+        }
+      };
+      if (run.destination === "google-drive") {
+        if (!run.remoteItemId) {
+          return res.status(400).json({
+            error: "This Google Drive backup has no verified item identity and exact size — it cannot be downloaded.",
+          });
+        }
+        await streamToResponse(signal =>
+          downloadGoogleDriveBackupFile(run.remoteItemId!, expectedSize!, signal));
+        return;
+      }
       // Prefer the Graph item id confirmed for the run: OneDrive renames on
       // conflict, so the name is not guaranteed to address the file this run
       // actually produced. Rows written before the id was recorded fall back
       // to the recorded name.
       // The guard above refuses a row with neither, so an empty name here is
       // only ever paired with an id and never reaches a name-based lookup.
-      const buffer = await downloadFileFromOneDrive(
-        run.fileName ?? "",
+      await streamToResponse(signal => downloadFileFromOneDrive(
+        fileName,
+        expectedSize!,
         undefined,
         run.remoteItemId ?? oneDriveItemIdFromPath(run.path),
-      );
-      res.setHeader("Content-Type", "application/octet-stream");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="${(run.fileName ?? "labtrax-backup.zip.enc").replace(/"/g, "")}"`,
-      );
-      res.setHeader("Content-Length", String(buffer.length));
-      return res.send(buffer);
+        signal,
+      ));
+      return;
     } catch (e: unknown) {
+      if (res.headersSent || res.destroyed) {
+        if (!res.destroyed) res.destroy(e instanceof Error ? e : undefined);
+        return;
+      }
       const diagnostic = e instanceof Error ? e.message : "Failed to download backup from OneDrive.";
       return res.status(500).json({
         error: backupDownloadErrorMessage(),

@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { within } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 
@@ -89,6 +90,7 @@ beforeEach(() => {
       }
       if (url.includes("/admin/backup/schedule")) {
         return jsonResponse({
+          sourceEnvironment: "production",
           interval: null,
           unit: null,
           destination: null,
@@ -137,9 +139,9 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     await renderBackupTabWithOneDriveSelected();
 
     await waitFor(() =>
-      expect(screen.getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
     );
-    const connectBtn = screen.getByTestId("onedrive-connect-button");
+    const connectBtn = within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-connect-button");
     expect(connectBtn).toHaveTextContent(/Connect OneDrive/i);
 
     fireEvent.click(connectBtn);
@@ -149,7 +151,7 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
   it("re-polls the status endpoint via Check again, flipping to connected after the OAuth completes", async () => {
     await renderBackupTabWithOneDriveSelected();
     await waitFor(() =>
-      expect(screen.getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
     );
     const callsBefore = oneDriveStatusCalls;
 
@@ -164,13 +166,13 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
       manageUrl: MANAGE_URL,
     };
     // …then clicking "Check again" back in LabTrax.
-    fireEvent.click(screen.getByTestId("onedrive-check-again-button"));
+    fireEvent.click(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-check-again-button"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("onedrive-status-connected")).toBeInTheDocument(),
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-connected")).toBeInTheDocument(),
     );
     expect(oneDriveStatusCalls).toBeGreaterThan(callsBefore);
-    expect(screen.getByTestId("onedrive-status-connected")).toHaveTextContent("Backup Owner");
+    expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-connected")).toHaveTextContent("Backup Owner");
   });
 
   it("hides the connect button (no dead link) when the server has no manage URL", async () => {
@@ -178,12 +180,12 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     await renderBackupTabWithOneDriveSelected();
 
     await waitFor(() =>
-      expect(screen.getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-disconnected")).toBeInTheDocument(),
     );
-    expect(screen.queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
     // Fallback copy still tells the admin where the connection is made.
-    expect(screen.getByTestId("onedrive-status-disconnected")).toHaveTextContent(/Integrations/i);
-    expect(screen.getByTestId("onedrive-check-again-button")).toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-disconnected")).toHaveTextContent(/Integrations/i);
+    expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-check-again-button")).toBeInTheDocument();
   });
 
   it("offers Reconnect a different account when already connected", async () => {
@@ -200,9 +202,9 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     await renderBackupTabWithOneDriveSelected();
 
     await waitFor(() =>
-      expect(screen.getByTestId("onedrive-status-connected")).toBeInTheDocument(),
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-connected")).toBeInTheDocument(),
     );
-    const reconnectBtn = screen.getByTestId("onedrive-reconnect-button");
+    const reconnectBtn = within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-reconnect-button");
     fireEvent.click(reconnectBtn);
     expect(openSpy).toHaveBeenCalledWith(MANAGE_URL, "_blank", "noopener,noreferrer");
   });
@@ -211,32 +213,32 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     oneDriveHttpStatus = 403;
     await renderBackupTabWithOneDriveSelected();
 
-    const notice = await screen.findByTestId("onedrive-status-error");
+    const notice = await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-error");
     expect(notice).toHaveTextContent("Could not check OneDrive");
     expect(notice).toHaveTextContent("Admin access required.");
-    expect(screen.queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back up now" })).toBeDisabled();
     expect(oneDriveStatusCalls).toBe(1);
 
     oneDriveHttpStatus = 200;
     oneDriveStatusBody.connected = true;
     oneDriveStatusBody.error = null;
-    fireEvent.click(screen.getByTestId("onedrive-check-again-button"));
-    await screen.findByTestId("onedrive-status-connected");
+    fireEvent.click(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-check-again-button"));
+    await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-connected");
     expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
   });
 
   it("refreshes after returning from the external browser without a visibility change", async () => {
     await renderBackupTabWithOneDriveSelected();
-    await screen.findByTestId("onedrive-status-disconnected");
+    await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-disconnected");
     const callsBefore = oneDriveStatusCalls;
 
     oneDriveStatusBody.connected = true;
     oneDriveStatusBody.error = null;
     fireEvent(window, new Event("focus"));
 
-    await screen.findByTestId("onedrive-status-connected");
+    await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-connected");
     expect(oneDriveStatusCalls).toBeGreaterThan(callsBefore);
     expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
   });
@@ -245,15 +247,15 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     oneDriveStatusBody.connected = true;
     oneDriveStatusBody.error = null;
     await renderBackupTabWithOneDriveSelected();
-    await screen.findByTestId("onedrive-status-connected");
+    await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-connected");
     expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
 
     oneDriveHttpStatus = 403;
-    fireEvent.click(screen.getByTestId("onedrive-check-again-button"));
+    fireEvent.click(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-check-again-button"));
 
-    await screen.findByTestId("onedrive-status-error");
-    expect(screen.queryByTestId("onedrive-status-connected")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
+    await within(screen.getByTestId("backup-manual-section")).findByTestId("onedrive-status-error");
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-status-connected")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back up now" })).toBeDisabled();
   });
 
@@ -262,12 +264,12 @@ describe("Settings → Backup → OneDrive connect/reconnect", () => {
     await renderBackupTabWithOneDriveSelected();
 
     await waitFor(() => {
-      expect(screen.getByTestId("onedrive-status-error")).toHaveTextContent(
+      expect(within(screen.getByTestId("backup-manual-section")).getByTestId("onedrive-status-error")).toHaveTextContent(
         "The server did not return a OneDrive connection status.",
       );
     }, { timeout: 5000 });
-    expect(screen.queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-status-disconnected")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("backup-manual-section")).queryByTestId("onedrive-connect-button")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back up now" })).toBeDisabled();
   });
 });

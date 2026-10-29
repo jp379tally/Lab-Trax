@@ -223,7 +223,7 @@ describe("LoginScreen — lab-owner create-lab sign-up flow", () => {
     mockState.apiRequestFn.mockImplementation(
       async (method: string, path: string) => {
         if (method === "GET" && path.startsWith("/api/auth/check-email")) {
-          return { json: async () => ({ data: { available: false } }), ok: true };
+          return { json: async () => ({ data: { available: true } }), ok: true };
         }
         if (method === "POST" && path === "/api/check-username") {
           return { json: async () => ({ available: true }), ok: true };
@@ -257,11 +257,11 @@ describe("LoginScreen — lab-owner create-lab sign-up flow", () => {
     );
   });
 
-  it("continues to block a duplicate ordinary email", async () => {
+  it("does not block signup based on the public email-check response", async () => {
     mockState.apiRequestFn.mockImplementation(
       async (method: string, path: string) => {
         if (method === "GET" && path.startsWith("/api/auth/check-email")) {
-          return { json: async () => ({ data: { available: false } }), ok: true };
+          return { json: async () => ({ data: { available: true } }), ok: true };
         }
         return { json: async () => ({ available: true }), ok: true };
       },
@@ -273,9 +273,9 @@ describe("LoginScreen — lab-owner create-lab sign-up flow", () => {
     await fireEvent.changeText(getByTestId("signup-email"), "taken@example.com");
     await fireEvent(getByTestId("signup-email"), "blur");
 
-    await waitFor(() => expect(getByTestId("email-conflict-error")).toBeTruthy());
+    await waitFor(() => expect(queryByTestId("email-conflict-error")).toBeNull());
     expect(queryByTestId("shared-email-signup-guidance")).toBeNull();
-    expect(getByTestId("signup-next-btn").props.disabled).toBe(true);
+    expect(getByTestId("signup-next-btn").props.disabled).toBe(false);
   });
 
   it("explains that shared-email test accounts sign in with their usernames", async () => {

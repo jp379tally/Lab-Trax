@@ -1,6 +1,6 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { customerCredits, invoices } from "@workspace/db";
-import { finalizedInvoiceSql } from "./recovery-billing-hold";
+import { finalizedInvoiceSql } from "./historical-invoice-hold";
 
 type QueryExecutor = {
   select: typeof import("@workspace/db").db.select;

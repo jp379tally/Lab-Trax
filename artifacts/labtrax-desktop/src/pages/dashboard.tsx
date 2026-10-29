@@ -37,6 +37,7 @@ import { useDayChange } from "@/hooks/useDayChange";
 import {
   getLocalCalendarDateParts,
 } from "@workspace/calendar-date";
+import { DASHBOARD_SECTION_LABELS } from "@workspace/dashboard-labels";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
@@ -1047,36 +1048,40 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="lab-dash px-4 py-5 sm:py-7 max-w-[1400px] mx-auto bg-[hsl(214_40%_96%)] min-h-full" data-testid="dashboard-root">
+    <div className="lab-dash w-full min-w-0 px-4 py-5 sm:py-7 bg-[hsl(214_40%_96%)] min-h-full" data-testid="dashboard-root">
       <DashboardSubscriptionBanner />
-      <div className="flex items-start justify-between gap-3 mb-3">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
           <h1 className="tracking-tight" data-testid="text-dashboard-title">Dashboard</h1>
           <p className="text-sm text-muted-foreground">Your lab at a glance</p>
         </div>
+        <div className="grid grid-cols-2 gap-2" data-testid="dashboard-primary-actions">
           <button
             type="button"
             onClick={() => setShowNewCase(true)}
             data-testid="button-add-case"
-            className="inline-flex items-center gap-2 h-10 px-5 rounded-md bg-[#1d5fd8] text-white text-sm font-semibold hover:bg-[#1850b8] transition-colors shadow-sm"
+            className="inline-flex items-center justify-center gap-2 h-12 w-full px-3 rounded-md bg-[#1d5fd8] text-white text-sm font-semibold hover:bg-[#1850b8] transition-colors shadow-sm"
           >
             <Plus size={15} />
             Add case
           </button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4" data-testid="dashboard-secondary-strip">
             <button
               type="button"
               onClick={() => openAiPanel()}
-              className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shadow-sm"
+              data-testid="button-ai-assistant"
+              className="inline-flex items-center justify-center gap-2 h-12 w-full px-3 rounded-md bg-[#1d5fd8] text-white text-sm font-semibold hover:bg-[#1850b8] transition-colors shadow-sm"
             >
               <Sparkles size={16} />
               LabTrax Assistant
             </button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap flex-row-reverse items-center gap-x-4 gap-y-2 mb-4" data-testid="dashboard-secondary-strip">
           {isAdminOrOwner && adminOrgId && (
             <Link
               href="/reports?tab=sales&preset=today"
+              data-testid="dashboard-today-sales"
               className="flex flex-col items-end gap-0.5 border border-border rounded-lg px-3 py-2 bg-card min-w-[120px] cursor-pointer hover:bg-muted/50 transition-colors no-underline"
             >
               {todaySalesQuery.isLoading ? (
@@ -1113,27 +1118,15 @@ export default function DashboardPage() {
                 {rushCount} rush
               </button>
             )}
-            {dueTomorrowCases.length > 0 && (
-              <button
-                type="button"
-                className="flex items-center gap-1.5 hover:text-foreground transition-colors cursor-pointer"
-                onClick={() => {
-                  if (!dueTomorrowOpen) setDueTomorrowOpen(true);
-                  dueTomorrowRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                }}
-              >
-                <Calendar size={12} />
-                {dueTomorrowCases.length} due tomorrow
-              </button>
-            )}
           </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5" data-testid="dashboard-summary">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5" data-testid="dashboard-summary">
         {([
-          { id: "past-due", title: "Past due", sub: "Cases past their due date require attention.", color: "text-red-600", chip: "bg-red-100 text-red-600", border: "border-red-200", icon: AlertTriangle, loading: loading, error: casesQuery.isError, count: pastDueCases.length, retry: () => void casesQuery.refetch(), onClick: () => { setPastDueRevealed(true); revealQueue(pastDueRef, setPastDueOpen); } },
-          { id: "due-today", title: "Due today", sub: "Cases due today for completion.", color: "text-blue-700", chip: "bg-blue-100 text-blue-700", border: "border-blue-200", icon: Clock, loading: loading, error: casesQuery.isError, count: dueTodayCases.length, retry: () => void casesQuery.refetch(), onClick: () => revealQueue(dueTodayRef, setDueTodayOpen) },
-          { id: "unassigned", title: "Unassigned documents", sub: "Documents waiting to be assigned.", color: "text-slate-900", chip: "bg-amber-100 text-amber-600", border: "border-slate-200", icon: FileText, loading: meQuery.isLoading || (!!inboxLabId && inboxQuery.isLoading), error: meQuery.isError || inboxQuery.isError, count: inboxQuery.data?.data?.length ?? 0, retry: () => void (meQuery.isError ? meQuery.refetch() : inboxQuery.refetch()), onClick: () => revealQueue(unassignedRef) },
+          { id: "past-due", title: DASHBOARD_SECTION_LABELS.pastDue, sub: "Cases past their due date require attention.", color: "text-red-600", chip: "bg-red-100 text-red-600", border: "border-red-200", icon: AlertTriangle, loading: loading, error: casesQuery.isError, count: pastDueCases.length, retry: () => void casesQuery.refetch(), onClick: () => { setPastDueRevealed(true); revealQueue(pastDueRef, setPastDueOpen); } },
+          { id: "due-today", title: DASHBOARD_SECTION_LABELS.dueToday, sub: "Cases due today for completion.", color: "text-blue-700", chip: "bg-blue-100 text-blue-700", border: "border-blue-200", icon: Clock, loading: loading, error: casesQuery.isError, count: dueTodayCases.length, retry: () => void casesQuery.refetch(), onClick: () => revealQueue(dueTodayRef, setDueTodayOpen) },
+          { id: "due-tomorrow", title: DASHBOARD_SECTION_LABELS.dueTomorrow, sub: "Cases due on the next business day.", color: "text-blue-700", chip: "bg-blue-100 text-blue-700", border: "border-blue-200", icon: Calendar, loading: loading, error: casesQuery.isError, count: dueTomorrowCases.length, retry: () => void casesQuery.refetch(), onClick: () => revealQueue(dueTomorrowRef, setDueTomorrowOpen) },
+          { id: "unassigned", title: DASHBOARD_SECTION_LABELS.unassignedDocuments, sub: "Documents waiting to be assigned.", color: "text-slate-900", chip: "bg-amber-100 text-amber-600", border: "border-slate-200", icon: FileText, loading: meQuery.isLoading || (!!inboxLabId && inboxQuery.isLoading), error: meQuery.isError || inboxQuery.isError, count: inboxQuery.data?.data?.length ?? 0, retry: () => void (meQuery.isError ? meQuery.refetch() : inboxQuery.refetch()), onClick: () => revealQueue(unassignedRef) },
         ] as const).map((c) => {
           const Icon = c.icon;
           return (
@@ -1142,6 +1135,7 @@ export default function DashboardPage() {
               type="button"
               onClick={c.error ? c.retry : c.onClick}
               data-testid={`summary-card-${c.id}`}
+              aria-label={`${c.title}: ${c.loading ? "loading" : c.error ? "count unavailable, tap to retry" : c.count}`}
               className={`flex items-center gap-3 text-left rounded-lg border ${c.border} bg-white px-4 py-3 hover:shadow-sm transition-shadow`}
             >
               <span className={`h-10 w-10 shrink-0 rounded-full inline-flex items-center justify-center ${c.chip}`}><Icon size={18} /></span>
@@ -1160,9 +1154,9 @@ export default function DashboardPage() {
         })}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
+      <div className="dashboard-workspace" data-testid="dashboard-workspace">
         <div className="flex flex-col gap-4 min-w-0">
-          <div>
+          <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-3" data-testid="rx-drop-zone-panel">
             <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
               <Upload size={14} className="text-muted-foreground" />
               RX Drop Zone
@@ -1188,7 +1182,7 @@ export default function DashboardPage() {
               onClick={() => setRecentCasesOpen((v) => !v)}
             >
               <div>
-                <h2 className="text-sm font-semibold">Recent cases</h2>
+                <h2 className="text-sm font-semibold">{DASHBOARD_SECTION_LABELS.recentCases}</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Most recently active, excluding completed.
                 </p>
@@ -1205,7 +1199,8 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   aria-label={recentCasesOpen ? "Collapse recent cases" : "Expand recent cases"}
-                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-expanded={recentCasesOpen}
+                  className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                   onClick={(e) => { e.stopPropagation(); setRecentCasesOpen((v) => !v); }}
                 >
                   {recentCasesOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1235,7 +1230,7 @@ export default function DashboardPage() {
                   <AlertTriangle size={15} className="text-destructive shrink-0" />
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2 text-destructive">
-                      Past due
+                      {DASHBOARD_SECTION_LABELS.pastDue}
                       {!loading && pastDueCases.length > 0 && (
                         <span
                           data-testid="dashboard-past-due-count"
@@ -1285,7 +1280,8 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     aria-label={pastDueOpen ? "Collapse past due" : "Expand past due"}
-                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    aria-expanded={pastDueOpen}
+                    className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                     onClick={(e) => { e.stopPropagation(); setPastDueOpen((v) => !v); }}
                   >
                     {pastDueOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1315,7 +1311,7 @@ export default function DashboardPage() {
                 <Clock size={15} className="text-blue-700 shrink-0" />
                 <div>
                   <h2 className="text-sm font-semibold flex items-center gap-2 text-blue-800">
-                    Due today
+                    {DASHBOARD_SECTION_LABELS.dueToday}
                     {!loading && dueTodayCases.length > 0 && (
                       <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-primary text-primary-foreground tabular-nums">
                         {dueTodayCases.length}
@@ -1362,7 +1358,8 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   aria-label={dueTodayOpen ? "Collapse due today" : "Expand due today"}
-                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-expanded={dueTodayOpen}
+                  className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                   onClick={(e) => { e.stopPropagation(); setDueTodayOpen((v) => !v); }}
                 >
                   {dueTodayOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1383,7 +1380,7 @@ export default function DashboardPage() {
           </section>
 
           {/* ── Due tomorrow ─────────────────────────────────────────────── */}
-          {(loading || dueTomorrowCases.length > 0) && (
+          {(
             <section ref={dueTomorrowRef} data-testid="section-due-tomorrow" className="dash-section bg-card border border-slate-200 rounded-lg">
               <header
                 className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
@@ -1392,7 +1389,7 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-2.5">
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
-                      Due tomorrow
+                      {DASHBOARD_SECTION_LABELS.dueTomorrow}
                       {!loading && dueTomorrowCases.length > 0 && (
                         <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-secondary text-secondary-foreground tabular-nums">
                           {dueTomorrowCases.length}
@@ -1439,7 +1436,8 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     aria-label={dueTomorrowOpen ? "Collapse due tomorrow" : "Expand due tomorrow"}
-                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    aria-expanded={dueTomorrowOpen}
+                    className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                     onClick={(e) => { e.stopPropagation(); setDueTomorrowOpen((v) => !v); }}
                   >
                     {dueTomorrowOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1471,7 +1469,7 @@ export default function DashboardPage() {
                   <CalendarOff size={15} className="text-muted-foreground shrink-0" />
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
-                      No due date
+                      {DASHBOARD_SECTION_LABELS.noDueDate}
                       <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-secondary text-secondary-foreground tabular-nums">
                         {noDueDateCases.length}
                       </span>
@@ -1484,7 +1482,8 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   aria-label={noDueDateOpen ? "Collapse no due date" : "Expand no due date"}
-                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-expanded={noDueDateOpen}
+                  className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                   onClick={(e) => { e.stopPropagation(); setNoDueDateOpen((v) => !v); }}
                 >
                   {noDueDateOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}

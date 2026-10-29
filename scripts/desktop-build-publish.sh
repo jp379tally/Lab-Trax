@@ -13,19 +13,24 @@ set -euo pipefail
 # the original %LOCALAPPDATA%\Programs\LabTrax\LabTrax.exe stale, breaking
 # every pinned taskbar and Start Menu shortcut.
 #
-#   NSIS installer path (Windows CI / release.yml):
+#   Signed NSIS installer path (Windows release):
 #     GET /downloads/LabTrax-Setup.exe
 #     GET /downloads/latest.yml          ← references LabTrax-Setup.exe ✓
+#     Publish Draft Release updates the Windows + macOS generic feeds after review.
 #
 #   Portable ZIP path (this script on Linux/Replit — no Wine):
 #     GET /downloads/LabTrax-Windows-Portable.zip
-#     (latest.yml is NOT generated or overwritten — CI must do it)
+#     (no in-place update manifest is published or overwritten)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Called automatically from post-merge.sh when a merge touches desktop-relevant
-# files. Can also be run manually at any time:
+# Run only from an explicitly approved release workspace, never post-merge:
 #
 #   bash scripts/desktop-build-publish.sh
+#   bash scripts/desktop-build-publish.sh --prepare-only
+#
+# --prepare-only builds and verifies a signed Windows installer and writes its
+# release-identity.json locally. It exits before upload, HTTP probes, settings
+# writes or notifications. It is NOT a dry run: signing/building still runs.
 #
 # Required (auto-set by Replit):
 #   REPLIT_DEV_DOMAIN or VITE_API_BASE_URL  — baked into the renderer bundle
@@ -33,9 +38,8 @@ set -euo pipefail
 #   PRIVATE_OBJECT_DIR                      — App Storage path prefix
 #
 # Optional:
-#   PUBLISH_API_BASE_URL      — production base URL; used as the electron-updater
-#                               feed base (preferred over VITE_API_BASE_URL for
-#                               UPDATE_FEED_URL so live installs point at prod)
+#   PUBLISH_API_BASE_URL      — production API URL; required to mark a build
+#                               as an installed in-place update channel
 #   PLATFORM_ADMIN_SECRET     — if set, metadata is pushed via the API;
 #                               otherwise system_settings is updated via psql
 #
@@ -64,12 +68,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESKTOP_DIR="$ROOT_DIR/artifacts/labtrax-desktop"
 
+PREPARE_ONLY=false
+if [[ "$#" -gt 0 ]]; then
+  case "$1" in
+    --prepare-only)
+      [[ "$#" == 1 ]] || { echo "ERROR: --prepare-only accepts no additional arguments." >&2; exit 1; }
+      PREPARE_ONLY=true
+      ;;
+    --help)
+      echo "Usage: bash scripts/desktop-build-publish.sh [--prepare-only]"
+      echo "--prepare-only: build and verify a signed Windows installer locally; do not upload or publish."
+      echo "No option: build and publish immediately; requires explicit release approval."
+      exit 0
+      ;;
+    *) echo "ERROR: unknown release option: $1" >&2; exit 1 ;;
+  esac
+fi
+
 echo ""
 echo "========================================="
-echo " LabTrax Desktop — Build + Publish"
+if [[ "$PREPARE_ONLY" == true ]]; then
+  echo " LabTrax Desktop — Prepare Only (no publication)"
+else
+  echo " LabTrax Desktop — Build + Publish"
+fi
 echo "========================================="
 
 # Resolve VITE_API_BASE_URL -----------------------------------------------
+if [[ "$PREPARE_ONLY" == true && -z "${VITE_API_BASE_URL:-}" && -n "${PUBLISH_API_BASE_URL:-}" ]]; then
+  export VITE_API_BASE_URL="${PUBLISH_API_BASE_URL}"
+fi
 if [[ -z "${VITE_API_BASE_URL:-}" ]]; then
   if [[ -n "${REPLIT_DEV_DOMAIN:-}" ]]; then
     export VITE_API_BASE_URL="https://${REPLIT_DEV_DOMAIN}"
@@ -83,14 +111,76 @@ fi
 VERSION=$(node -p "require('${DESKTOP_DIR}/package.json').version" 2>/dev/null || echo "0.0.0")
 echo "[build] Version: ${VERSION}"
 
+cd "$ROOT_DIR"
+HEAD_REVISION="$(git rev-parse HEAD)"
+REQUESTED_REVISION="${GIT_COMMIT_SHA:-${GITHUB_SHA:-$HEAD_REVISION}}"
+if [[ "$PREPARE_ONLY" == true && ! "$REQUESTED_REVISION" =~ ^[a-fA-F0-9]{40}$ ]]; then
+  echo "[build] ERROR: recovery release preparation requires a full 40-character source revision."
+  exit 1
+fi
+if ! SOURCE_REVISION="$(git rev-parse --verify "${REQUESTED_REVISION}^{commit}" 2>/dev/null)" ||
+   [[ "$SOURCE_REVISION" != "$HEAD_REVISION" ]]; then
+  echo "[build] ERROR: release source revision must be the current checked-out commit."
+  exit 1
+fi
+if ! git diff --quiet HEAD --; then
+  echo "[build] ERROR: tracked source changes are present; release builds require the exact committed source."
+  exit 1
+fi
+if [[ "$PREPARE_ONLY" == true && -n "$(git ls-files --others --exclude-standard)" ]]; then
+  echo "[build] ERROR: untracked files are present; recovery release preparation requires a clean checkout."
+  exit 1
+fi
+export GIT_COMMIT_SHA="$HEAD_REVISION"
+echo "[build] Source revision: ${GIT_COMMIT_SHA}"
+
 # Set UPDATE_FEED_URL so electron-builder bakes app-update.yml into the
-# packaged app pointing at our /downloads directory. electron-updater reads
-# this file at runtime to know where to fetch latest.yml. Use the production
-# base URL when available (so shipped installs check the live server), and
-# fall back to the dev domain.
+# packaged app pointing at our /downloads directory. Only signed installer
+# builds use this feed; portable and manual builds are stamped download-only.
+# The installer channel requires the production API URL.
 BASE_URL="${PUBLISH_API_BASE_URL:-${VITE_API_BASE_URL}}"
-export UPDATE_FEED_URL="${BASE_URL%/}/downloads"
-echo "[build] UPDATE_FEED_URL=${UPDATE_FEED_URL} (baked into app-update.yml)"
+export UPDATE_FEED_URL="${BASE_URL%/}/downloads/"
+if [[ -z "${ELECTRON_UPDATE_CHANNEL:-}" ]]; then
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [[ -n "${PUBLISH_API_BASE_URL:-}" ]]; then
+        if [[ -z "${CSC_LINK:-}" || -z "${CSC_KEY_PASSWORD:-}" ]]; then
+          echo "[build] ERROR: a production installer release requires CSC_LINK and CSC_KEY_PASSWORD."
+          exit 1
+        fi
+        export ELECTRON_UPDATE_CHANNEL=installer
+      else
+        export ELECTRON_UPDATE_CHANNEL=manual
+      fi
+      ;;
+    *) export ELECTRON_UPDATE_CHANNEL=portable ;;
+  esac
+fi
+if [[ "$ELECTRON_UPDATE_CHANNEL" == "installer" && -z "${PUBLISH_API_BASE_URL:-}" ]]; then
+  echo "[build] ERROR: PUBLISH_API_BASE_URL is required for installed updater builds."
+  exit 1
+fi
+if [[ "$ELECTRON_UPDATE_CHANNEL" == "installer" && ( -z "${CSC_LINK:-}" || -z "${CSC_KEY_PASSWORD:-}" ) ]]; then
+  echo "[build] ERROR: CSC_LINK and CSC_KEY_PASSWORD are required for signed installer update builds."
+  exit 1
+fi
+if [[ "$PREPARE_ONLY" == true ]]; then
+  if [[ "$ELECTRON_UPDATE_CHANNEL" != "installer" ]]; then
+    echo "[build] ERROR: --prepare-only requires ELECTRON_UPDATE_CHANNEL=installer and a signed Windows NSIS build."
+    exit 1
+  fi
+  if [[ "${VITE_API_BASE_URL%/}" != "${PUBLISH_API_BASE_URL%/}" ]]; then
+    echo "[build] ERROR: prepared recovery installers must use the same API origin for the renderer and updater."
+    exit 1
+  fi
+fi
+export ELECTRON_PUBLISH=never
+echo "[build] UPDATE_FEED_URL=${UPDATE_FEED_URL}"
+if [[ "$ELECTRON_UPDATE_CHANNEL" == "portable" ]]; then
+  echo "[build] Portable ZIP builds do not support in-place updates; updater is disabled."
+elif [[ "$ELECTRON_UPDATE_CHANNEL" == "manual" ]]; then
+  echo "[build] Manual installer builds do not check the in-place update feed."
+fi
 
 # Code-signing ----------------------------------------------------------------
 # electron-builder reads CSC_LINK / CSC_KEY_PASSWORD directly from the
@@ -145,6 +235,15 @@ fi
 INSTALLER_SIZE=$(du -sh "$INSTALLER_PATH" | cut -f1)
 echo "[build] Installer: ${INSTALLER_PATH} (${INSTALLER_SIZE})"
 
+if [[ "$INSTALLER_KIND" == "exe" && -n "${PUBLISH_API_BASE_URL:-}" && "$ELECTRON_UPDATE_CHANNEL" != "installer" ]]; then
+  echo "[build] ERROR: refusing to publish a Windows installer to the production download/feed channel without the signed installer update channel."
+  exit 1
+fi
+if [[ "$INSTALLER_KIND" == "zip" && "$ELECTRON_UPDATE_CHANNEL" == "installer" ]]; then
+  echo "[build] ERROR: a portable ZIP cannot be marked as an installed in-place update channel."
+  exit 1
+fi
+
 # Signature verification ------------------------------------------------------
 # When CSC_LINK is set, electron-builder was asked to sign the binary.
 # scripts/verify-signing.sh verifies:
@@ -169,6 +268,19 @@ if [[ "$INSTALLER_KIND" == "exe" ]]; then
 else
   # Portable ZIP: only the inner EXE is Authenticode-signable.
   bash "$SCRIPT_DIR/verify-signing.sh" "$UNPACKED_EXE"
+fi
+if [[ -n "${CSC_LINK:-}" && -n "${CSC_KEY_PASSWORD:-}" ]]; then
+  if [[ "$INSTALLER_KIND" == "exe" ]]; then
+    export LABTRAX_DESKTOP_SIGNATURE_VERIFICATION="verified-installer"
+  else
+    export LABTRAX_DESKTOP_SIGNATURE_VERIFICATION="verified-contained-executable"
+  fi
+else
+  export LABTRAX_DESKTOP_SIGNATURE_VERIFICATION="unverified"
+fi
+if [[ "$LABTRAX_DESKTOP_SIGNATURE_VERIFICATION" == "unverified" ]]; then
+  echo "[publish] ERROR: refusing to publish an unsigned Desktop artifact."
+  exit 1
 fi
 
 # Auto-update manifest (latest.yml) handling ---------------------------------
@@ -255,10 +367,9 @@ EOF
 
   echo ""
   echo "[publish] ⚠  NOTICE: Portable ZIP published. latest.yml was NOT updated."
-  echo "[publish]    The auto-update feed (/downloads/latest.yml) is only updated by the"
-  echo "[publish]    GitHub Actions Windows CI build (release.yml), which produces the real"
-  echo "[publish]    NSIS installer (LabTrax-Setup.exe). To push an auto-update to"
-  echo "[publish]    NSIS-installed users, trigger the release.yml workflow."
+  echo "[publish]    The generic update feed is reserved for signed installer releases."
+  echo "[publish]    Run the release workflow and Publish Draft Release to publish"
+  echo "[publish]    the verified Windows and macOS manifests after review."
   echo "[publish]    Until then, NSIS-installed users will not receive update notifications."
 fi
 
@@ -335,6 +446,19 @@ else
     echo "[verify]   cannot prove the installer payload is fresh. Refusing to upload."
     exit 1
   fi
+fi
+
+# A prepared artifact is not a published release. Keep this exit before every
+# upload, download probe and settings write below, even when publish credentials
+# happen to exist in the operator's environment.
+if [[ "$PREPARE_ONLY" == true ]]; then
+  echo ""
+  echo "[prepare] Writing the verified installer identity beside the local artifact …"
+  cd "$ROOT_DIR"
+  pnpm --filter @workspace/scripts run prepare-desktop-release-identity -- "$INSTALLER_PATH"
+  echo "[prepare] Signed installer and release-identity.json are ready for release review."
+  echo "[prepare] Nothing was uploaded, published or written to production settings."
+  exit 0
 fi
 
 # Upload installer + latest.yml to App Storage --------------------------------
@@ -423,13 +547,17 @@ echo "========================================="
 echo " LabTrax Desktop v${VERSION} published."
 if [[ "$INSTALLER_KIND" == "exe" ]]; then
   echo " Download (NSIS installer): /downloads/LabTrax-Setup.exe"
-  echo " Auto-update feed updated: ${UPDATE_FEED_URL}/latest.yml"
-  echo " → latest.yml references LabTrax-Setup.exe (NSIS-safe ✓)"
+  if [[ "$ELECTRON_UPDATE_CHANNEL" == "installer" ]]; then
+    echo " Auto-update feed updated: ${UPDATE_FEED_URL}latest.yml"
+    echo " → latest.yml references LabTrax-Setup.exe (NSIS-safe ✓)"
+  else
+    echo " In-place updates are disabled for this manual installer build."
+    echo " Use the signed installer release channel to enable them."
+  fi
 else
   echo " Download (portable ZIP):   /downloads/LabTrax-Windows-Portable.zip"
-  echo " ⚠  Auto-update feed (latest.yml) was NOT updated."
-  echo "    To update the feed for NSIS-installed users, trigger"
-  echo "    the GitHub Actions release.yml Windows build."
+  echo " In-place updates are disabled for this portable build."
+  echo "    Use the signed NSIS release channel for in-place updates."
 fi
 echo "========================================="
 echo ""

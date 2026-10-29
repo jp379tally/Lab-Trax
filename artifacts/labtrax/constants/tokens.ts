@@ -30,6 +30,12 @@ export const Radius = {
   full: 999,
 } as const;
 
+// Section edges use a full point on mobile so they remain visible above
+// hairline control borders, including on high-density screens.
+export const BorderWidth = {
+  section: 1,
+} as const;
+
 // Typography scale built on the already-loaded Inter family.
 export const Typography = {
   display: { fontSize: 28, fontFamily: "Inter_700Bold", lineHeight: 34 },

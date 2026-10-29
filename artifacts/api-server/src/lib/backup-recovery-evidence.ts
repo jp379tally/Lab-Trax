@@ -15,7 +15,13 @@ export interface RecoveryEvidence {
     size: number;
     createdAt: string;
     itemId?: string;
-    authenticatedManifest?: { exportedBy: string; sourceEnvironment?: string; coverageVersion?: number };
+    authenticatedManifest?: {
+      exportedBy: string;
+      sourceEnvironment?: string;
+      coverageVersion?: number;
+      coverageStatus?: "complete" | "completed-with-warnings";
+      missingFileCount?: number;
+    };
   }>;
   runs: Array<{
     status: string;
@@ -65,7 +71,10 @@ export function assessRecoveryEvidence(input: RecoveryEvidence) {
     }
     if (archive.authenticatedManifest?.exportedBy !== run.actor ||
         archive.authenticatedManifest.sourceEnvironment !== "production" ||
-        archive.authenticatedManifest.coverageVersion !== 1) continue;
+        ![1, 2].includes(archive.authenticatedManifest.coverageVersion as number) ||
+        (archive.authenticatedManifest.coverageVersion === 2 &&
+          (archive.authenticatedManifest.coverageStatus !== "complete" ||
+            archive.authenticatedManifest.missingFileCount !== 0))) continue;
     const time = Date.parse(run.completedAt);
     const cloudTime = Date.parse(archive.createdAt);
     if (Number.isFinite(time) && time <= input.now &&

@@ -27,6 +27,21 @@ here.
 
 > Legacy Vonage vars (`VONAGE_API_KEY`, `VONAGE_API_SECRET`, `VONAGE_PHONE_NUMBER`) are no longer read.
 
+## SMTP email delivery
+
+Configure these values as server-side Replit Secrets for the API server; never
+put SMTP credentials in client code or logs. `SMTP_HOST`, `SMTP_USER`, and
+`SMTP_PASS` are required for outbound email. `SMTP_PORT` is optional (defaults
+to `587`; port `465` enables implicit TLS, while other ports use the normal
+STARTTLS transport). `SMTP_FROM` is optional and defaults to `SMTP_USER`.
+
+Case-deletion confirmation codes are not issued unless the API confirms that
+the mail transport accepted the message. If the provider rejects its login,
+verify the SMTP host, port/TLS mode, username, and current password or
+provider-issued app password in server Secrets. Re-enter a newly issued
+credential if the provider has revoked it. Do not include credential values or
+raw SMTP replies in support logs.
+
 ## Backup / OneDrive
 
 - OneDrive backups use the Replit-managed **Microsoft OneDrive connector** — no env vars. The app owner connects a Microsoft account through the workspace integration pane; the server fetches short-lived Graph tokens from the connector proxy at run time. Settings → Backup shows connection status via `GET /api/admin/backup/onedrive-status`. (Legacy `ONEDRIVE_*` env vars are no longer read.)

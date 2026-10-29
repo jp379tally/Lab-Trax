@@ -14,5 +14,8 @@ CREATE TABLE IF NOT EXISTS backup_live_status (
 ALTER TABLE backup_live_status
   ADD COLUMN IF NOT EXISTS archive_evidence jsonb;
 
+ALTER TABLE backup_live_status
+  ADD COLUMN IF NOT EXISTS request_fingerprint text;
+
 CREATE INDEX IF NOT EXISTS backup_live_status_created_at_idx
   ON backup_live_status (created_at);

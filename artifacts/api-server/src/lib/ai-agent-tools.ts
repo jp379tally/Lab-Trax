@@ -1388,7 +1388,11 @@ const draftMessageTool: AgentTool = {
     let caseContext = "";
     if (args.caseId) {
       const c = await db.query.cases.findFirst({
-        where: and(eq(cases.id, String(args.caseId)), isNull(cases.deletedAt)),
+        where: and(
+          eq(cases.id, String(args.caseId)),
+          eq(cases.labOrganizationId, labId),
+          isNull(cases.deletedAt)
+        ),
         columns: {
           caseNumber: true,
           patientFirstName: true,

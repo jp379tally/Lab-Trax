@@ -793,6 +793,7 @@ describe("schema-driven lab backup coverage", () => {
     expect(LAB_BACKUP_TABLE_RULES.backup_live_status.include).toBe(false);
     expect(LAB_BACKUP_MEDIA_RULES.backup_live_status.metrics.kind).toBe("metadata");
     expect(LAB_BACKUP_MEDIA_RULES.backup_live_status.archive_evidence.kind).toBe("metadata");
+    expect(LAB_BACKUP_MEDIA_RULES.backup_live_status.delivery.kind).toBe("metadata");
     for (const [table, rules] of Object.entries(LAB_BACKUP_MEDIA_RULES)) {
       const columns = schemaTables.find((entry) => entry.name === table)?.columns ?? [];
       for (const column of Object.keys(rules)) {

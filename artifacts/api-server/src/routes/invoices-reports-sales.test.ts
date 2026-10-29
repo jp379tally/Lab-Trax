@@ -324,6 +324,148 @@ maybe("GET /api/invoices/reports/sales (db integration)", () => {
     );
   });
 
+  it("keeps an edited invoice in its original local sales day and uses the saved total everywhere", async () => {
+    const issuedAt = new Date("2026-03-10T05:30:00.000Z");
+    const createdAt = new Date("2026-10-20T00:03:00.000Z");
+    const localDay = {
+      dateFrom: "2026-03-10T04:00:00.000Z",
+      dateTo: "2026-03-11T03:59:59.999Z",
+    };
+    await withLab(
+      [{
+        subtotal: "100.00",
+        tax: "10.00",
+        discount: "5.00",
+        total: "102.00",
+        balanceDue: "80.00",
+        issuedAt,
+        createdAt,
+        displayMetadataJson: { credits: 3 },
+      }],
+      async (labOrgId, token, [invoiceId]) => {
+        const headers = { Authorization: `Bearer ${token}` };
+        const { db, payments } = dbMod as any;
+        const paymentId = rid("sales-edit-payment");
+        await db.insert(payments).values({
+          id: paymentId,
+          invoiceId,
+          amount: "22.00",
+          paymentMethod: "cash",
+          recordedByUserId: adminUserId,
+        });
+
+        const patch = async (body: Record<string, unknown>) => {
+          const response = await request(appMod.default)
+            .patch(`/api/invoices/${invoiceId}`)
+            .set(headers)
+            .send(body);
+          expect(response.status, JSON.stringify(response.body)).toBe(200);
+          return response.body.data ?? response.body;
+        };
+        const getSales = async (from: string, to: string, timeZone = "UTC") => {
+          const [sales, invoicesPage, series] = await Promise.all([
+            request(appMod.default).get("/api/invoices/reports/sales")
+              .set(headers).query({ organizationId: labOrgId, dateFrom: from, dateTo: to }),
+            request(appMod.default).get("/api/invoices/reports/sales-invoices")
+              .set(headers).query({ organizationId: labOrgId, dateFrom: from, dateTo: to }),
+            request(appMod.default).get("/api/invoices/reports/sales-series")
+              .set(headers).query({
+                organizationId: labOrgId,
+                dateFrom: from,
+                dateTo: to,
+                timeZone,
+                groupBy: "day",
+              }),
+          ]);
+          expect(sales.status, JSON.stringify(sales.body)).toBe(200);
+          expect(invoicesPage.status, JSON.stringify(invoicesPage.body)).toBe(200);
+          expect(series.status, JSON.stringify(series.body)).toBe(200);
+          return {
+            sales: sales.body.data,
+            invoices: invoicesPage.body.data,
+            series: series.body.data,
+          };
+        };
+
+        const before = await getSales(localDay.dateFrom, localDay.dateTo, "America/New_York");
+        expect(before.sales).toMatchObject({ invoices: 1, totalSales: "102.00" });
+        expect(before.invoices.rows.map((row: any) => row.id)).toEqual([invoiceId]);
+        expect(before.series.series).toEqual([
+          expect.objectContaining({
+            periodStart: "2026-03-10T00:00:00.000Z",
+            billedTotal: "102.00",
+          }),
+        ]);
+
+        const items = [{
+          description: "Crown",
+          quantity: 1,
+          unitPrice: 100,
+          subItems: [{ description: "Layered porcelain", quantity: 1, unitPrice: 20 }],
+        }];
+        await patch({
+          items,
+          tax: 10,
+          discount: 5,
+          displayMetadata: { credits: 3 },
+        });
+        // A second metadata-only save must not duplicate the invoice or reset
+        // the total. The payment remains applied to the new gross amount.
+        await patch({ notes: "Reviewed without changing the issue date." });
+
+        const detailResponse = await request(appMod.default)
+          .get(`/api/invoices/${invoiceId}`)
+          .set(headers);
+        expect(detailResponse.status, JSON.stringify(detailResponse.body)).toBe(200);
+        const detail = detailResponse.body.data ?? detailResponse.body;
+        expect(detail.issuedAt).toBe(issuedAt.toISOString());
+        expect(detail.status).toBe("open");
+        expect(detail.total).toBe("122.00");
+        expect(detail.balanceDue).toBe("100.00");
+        expect(detail.notes).toBe("Reviewed without changing the issue date.");
+
+        const after = await getSales(localDay.dateFrom, localDay.dateTo, "America/New_York");
+        expect(after.sales).toMatchObject({ invoices: 1, totalSales: "122.00", openBalance: "100.00" });
+        expect(after.invoices).toMatchObject({ total: 1, billedTotal: "122.00" });
+        expect(after.invoices.rows).toEqual([
+          expect.objectContaining({ id: invoiceId, total: "122.00" }),
+        ]);
+        expect(after.series.series).toEqual([
+          expect.objectContaining({
+            periodStart: "2026-03-10T00:00:00.000Z",
+            billedTotal: "122.00",
+          }),
+        ]);
+
+        const statsResponse = await request(appMod.default)
+          .get("/api/stats/summary")
+          .set(headers)
+          .query({
+            organizationId: labOrgId,
+            ...localDay,
+            timeZone: "America/New_York",
+          });
+        expect(statsResponse.status, JSON.stringify(statsResponse.body)).toBe(200);
+        const stats = statsResponse.body.data ?? statsResponse.body;
+        expect(Number(stats.totalRevenue)).toBe(122);
+        expect(stats.invoiceCount).toBe(1);
+
+        const movedAt = "2026-03-11T00:00:00.000Z";
+        await patch({ issuedAt: movedAt });
+        const oldUtcDay = await getSales(
+          "2026-03-10T00:00:00.000Z",
+          "2026-03-10T23:59:59.999Z",
+        );
+        const newUtcDay = await getSales(
+          "2026-03-11T00:00:00.000Z",
+          "2026-03-11T23:59:59.999Z",
+        );
+        expect(oldUtcDay.sales).toMatchObject({ invoices: 0, totalSales: "0.00" });
+        expect(newUtcDay.sales).toMatchObject({ invoices: 1, totalSales: "122.00" });
+      },
+    );
+  });
+
   it("reports billed totals from persisted invoice totals across date buckets", async () => {
     await withLab(
       [

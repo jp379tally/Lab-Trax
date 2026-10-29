@@ -1,3 +1,4 @@
+import "./tooth-chart-mobile-assets";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { ReadOnlyToothChart } from "../../labtrax/components/ReadOnlyToothChart";

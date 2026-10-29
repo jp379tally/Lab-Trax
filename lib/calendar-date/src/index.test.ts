@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   calendarDateToUtcNoon,
+  addCalendarDays,
   formatCalendarDate,
   getLocalCalendarDateParts,
+  isCalendarDateInInclusiveRange,
   isMoreThanCalendarDaysAgo,
   isValidCalendarDate,
   parseCalendarDate,
   parseRangeDate,
+  resolveAiIntakePrescriptionDueDate,
   rangeDateError,
   rangeMonthDays,
   rangeCalendarMonth,
@@ -19,6 +22,19 @@ afterEach(() => {
 });
 
 describe("@workspace/calendar-date", () => {
+  it("adds calendar days and preserves inclusive turnaround boundaries", () => {
+    expect(addCalendarDays("2026-12-29", 7)).toBe("2027-01-05");
+    expect(addCalendarDays("0001-12-29", 7)).toBe("0002-01-05");
+    expect(addCalendarDays("2026-02-30", 7)).toBeNull();
+    expect(addCalendarDays("2026-08-01", 1.5)).toBeNull();
+    expect(isCalendarDateInInclusiveRange("2026-08-08", "2026-08-01", "2026-08-08")).toBe(true);
+    expect(isCalendarDateInInclusiveRange("2026-08-09", "2026-08-01", "2026-08-08")).toBe(false);
+    expect(resolveAiIntakePrescriptionDueDate("2026-08-01", "2026-08-01", 7)).toBe("2026-08-01");
+    expect(resolveAiIntakePrescriptionDueDate("2026-08-08", "2026-08-01", 7)).toBe("2026-08-08");
+    expect(resolveAiIntakePrescriptionDueDate("2026-08-09", "2026-08-01", 7)).toBeNull();
+    expect(resolveAiIntakePrescriptionDueDate("2026-08-09", null, null)).toBe("2026-08-09");
+  });
+
   it("keeps explicit small years and normalizes month navigation locally", () => {
     expect(parseRangeDate("5/5/0001")).toBe("0001-05-05");
     const month = rangeCalendarMonth(1, 4);

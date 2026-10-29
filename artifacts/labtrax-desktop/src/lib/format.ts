@@ -366,7 +366,7 @@ export function relativeTime(value: string | null | undefined): string {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  recovery_draft: "Held recovery draft",
+  recovery_draft: "Historical hold (not collectible)",
   received: "Received",
   in_design: "In Design",
   scan: "Scan",

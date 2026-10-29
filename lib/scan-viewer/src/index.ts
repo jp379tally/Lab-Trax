@@ -227,10 +227,23 @@ function parsePLY(buf){
   // for every subsequent face, turning tooth geometry into garbage indices.
   var facePropList=[];
   var textureDeclared=false;
+  var textureFileName=null;
+  var textureDeclarationCount=0;
   var inVertex=false,inFace=false;
   for(var i=0;i<headerLines.length;i++){
     var hl=headerLines[i].trim();
-    if(hl.toLowerCase().indexOf('comment texturefile')===0) textureDeclared=true;
+    if(/^comment\\s+TextureFile(?:\\s|$)/i.test(hl)) textureDeclared=true;
+    var textureMatch=hl.match(/^comment\\s+TextureFile\\s+(\\S+)$/i);
+    if(textureMatch){
+      textureDeclared=true;
+      textureDeclarationCount++;
+      if(textureDeclarationCount===1&&textureMatch[1].length<=255&&
+          !/[\\u0000-\\u001f/:\\\\]/.test(textureMatch[1])&&textureMatch[1].indexOf('..')<0){
+        textureFileName=textureMatch[1];
+      }else{
+        textureFileName=null;
+      }
+    }
     if(hl.startsWith('format')){
       if(hl.indexOf('binary_little_endian')>=0) format='binary_le';
       else if(hl.indexOf('binary_big_endian')>=0) format='binary_be';
@@ -333,7 +346,8 @@ function parsePLY(buf){
     faceColor:faceColor,
     hasFaceColor:hasFaceColor,
     warning:colorWarning,
-    textureDeclared:textureDeclared
+    textureDeclared:textureDeclared,
+    textureFileName:textureDeclarationCount===1?textureFileName:null
   };
   // Ensure at least one entry so the binary reader doesn't skip all faces when
   // the header declares a face element without an explicit property line.
@@ -466,6 +480,7 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
     var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
     var res={vertices:verts,normals:norms};
     if(copt.textureDeclared) res.textureDeclared=true;
+    if(copt.textureFileName) res.textureFileName=copt.textureFileName;
     if(hasVColor) res.colors=new Float32Array(colors);
     if(copt.warning) res.colorWarning=copt.warning;
     return res;
@@ -474,6 +489,7 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
   var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
   var res={vertices:verts,normals:norms};
   if(copt.textureDeclared) res.textureDeclared=true;
+  if(copt.textureFileName) res.textureFileName=copt.textureFileName;
   if(uvArr.length===vertArr.length/3*2) res.uvs=new Float32Array(uvArr);
   if(colArr&&colArr.length===vertArr.length) res.colors=new Float32Array(colArr);
   if(copt.warning) res.colorWarning=copt.warning;
@@ -604,6 +620,7 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
     var res={vertices:verts,normals:norms};
     if(copt.textureDeclared) res.textureDeclared=true;
+    if(copt.textureFileName) res.textureFileName=copt.textureFileName;
     if(hasVColor) res.colors=new Float32Array(colors);
     if(copt.warning) res.colorWarning=copt.warning;
     return res;
@@ -612,6 +629,7 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
   var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
   var res={vertices:verts,normals:norms};
   if(copt.textureDeclared) res.textureDeclared=true;
+  if(copt.textureFileName) res.textureFileName=copt.textureFileName;
   if(uvArr.length===vertArr.length/3*2) res.uvs=new Float32Array(uvArr);
   if(colArr&&colArr.length===vertArr.length) res.colors=new Float32Array(colArr);
   if(copt.warning) res.colorWarning=copt.warning;
@@ -622,6 +640,28 @@ function parseScanBuffer(buf,format){
   if(format==='stl') return parseSTL(buf);
   if(format==='obj') return parseOBJ(buf);
   if(format==='ply') return parsePLY(buf);
+  return null;
+}
+
+// Return an accessible fallback status for the shared viewer and thumbnails.
+// The PLY declaration identifies the unavailable asset; it is never a URL.
+function scanFallbackStatus(parsed,hasColor,reason){
+  var fallback=hasColor
+    ?'using vertex colors.'
+    :'using neutral mesh; no mesh color data is present.';
+  if(reason==='missing'&&parsed.textureDeclared){
+    return 'Declared texture'+(parsed.textureFileName?' "'+parsed.textureFileName+'"':'')+
+      ' is unavailable; '+fallback;
+  }
+  if(reason==='unmapped'){
+    return 'Texture cannot be mapped because the PLY has no usable texture coordinates; '+fallback;
+  }
+  if(reason==='unreadable'){
+    return 'Texture could not be loaded; '+fallback;
+  }
+  if(reason==='none'&&!hasColor){
+    return 'No mesh color data; showing neutral mesh.';
+  }
   return null;
 }
 `;
@@ -655,11 +695,13 @@ export function buildViewerHtml(
 html,body{width:100%;height:100%;background:#18181b;overflow:hidden}
 canvas{display:block;width:100%!important;height:100%!important;touch-action:none}
 #overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#a1a1aa;font-family:-apple-system,sans-serif;font-size:15px;pointer-events:none}
+#notice{display:none;position:fixed;z-index:2;top:12px;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100% - 24px);padding:9px 13px;border:1px solid rgba(255,255,255,0.16);border-radius:8px;background:rgba(24,24,27,0.94);color:#f4f4f5;font:500 13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.24);pointer-events:none}
 #hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:rgba(161,161,170,0.7);font-family:-apple-system,sans-serif;font-size:12px;pointer-events:none;transition:opacity 1s}
 </style>
 </head>
 <body>
 <div id="overlay">Rendering\u2026</div>
+<div id="notice" role="status" aria-live="polite"></div>
 <div id="hint">Drag to rotate \u00b7 Alt-drag / twist to roll \u00b7 Shift-drag to pan \u00b7 Scroll / pinch to zoom</div>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script>
@@ -678,9 +720,9 @@ scene.background=new THREE.Color(0x18181b);
 
 var camera=new THREE.PerspectiveCamera(45,window.innerWidth/window.innerHeight,0.01,10000);
 
-scene.add(new THREE.AmbientLight(0xffffff,0.5));
-var dir1=new THREE.DirectionalLight(0xffffff,0.8); dir1.position.set(1,2,3); scene.add(dir1);
-var dir2=new THREE.DirectionalLight(0x88aaff,0.4); dir2.position.set(-2,-1,-1); scene.add(dir2);
+scene.add(new THREE.AmbientLight(0xffffff,0.8));
+var dir1=new THREE.DirectionalLight(0xffffff,0.15); dir1.position.set(1,2,3); scene.add(dir1);
+var dir2=new THREE.DirectionalLight(0x88aaff,0.05); dir2.position.set(-2,-1,-1); scene.add(dir2);
 
 window.addEventListener('resize',function(){
   camera.aspect=window.innerWidth/window.innerHeight;
@@ -716,32 +758,33 @@ if(!parsed){
   // vertex colors on a white base so the colors aren't tinted; otherwise keep
   // the neutral gray material used for STL/OBJ/color-less PLY.
   var solidMat=hasColor
-    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide})
-    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+       ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x080808,shininess:10,side:THREE.DoubleSide})
+     : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x222222,shininess:15,side:THREE.DoubleSide});
   var wireframeMat=hasColor
-    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide,wireframe:true})
-    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide,wireframe:true});
+    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x080808,shininess:10,side:THREE.DoubleSide,wireframe:true})
+    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x222222,shininess:15,side:THREE.DoubleSide,wireframe:true});
   var shadedMat=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
   var textureMat=null;
 
   var mesh=new THREE.Mesh(geo,solidMat);
   scene.add(mesh);
 
-  var textureNotice=document.getElementById('overlay');
+  var textureNotice=document.getElementById('notice');
   function textureMessage(message){
     textureNotice.textContent=message;
-    textureNotice.style.display='flex';
-    setTimeout(function(){if(textureNotice) textureNotice.style.display='none';},3500);
+    textureNotice.style.display='block';
   }
-  if(!TEXTURE_URI && parsed.textureDeclared) textureMessage('Linked texture unavailable; showing mesh colors.');
-  else if(!TEXTURE_URI && !hasColor) textureMessage('No color data; showing neutral mesh.');
-  else if(TEXTURE_URI && !parsed.uvs) textureMessage('PLY has no usable texture coordinates; showing mesh colors.');
-  else if(TEXTURE_URI) new THREE.TextureLoader().load(TEXTURE_URI,function(tex){
+  var fallbackReason=!TEXTURE_URI
+    ?(parsed.textureDeclared?'missing':'none')
+    :(parsed.uvs?null:'unmapped');
+  var fallbackStatus=scanFallbackStatus(parsed,hasColor,fallbackReason);
+  if(fallbackStatus) textureMessage(fallbackStatus);
+  if(TEXTURE_URI&&parsed.uvs) new THREE.TextureLoader().load(TEXTURE_URI,function(tex){
     if(THREE.SRGBColorSpace!==undefined) tex.colorSpace=THREE.SRGBColorSpace;
     else tex.encoding=THREE.sRGBEncoding;
-    textureMat=new THREE.MeshPhongMaterial({map:tex,specular:0x111111,shininess:20,side:THREE.DoubleSide});
+    textureMat=new THREE.MeshPhongMaterial({map:tex,specular:0x080808,shininess:10,side:THREE.DoubleSide});
     if(window.currentDisplayMode!=='wireframe'&&window.currentDisplayMode!=='shaded') mesh.material=textureMat;
-  },undefined,function(){textureMessage('Texture could not be read; showing mesh colors.');});
+  },undefined,function(){textureMessage(scanFallbackStatus(parsed,hasColor,'unreadable'));});
 
   window.setDisplayMode=function(mode){
     window.currentDisplayMode=mode;
@@ -1092,9 +1135,9 @@ try {
   var scene=new THREE.Scene();
   if(BG!==null) scene.background=new THREE.Color(BG);
 
-  scene.add(new THREE.AmbientLight(0xffffff,0.55));
-  var d1=new THREE.DirectionalLight(0xffffff,0.85); d1.position.set(1,2,3); scene.add(d1);
-  var d2=new THREE.DirectionalLight(0x88aaff,0.4); d2.position.set(-2,-1,-1); scene.add(d2);
+  scene.add(new THREE.AmbientLight(0xffffff,0.8));
+  var d1=new THREE.DirectionalLight(0xffffff,0.15); d1.position.set(1,2,3); scene.add(d1);
+  var d2=new THREE.DirectionalLight(0x88aaff,0.05); d2.position.set(-2,-1,-1); scene.add(d2);
 
   var geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(parsed.vertices,3));
@@ -1109,8 +1152,8 @@ try {
   var maxDim=Math.max(size3.x,size3.y,size3.z)||1;
 
   var mat=hasColor
-    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide})
-    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x080808,shininess:10,side:THREE.DoubleSide})
+    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x222222,shininess:15,side:THREE.DoubleSide});
   var mesh=new THREE.Mesh(geo,mat);
   mesh.position.sub(center);
   scene.add(mesh);
@@ -1127,6 +1170,11 @@ try {
   );
   camera.lookAt(0,0,0);
 
+   var fallbackReason=!TEXTURE_URI
+     ?(parsed.textureDeclared?'missing':'none')
+     :(parsed.uvs?null:'unmapped');
+   var fallbackStatus=scanFallbackStatus(parsed,hasColor,fallbackReason);
+   if(fallbackStatus) postMsg({type:'warning',message:fallbackStatus});
    function renderThumb(){
      renderer.render(scene,camera);
      var dataUrl=canvas.toDataURL('image/png');
@@ -1137,11 +1185,13 @@ try {
      new THREE.TextureLoader().load(TEXTURE_URI,function(tex){
        if(THREE.SRGBColorSpace!==undefined) tex.colorSpace=THREE.SRGBColorSpace;
        else tex.encoding=THREE.sRGBEncoding;
-       mesh.material=new THREE.MeshPhongMaterial({map:tex,side:THREE.DoubleSide});
+        mesh.material=new THREE.MeshPhongMaterial({map:tex,specular:0x080808,shininess:10,side:THREE.DoubleSide});
        renderThumb();
-     },undefined,function(){ postMsg({type:'warning',message:'Texture could not be read; showing mesh colors.'}); renderThumb(); });
+      },undefined,function(){
+        postMsg({type:'warning',message:scanFallbackStatus(parsed,hasColor,'unreadable')});
+        renderThumb();
+      });
    } else {
-     if(TEXTURE_URI) postMsg({type:'warning',message:'PLY has no usable texture coordinates; showing mesh colors.'});
      renderThumb();
    }
 } catch(e) {

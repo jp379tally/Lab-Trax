@@ -15,13 +15,12 @@
  * zips that directory into electron-dist/LabTrax-Windows-Portable.zip, which
  * is a fully functional Windows distribution users can download and run.
  *
- * Auto-update publishing (App Storage generic provider):
- *   The publish provider is set to "generic" in electron-builder.yml and
- *   reads UPDATE_FEED_URL (set by scripts/desktop-build-publish.sh) for the
- *   feed URL. electron-builder bakes that URL into resources/app-update.yml
- *   inside the packaged app. electron-updater then fetches
- *   GET /downloads/latest.yml from the same API server that serves the
- *   installer ZIPs to discover new versions automatically.
+ * Auto-update channel (App Storage generic provider):
+ *   Signed installer builds bake UPDATE_FEED_URL into resources/app-update.yml.
+ *   Windows clients request /downloads/latest.yml; macOS clients request
+ *   /downloads/latest-mac.yml. The release workflow publishes those manifests
+ *   and their payloads to App Storage after approval. Replit/Linux portable
+ *   builds set ELECTRON_UPDATE_CHANNEL=portable and disable electron-updater.
  *
  *   When UPDATE_FEED_URL is set here, this script writes a temp merged
  *   config (electron-builder.generated.yml) with the URL substituted and
@@ -144,14 +143,24 @@ if (!process.env.VITE_API_BASE_URL) {
   process.exit(1);
 }
 
-const updateFeedUrl = process.env.UPDATE_FEED_URL;
+const rawUpdateFeedUrl = process.env.UPDATE_FEED_URL?.trim();
+const configuredApiOrigin = process.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, "");
+const updateFeedUrl = rawUpdateFeedUrl
+  ? `${rawUpdateFeedUrl.replace(/\/+$/, "")}/`
+  : configuredApiOrigin
+    ? `${configuredApiOrigin}/downloads/`
+    : undefined;
 // GH_TOKEN is kept as a secondary publish trigger for backward-compatibility
 // with the GitHub Actions release.yml workflow (which still attaches build
 // artifacts to GitHub Releases for the version history). Setting GH_TOKEN
 // alone no longer configures the auto-update channel — UPDATE_FEED_URL is
 // required to produce a correct app-update.yml for the generic provider.
 const ghToken = process.env.GH_TOKEN;
-const shouldPublish = Boolean(updateFeedUrl || ghToken);
+const publishNever = process.env.ELECTRON_PUBLISH === "never";
+const shouldPublish = Boolean(rawUpdateFeedUrl || ghToken) && !publishNever;
+const updateChannel =
+  process.env.ELECTRON_UPDATE_CHANNEL ||
+  (rawUpdateFeedUrl ? "installer" : "manual");
 
 function run(cmd, args, env = {}, timeoutMs = undefined) {
   console.log(`\n$ ${cmd} ${args.join(" ")}`);
@@ -252,6 +261,8 @@ const stampPayload = JSON.stringify(
     version: pkgVersion,
     buildNumber,
     commitSha: shortSha || null,
+    updateChannel,
+    updateFeedUrl: updateFeedUrl || null,
     builtAt: new Date().toISOString(),
   },
   null,
@@ -270,8 +281,7 @@ const builderArgs = [
   "electron-builder.yml",
 ];
 
-if (shouldPublish) {
-  if (updateFeedUrl) {
+if (rawUpdateFeedUrl) {
     // IMPORTANT: never pass the publish override as a second
     // `--config {"publish":...}` JSON argument. electron-builder 26 treats
     // that JSON string as a config FILE PATH and dies with ENOENT *before*
@@ -297,12 +307,21 @@ if (shouldPublish) {
       "utf8",
     );
     builderArgs[builderArgs.indexOf("electron-builder.yml")] = "electron-builder.generated.yml";
-  }
+}
+
+if (shouldPublish) {
   builderArgs.push("--publish", "always");
   console.log(
-    updateFeedUrl
+    rawUpdateFeedUrl
       ? `\nPublishing release artifacts to: ${updateFeedUrl}`
       : "\nPublishing release artifacts via GH_TOKEN (GitHub release assets only — auto-update feed requires UPDATE_FEED_URL)…",
+  );
+} else if (publishNever) {
+  builderArgs.push("--publish", "never");
+  console.log(
+    rawUpdateFeedUrl
+      ? `\nBaking update feed ${updateFeedUrl}; release workflow will publish the manifest after its assets are public.`
+      : "\nBuilding locally without publishing release artifacts.",
   );
 } else {
   console.log(
@@ -323,12 +342,16 @@ if (buildExitCode === 0) {
   if (isMac) {
     if (shouldPublish) {
       console.log("\n✓ macOS DMG and latest-mac.yml published. Auto-update is active for this release.");
+    } else if (updateFeedUrl) {
+      console.log("\n✓ macOS DMG and latest-mac.yml built for the release workflow to publish.");
     } else {
       console.log("\n✓ macOS DMG produced in electron-dist/");
     }
   } else {
     if (shouldPublish) {
       console.log("\n✓ Installer and latest.yml published. Auto-update is active for this release.");
+    } else if (updateFeedUrl) {
+      console.log("\n✓ Installer and latest.yml built for the release workflow to publish.");
     } else {
       console.log("\n✓ NSIS installer produced in electron-dist/");
     }

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { AuthContext, type AuthContextValue } from "@/lib/auth-context";
+import { clearSessionSecret, setSessionSecret } from "@/lib/platform-admin-session";
 import SettingsPage from "@/pages/settings";
 
 const DEFAULT_SUBJECT = "Statement for {{practiceName}} — {{periodLabel}}";
@@ -40,6 +41,7 @@ const AUTH_VALUE: AuthContextValue = {
 };
 
 function renderStatementEmailSettings() {
+  setSessionSecret("1234");
   window.history.pushState({}, "", "/settings?tab=statement-email");
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -66,6 +68,7 @@ function renderStatementEmailSettings() {
 }
 
 beforeEach(() => {
+  clearSessionSecret();
   apiFetchMock.mockReset();
   apiFetchMock.mockImplementation(async (endpoint: string, init?: RequestInit) => {
     if (endpoint === "/admin/templates/statement-email") {

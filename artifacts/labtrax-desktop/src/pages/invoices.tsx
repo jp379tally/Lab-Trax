@@ -103,6 +103,7 @@ const INVOICE_COLUMN_DEFAULTS = [...INVOICE_LINE_ITEM_COLUMN_DEFAULTS];
 import {
   formatInvoiceDate,
   hasInvoiceDateRepairChanges,
+  invoiceDateInputHasChanged,
   isLikelyLegacyShiftedInvoiceDate,
   invoiceDateInputToTimestamp,
   invoiceTimestampToDateInput,
@@ -325,9 +326,20 @@ function restorationText(meta: InvoiceDisplayMetadata): string {
   return [meta.caseType || meta.caseSubtype, meta.teeth ? `Tooth ${meta.teeth}` : ""].filter(Boolean).join(" - ");
 }
 
-function isReadonlyDraft(i: { status?: unknown }): boolean {
-  const st = String(i.status);
-  return st === "draft" || st === "recovery_draft";
+function isHistoricalInvoiceHeld(i: {
+  status?: unknown;
+  displayMetadata?: unknown;
+  displayMetadataJson?: unknown;
+}): boolean {
+  const metadata = (i.displayMetadata ?? i.displayMetadataJson) as Record<string, unknown> | null | undefined;
+  const recoveryBilling = metadata?.recoveryBilling;
+  return String(i.status) === "recovery_draft" ||
+    Boolean(recoveryBilling && typeof recoveryBilling === "object" &&
+      (recoveryBilling as { state?: unknown }).state === "held");
+}
+
+function isReadonlyDraft(i: Parameters<typeof isHistoricalInvoiceHeld>[0] & { status?: unknown }): boolean {
+  return String(i.status) === "draft" || isHistoricalInvoiceHeld(i);
 }
 
 export default function InvoicesPage() {
@@ -1845,14 +1857,14 @@ export default function InvoicesPage() {
                   </td>
                   <td className="py-3">
                     <span className="inline-flex items-center flex-wrap gap-1.5">
-                      <StatusBadge status={i.status} />
-                      {i.frozen && (
+                      <StatusBadge status={isHistoricalInvoiceHeld(i) ? "recovery_draft" : i.status} />
+                      {(i.frozen || isHistoricalInvoiceHeld(i)) && (
                         <span
-                          title={String(i.status) === "recovery_draft" ? "Current-rate replacement held for charge and historical-payment review; not collectible" : "Invoice is frozen — the linked case was deleted"}
+                          title={isHistoricalInvoiceHeld(i) ? "Historical reconstructed invoice remains held; not collectible" : "Invoice is frozen — the linked case was deleted"}
                           className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
                         >
                           <Lock size={9} />
-                          {String(i.status) === "recovery_draft" ? "Review hold" : "Frozen"}
+                          {isHistoricalInvoiceHeld(i) ? "Historical hold" : "Frozen"}
                         </span>
                       )}
                       {i.hasUnpricedAlloy && (
@@ -2652,7 +2664,8 @@ function BulkSendDialog({
       credits: meta.credits ?? null,
       total: inv.total ?? 0,
       balanceDue: inv.balanceDue ?? inv.total ?? 0,
-      notes: inv.notes ?? null,
+      notes:
+        meta.shareNotesWithProvider === true ? inv.notes ?? null : null,
       generatedAt: new Date(),
       logoUrl: logoDataUrl,
       template: invoiceTemplate,
@@ -2833,6 +2846,7 @@ function serializeInvoiceForm(f: {
   discount: number;
   credits: number;
   notes: string;
+  shareNotesWithProvider: boolean;
   patientName: string;
   billTo: string;
   teeth: string;
@@ -2852,6 +2866,7 @@ function serializeInvoiceForm(f: {
     discount: Number(f.discount || 0),
     credits: Number(f.credits || 0),
     notes: f.notes,
+    shareNotesWithProvider: f.shareNotesWithProvider,
     patientName: f.patientName,
     billTo: f.billTo,
     teeth: f.teeth,
@@ -3540,6 +3555,7 @@ function InvoiceEditingSurface({
   const [discount, setDiscount] = useState<number>(0);
   const [items, setItems] = useState<DraftLine[]>([]);
   const [notes, setNotes] = useState<string>("");
+  const [shareNotesWithProvider, setShareNotesWithProvider] = useState(false);
   const [patientName, setPatientName] = useState<string>("");
   const [billTo, setBillTo] = useState<string>("");
   const [teeth, setTeeth] = useState<string>("");
@@ -3559,6 +3575,38 @@ function InvoiceEditingSurface({
   const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(
     null,
   );
+  const discardDialogRef = useRef<HTMLDivElement>(null);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
+  const discardFocusRestoreRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (pendingDiscard) {
+      const activeElement = document.activeElement;
+      discardFocusRestoreRef.current =
+        activeElement instanceof HTMLElement ? activeElement : null;
+      keepEditingRef.current?.focus();
+      return;
+    }
+    discardFocusRestoreRef.current?.focus();
+    discardFocusRestoreRef.current = null;
+  }, [pendingDiscard]);
+
+  function handleDiscardDialogKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab") return;
+    const controls = discardDialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (!controls?.length) return;
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   useEffect(() => {
     const d = detailQuery.data;
@@ -3578,6 +3626,8 @@ function InvoiceEditingSurface({
     const nextDiscount = Number(d.discount ?? 0);
     const nextNotes = d.notes ?? "";
     const meta = readDisplayMetadata(d);
+    const nextShareNotesWithProvider =
+      meta.shareNotesWithProvider === true;
     const nextPatientName = meta.patientName ?? "";
     const nextBillTo = meta.billTo ?? "";
     const nextTeeth = meta.teeth ?? "";
@@ -3624,6 +3674,7 @@ function InvoiceEditingSurface({
     setTax(nextTax);
     setDiscount(nextDiscount);
     setNotes(nextNotes);
+    setShareNotesWithProvider(nextShareNotesWithProvider);
     setPatientName(nextPatientName);
     setBillTo(nextBillTo);
     setTeeth(nextTeeth);
@@ -3644,6 +3695,7 @@ function InvoiceEditingSurface({
       discount: nextDiscount,
       credits: nextCredits,
       notes: nextNotes,
+      shareNotesWithProvider: nextShareNotesWithProvider,
       patientName: nextPatientName,
       billTo: nextBillTo,
       teeth: nextTeeth,
@@ -3687,6 +3739,11 @@ function InvoiceEditingSurface({
     Number(tax || 0) -
     Number(discount || 0) -
     Number(credits || 0);
+  const paidAmount = (detailQuery.data?.payments ?? []).reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0,
+  );
+  const balanceDue = statusValue === "void" ? 0 : total - paidAmount;
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -3751,6 +3808,7 @@ function InvoiceEditingSurface({
         shade: shade.trim(),
         material: material.trim(),
         caseNotes: caseNotes.trim(),
+        shareNotesWithProvider,
         credits: Number(credits) || 0,
         lineItems: trimmedItems.map((it) => ({
           ...it.displayMetadata,
@@ -3772,6 +3830,7 @@ function InvoiceEditingSurface({
         tax,
         discount,
         notes: notes.trim() ? notes.trim() : null,
+        shareNotesWithProvider,
         displayMetadata,
         layoutPresetId: layoutPresetId ?? null,
         items: trimmedItems.map((it, idx) => ({
@@ -3799,6 +3858,7 @@ function InvoiceEditingSurface({
       };
       const loadedInvoice = detailQuery.data ?? invoice;
       if (
+        invoiceDateInputHasChanged(dueAt, loadedInvoice.dueAt ?? loadedInvoice.dueDate) &&
         !isLikelyLegacyShiftedInvoiceDate(
           loadedInvoice.dueAt ?? loadedInvoice.dueDate,
           loadedInvoice.createdAt,
@@ -3807,6 +3867,7 @@ function InvoiceEditingSurface({
         payload.dueAt = invoiceDateInputToTimestamp(dueAt);
       }
       if (
+        invoiceDateInputHasChanged(issuedAt, loadedInvoice.issuedAt) &&
         !isLikelyLegacyShiftedInvoiceDate(
           loadedInvoice.issuedAt,
           loadedInvoice.createdAt,
@@ -4082,6 +4143,7 @@ function InvoiceEditingSurface({
   // or the invoice query to refetch. The server still records the ack; if it
   // fails we roll back so the banner reappears.
   const [aiReviewedLocal, setAiReviewedLocal] = useState(false);
+  const [aiReviewError, setAiReviewError] = useState<string | null>(null);
   const ackAiMutation = useMutation({
     mutationFn: () =>
       apiFetch<Invoice>(`/invoices/${invoice.id}/ai-review`, {
@@ -4089,15 +4151,18 @@ function InvoiceEditingSurface({
         body: JSON.stringify({ acknowledged: true }),
       }),
     onMutate: () => {
+      setAiReviewError(null);
       setAiReviewedLocal(true);
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      setAiReviewError(null);
+      queryClient.setQueryData(["invoice", invoice.id], updated);
       queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },
     onError: (err: Error) => {
       setAiReviewedLocal(false);
-      setError(err.message || "Could not mark reviewed.");
+      setAiReviewError(err.message || "Could not mark reviewed. Please try again.");
     },
   });
 
@@ -4195,6 +4260,7 @@ function InvoiceEditingSurface({
         discount,
         credits,
         notes,
+        shareNotesWithProvider,
         patientName,
         billTo,
         teeth,
@@ -4329,7 +4395,7 @@ function InvoiceEditingSurface({
       credits,
       total,
       balanceDue: detailQuery.data?.balanceDue ?? total,
-      notes,
+      notes: shareNotesWithProvider ? notes : null,
       generatedAt: new Date(),
       logoUrl: logoDataUrl,
       logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
@@ -4382,13 +4448,16 @@ function InvoiceEditingSurface({
             <div className="text-xs text-muted-foreground">Invoice</div>
             <div className="flex items-center gap-2">
               <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
-              {invoice.frozen && (
+              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold capitalize text-blue-700">
+                {statusLabel(statusValue)}
+              </span>
+              {(invoice.frozen || isHistoricalInvoiceHeld(invoice)) && (
                 <span
-                  title={String(invoice.status) === "recovery_draft" ? "Current-rate replacement held for charge and historical-payment review; not collectible" : "Invoice is frozen — the linked case was deleted"}
+                  title={isHistoricalInvoiceHeld(invoice) ? "Historical reconstructed invoice remains held; not collectible" : "Invoice is frozen — the linked case was deleted"}
                   className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
                 >
                   <Lock size={9} />
-                  {String(invoice.status) === "recovery_draft" ? "Review hold" : "Frozen"}
+                  {isHistoricalInvoiceHeld(invoice) ? "Historical hold" : "Frozen"}
                 </span>
               )}
             </div>
@@ -4624,7 +4693,7 @@ function InvoiceEditingSurface({
           </button>}
         </header>
 
-        <div className="invoice-fields px-6 py-6 space-y-6">
+        <div className="invoice-fields px-6 py-4">
           {detailQuery.isLoading && (
             <div className="flex items-center text-sm text-muted-foreground">
               <Loader2 size={16} className="animate-spin mr-2" />
@@ -4639,7 +4708,7 @@ function InvoiceEditingSurface({
           )}
           {detailQuery.isError && <div role="alert" className="text-sm text-destructive">Could not load invoice. <button type="button" onClick={() => void detailQuery.refetch()}>Retry</button></div>}
           {savedAwaitingRefresh && !saving && <button type="button" onClick={() => void detailQuery.refetch()} className="text-sm underline">Retry loading confirmed invoice</button>}
-          <fieldset disabled={saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError || (inline && (!canEditInline || !!(detailQuery.data ?? invoice).frozen))} className="min-w-0 space-y-6">
+          <fieldset disabled={saving || savedAwaitingRefresh || detailQuery.isLoading || detailQuery.isError || (inline && (!canEditInline || !!(detailQuery.data ?? invoice).frozen))} className="min-w-0 space-y-4">
           {(detailQuery.data?.displayMetadata as Record<string, unknown> | undefined)?.reviewedChargesNeedsReview === true && (
             <div role="alert" className="text-sm text-amber-900 bg-amber-100 px-3 py-2 rounded-md">
               {(detailQuery.data?.displayMetadata as Record<string, unknown> | undefined)?.legacyChargesNeedsReview === true
@@ -4660,6 +4729,11 @@ function InvoiceEditingSurface({
                     {invoice.aiPricingWarning}
                   </div>
                 )}
+                {aiReviewError && (
+                  <div role="alert" className="text-xs text-destructive mt-1">
+                    {aiReviewError} You can try again from this notice.
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -4669,6 +4743,18 @@ function InvoiceEditingSurface({
               >
                 Mark reviewed
               </button>
+            </div>
+          )}
+          {invoice.aiGenerated && (detailQuery.data?.aiReviewedAt ?? invoice.aiReviewedAt) && (
+            <div
+              className="text-xs text-muted-foreground"
+              data-testid="invoice-ai-review-record"
+            >
+              Reviewed by{" "}
+              {detailQuery.data?.aiReviewedByName ??
+                invoice.aiReviewedByName ??
+                "Reviewer unavailable"}{" "}
+              · {formatDateTime(detailQuery.data?.aiReviewedAt ?? invoice.aiReviewedAt)}
             </div>
           )}
 
@@ -4762,7 +4848,11 @@ function InvoiceEditingSurface({
             </div>
           )}
 
-          <section className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="invoice-editor-columns">
+          <div className="invoice-editor-main">
+          <section className="invoice-editor-card">
+            <h3 className="text-sm font-semibold">Invoice information</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             <div className="md:col-span-1">
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                 Invoice #
@@ -4942,54 +5032,13 @@ function InvoiceEditingSurface({
                 })()}
               </div>
             )}
+            </div>
           </section>
 
-          {linkedCase && (
-            <section>
-              <h3 className="text-sm font-semibold mb-3">Rx Summary</h3>
-              <div className="rounded-lg border border-border bg-secondary/20 px-4 py-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Patient</div>
-                  <div>{`${linkedCase.patientFirstName ?? ""} ${linkedCase.patientLastName ?? ""}`.trim() || "—"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Doctor</div>
-                  <div>{linkedCase.doctorName || "—"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Restorative Type</div>
-                  <div>{linkedRxSummary.restorativeType ?? "—"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
-                    {linkedRxSummary.materials.length > 1 ? "Materials" : "Material"}
-                  </div>
-                  <div>{linkedRxSummary.materials.length > 0 ? linkedRxSummary.materials.join(", ") : "—"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
-                    {linkedRxSummary.shades.length > 1 ? "Shades" : "Shade"}
-                  </div>
-                  <div>{linkedRxSummary.shades.length > 0 ? linkedRxSummary.shades.join(", ") : "—"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
-                    {linkedRxSummary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)"}
-                  </div>
-                  <div>{linkedRxTeethLabel || "—"}</div>
-                </div>
-                <div className="md:col-span-2">
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Rx Notes</div>
-                  <div className="whitespace-pre-wrap">{(linkedCase.caseNotes ?? "").trim() || "—"}</div>
-                </div>
-              </div>
-            </section>
-          )}
-
-          <section>
-            <h3 className="text-sm font-semibold mb-3">Patient & billing details</h3>
+          <section className="invoice-editor-card">
+            <h3 className="text-sm font-semibold">Patient &amp; billing</h3>
             {detailQuery.isLoading ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy="true" aria-label="Loading patient and billing details">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" aria-busy="true" aria-label="Loading patient and billing details">
                 {[...Array(6)].map((_, i) => (
                   <div key={i} className={i === 4 ? "md:col-span-2" : undefined}>
                     <div className="h-3 w-24 rounded bg-muted animate-pulse mb-2" />
@@ -4998,7 +5047,7 @@ function InvoiceEditingSurface({
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                     Patient name
@@ -5062,7 +5111,7 @@ function InvoiceEditingSurface({
                     className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
                   />
                 </div>
-                <div className="md:col-span-2">
+                <div className="sm:col-span-2">
                   <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                     Case notes
                   </label>
@@ -5075,25 +5124,11 @@ function InvoiceEditingSurface({
                     className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                    Credits
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={credits}
-                    aria-label="Credits"
-                    onChange={(e) => setCredits(Number(e.target.value) || 0)}
-                    className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
-                  />
-                </div>
               </div>
             )}
           </section>
 
-          <section>
+          <section className="invoice-editor-card">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold">Line items</h3>
               <div className="flex items-center gap-3">
@@ -5146,7 +5181,7 @@ function InvoiceEditingSurface({
             </div>
             <div
               ref={lineItemsTableContainerRef}
-              className="min-w-0 border border-border rounded-md overflow-x-auto relative"
+              className="invoice-lines-container min-w-0 border border-border rounded-md overflow-x-auto relative"
             >
               {resizingCol !== null && (
                 <div
@@ -5560,96 +5595,125 @@ function InvoiceEditingSurface({
                     </td>
                   </tr>
                 </tbody>
-                <tfoot>
-                  <tr className="border-t border-border">
-                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                      Subtotal
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatMoney(subtotal)}
-                    </td>
-                    <td />
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                      Tax
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={tax}
-                        aria-label="Tax"
-                        onChange={(e) => setTax(Number(e.target.value) || 0)}
-                        className="w-full max-w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
-                      />
-                    </td>
-                    <td />
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                      Discount
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        value={discount}
-                        aria-label="Invoice discount"
-                        onChange={(e) => setDiscount(Number(e.target.value) || 0)}
-                        className="w-full max-w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
-                      />
-                    </td>
-                    <td />
-                  </tr>
-                  {Number(credits || 0) > 0 && (
-                    <tr className="border-t border-border">
-                      <td
-                        colSpan={5}
-                        className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium"
-                      >
-                        Credits applied
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        −{formatMoney(Number(credits || 0))}
-                      </td>
-                      <td />
-                    </tr>
-                  )}
-                  <tr className="border-t border-border bg-secondary/30">
-                    <td colSpan={5} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                      Total
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
-                      {formatMoney(total)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
               </table>
             </div>
           </section>
 
-          {inline && <div className="flex items-center justify-between gap-3 text-sm border-t border-border pt-3">
-            <span className="text-muted-foreground">{isDirty ? "Balance due (draft)" : "Balance due"}</span>
-            <output className="font-semibold tabular-nums" aria-label="Calculated balance due">
-              {formatMoney(statusValue === "void" ? 0 : total - (detailQuery.data?.payments ?? []).reduce((sum, payment) => sum + Number(payment.amount || 0), 0))}
-            </output>
-          </div>}
-
-          <section>
-            <label className="block text-sm font-semibold mb-2">Notes</label>
+          <section className="invoice-editor-card">
+            <label className="block text-sm font-semibold">Invoice Notes</label>
             <textarea
               value={notes}
               aria-label="Notes"
               onChange={(e) => setNotes(e.target.value)}
               rows={4}
-              placeholder="Internal notes for this invoice (optional)"
+              placeholder="Add notes for this invoice"
               className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
             />
+            <label className="invoice-editor-share-toggle">
+              <span>
+                <span className="block text-sm font-medium">Share with Provider</span>
+                <span className="block text-xs text-muted-foreground">
+                  {shareNotesWithProvider
+                    ? "These notes appear on provider-facing invoices."
+                    : "Private by default; only lab staff can see these notes."}
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="Share with Provider"
+                checked={shareNotesWithProvider}
+                onChange={(event) =>
+                  setShareNotesWithProvider(event.currentTarget.checked)
+                }
+              />
+            </label>
           </section>
+          </div>
+          <aside className="invoice-editor-sidebar">
+            <section className="invoice-editor-card invoice-editor-summary">
+              <h3 className="text-sm font-semibold">Invoice summary</h3>
+              <div className="invoice-editor-summary-row">
+                <span>Subtotal</span>
+                <span className="tabular-nums">{formatMoney(subtotal)}</span>
+              </div>
+              <label className="invoice-editor-summary-row" htmlFor="invoice-editor-tax">
+                <span>Tax</span>
+                <input
+                  id="invoice-editor-tax"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={tax}
+                  aria-label="Tax"
+                  onChange={(e) => setTax(Number(e.target.value) || 0)}
+                  className="invoice-editor-summary-input"
+                />
+              </label>
+              <label className="invoice-editor-summary-row" htmlFor="invoice-editor-discount">
+                <span>Discount</span>
+                <input
+                  id="invoice-editor-discount"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={discount}
+                  aria-label="Invoice discount"
+                  onChange={(e) => setDiscount(Number(e.target.value) || 0)}
+                  className="invoice-editor-summary-input"
+                />
+              </label>
+              <div className="invoice-editor-summary-row invoice-editor-summary-total">
+                <span>Invoice total</span>
+                <span className="tabular-nums">{formatMoney(total)}</span>
+              </div>
+              <label className="invoice-editor-summary-row" htmlFor="invoice-editor-credits">
+                <span>Credits applied</span>
+                <input
+                  id="invoice-editor-credits"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={credits}
+                  aria-label="Credits"
+                  onChange={(e) => setCredits(Number(e.target.value) || 0)}
+                  className="invoice-editor-summary-input"
+                />
+              </label>
+              <div className="invoice-editor-summary-balance">
+                <span>Balance due</span>
+                <span className="tabular-nums">{formatMoney(balanceDue)}</span>
+              </div>
+            </section>
+
+            <section className="invoice-editor-card">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Prescription reference</h3>
+                {caseIdForPricing && (
+                  <button
+                    type="button"
+                    onClick={() => setPrescriptionPreviewOpen(true)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    View Rx <ExternalLink size={12} />
+                  </button>
+                )}
+              </div>
+              <dl className="invoice-editor-reference">
+                <div><dt>Patient</dt><dd>{linkedCase ? `${linkedCase.patientFirstName ?? ""} ${linkedCase.patientLastName ?? ""}`.trim() || "—" : patientName || "—"}</dd></div>
+                <div><dt>Doctor</dt><dd>{linkedCase?.doctorName || billTo || "—"}</dd></div>
+                <div><dt>Case #</dt><dd>{linkedCaseNumber || "—"}</dd></div>
+                <div><dt>Restoration type</dt><dd>{linkedRxSummary.restorativeType || "—"}</dd></div>
+                <div><dt>Material</dt><dd>{linkedRxSummary.materials.join(", ") || material || "—"}</dd></div>
+                <div><dt>Shade</dt><dd>{linkedRxSummary.shades.join(", ") || shade || "—"}</dd></div>
+                <div><dt>{linkedRxSummary.isFullArch ? "Tooth coverage" : "Teeth"}</dt><dd>{linkedRxTeethLabel || teeth || "—"}</dd></div>
+              </dl>
+              <div className="invoice-editor-rx-notes">
+                {(linkedCase?.caseNotes ?? caseNotes).trim() || "No prescription notes"}
+              </div>
+            </section>
+          </aside>
+          </div>
 
           {detailQuery.data?.linkedTransactions && detailQuery.data.linkedTransactions.length > 0 && (() => {
             const linkedTxns = detailQuery.data.linkedTransactions;
@@ -5917,6 +5981,21 @@ function InvoiceEditingSurface({
             </section>
           )}
           </fieldset>
+          <div className="invoice-editor-action-bar">
+            <div className="invoice-editor-action-balance">
+              Balance due
+              <strong>{formatMoney(balanceDue)}</strong>
+            </div>
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={saving || !isDirty || Boolean(invoice.frozen)}
+              className="h-10 px-5 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50"
+              aria-label={saving ? "Saving invoice…" : "Save invoice"}
+            >
+              {saving ? "Saving invoice…" : "Save invoice"}
+            </button>
+          </div>
         </div>
       {prescriptionPreviewOpen && caseIdForPricing && (
         <PrescriptionPreview
@@ -6235,14 +6314,25 @@ function InvoiceEditingSurface({
       )}
       {pendingDiscard && (
         <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
-            <h3 className="text-base font-semibold">Discard changes?</h3>
-            <p className="text-sm text-muted-foreground">
+          <div
+            ref={discardDialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="invoice-discard-title"
+            aria-describedby="invoice-discard-description"
+            onKeyDown={handleDiscardDialogKeyDown}
+            className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4"
+          >
+            <h3 id="invoice-discard-title" className="text-base font-semibold">
+              Discard changes?
+            </h3>
+            <p id="invoice-discard-description" className="text-sm text-muted-foreground">
               You have unsaved edits to this invoice. If you leave now, your
               changes will be lost.
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <button
+                ref={keepEditingRef}
                 type="button"
                 onClick={() => setPendingDiscard(null)}
                 className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80"
@@ -6253,6 +6343,7 @@ function InvoiceEditingSurface({
                 type="button"
                 onClick={() => {
                   const proceed = pendingDiscard;
+                  discardFocusRestoreRef.current = null;
                   setPendingDiscard(null);
                   if (inline) resetDraft();
                   proceed();

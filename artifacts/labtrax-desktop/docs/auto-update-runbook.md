@@ -1,71 +1,97 @@
 # Auto-update end-to-end runbook
 
-## Release trigger — two operating modes
+## Release channels
 
-### Mode A: Replit-native (active in this environment)
+### Replit/Linux portable download
 
-Auto-update is powered by the **generic** electron-updater provider.
-`latest.yml` (the SHA-512 manifest electron-updater reads at runtime) is
-served at `GET /downloads/latest.yml`. electron-builder bakes the feed URL
-into `resources/app-update.yml` inside the packaged app so every installed
-copy knows where to check for updates — **no `UPDATE_FEED_URL` environment
-variable is required on the end-user's machine.**
+`scripts/desktop-build-publish.sh` produces a Windows portable ZIP on Linux
+and publishes it at `/downloads/LabTrax-Windows-Portable.zip`. The package is
+marked as `portable`; the app disables electron-updater and does not modify
+`latest.yml`. Portable users install a newer ZIP manually. It is not a
+supported in-place update channel.
 
-The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` +
-`release.yml`) requires a GitHub remote and `BUILD_BOT_TOKEN` — **neither
-is available in this Replit subrepl**. The effective release mechanism is:
+### Signed Windows and macOS installer updates
 
-| Path | When it fires |
-|---|---|
-| **Automatic** — `scripts/post-merge.sh` | After every merge whose diff (from `ORIG_HEAD` to `HEAD`) touches `artifacts/labtrax-desktop/**`, `lib/**`, or `artifacts/api-server/src/**` |
-| **Manual** — "Desktop Build + Publish" Replit workflow | Restart from the workflow pane at any time |
-| **CLI** — `bash scripts/desktop-build-publish.sh` | Run directly from the repo root |
+The supported in-place update channel is the API's generic electron-updater
+feed. Signed Windows NSIS and macOS packages built by `.github/workflows/release.yml`
+record `${PUBLISH_API_BASE_URL}/downloads/` in the packaged build stamp and
+include `resources/app-update.yml` for electron-updater compatibility. At
+startup the desktop main process explicitly selects the generic API feed from
+the build stamp, falling back to the production API `/downloads/` endpoint if
+the stamp is missing that field. The installer build does not publish directly
+from electron-builder.
 
-All three Replit-native paths:
-1. Build the Vite renderer + electron-builder packager (produces `win-unpacked/`)
-2. Zip `win-unpacked` → `LabTrax-Windows-Portable.zip` (~146 MB)
-3. Upload the ZIP to App Storage → served at `GET /downloads/LabTrax-Windows-Portable.zip`
-4. Bake `UPDATE_FEED_URL` (= `${BASE_URL}/downloads`) into `app-update.yml` inside the packaged app so electron-updater knows where to check for updates
+The release workflow stages signed installers, update manifests, and macOS
+update ZIPs as a GitHub draft. It also publishes the fresh Windows installer
+and macOS DMG for direct download; the in-app update feed remains on its
+previous version until the draft is reviewed. Run **Publish Draft Release**
+after verifying the assets. It publishes the release, copies the macOS update
+ZIPs to App Storage with their manifest SHA-512/size verified, then publishes:
 
-> **⚠ `latest.yml` is NOT updated by the Replit-native path.**
->
-> The Replit / Linux build cannot produce an NSIS installer (Wine is not
-> available). `latest.yml` **must only reference `LabTrax-Setup.exe`** —
-> the real NSIS installer. If `latest.yml` ever references the portable ZIP,
-> NSIS-installed users' auto-updater extracts the ZIP to a temp dir and
-> leaves the original `%LOCALAPPDATA%\Programs\LabTrax\LabTrax.exe` stale,
-> breaking every pinned taskbar and Start Menu shortcut with the error:
-> *"The item 'LabTrax.exe' that this shortcut refers to has been changed or
-> moved."*
->
-> **`latest.yml` is only updated by the GitHub Actions Windows build
-> (`release.yml`), which runs on `windows-latest` and produces the real
-> `LabTrax-Setup.exe` NSIS installer.**
+- `GET /downloads/latest.yml` → Windows `LabTrax-Setup.exe` from App Storage.
+- `GET /downloads/latest-mac.yml` → macOS manifest whose versioned ZIP names
+  resolve to `/downloads/<filename>` and are served from App Storage.
 
-### Pushing an auto-update to NSIS-installed users (Mode A)
+The API refuses the new feed if the Windows EXE does not match `latest.yml`
+or any referenced macOS ZIP is missing. The release workflow also rejects a
+manifest that points Windows at the portable ZIP. Installed clients check
+the generic feed; the GitHub Release is a staging/release channel, not their
+runtime update provider.
 
-To update the auto-update feed so that NSIS-installed users receive an
-update notification, the GitHub Actions `release.yml` Windows build must run:
+To publish a release:
 
-1. Run the `auto-tag-desktop-release.yml` workflow (it creates the
-   `vX.Y.Z` tag and then calls `release.yml` with it), **or** run the
-   `release.yml` workflow directly from the GitHub Actions tab and enter
-   an existing tag. Note that pushing a `v*` tag on its own does **not**
-   start a build — `release.yml` has no tag trigger.
-2. The Windows job builds `LabTrax-Setup.exe`, generates `latest.yml`
-   referencing the EXE, and publishes both to App Storage via
-   `/api/admin/desktop-installer/publish`.
-3. Verify: `curl -fsS ${PUBLISH_API_BASE_URL}/downloads/latest.yml | head`
-   — the `path:` field must show `LabTrax-Setup.exe`, not
-   `LabTrax-Windows-Portable.zip`.
+1. Run the desktop release workflow or auto-tag workflow for a tag `vX.Y.Z`.
+   The build produces the signed Windows and macOS artifacts and a draft
+   GitHub Release.
+2. Inspect the draft assets. Windows `latest.yml` must point to
+   `LabTrax-Setup.exe`; `latest-mac.yml` must reference the versioned signed
+   macOS update ZIPs.
+3. Run **Publish Draft Release** with the same tag. It validates, publishes,
+   uploads the macOS update payloads, and updates the API feed.
+4. Verify:
+   `curl -fsS "${PUBLISH_API_BASE_URL}/downloads/latest.yml" | head`
+   and
+   `curl -fsS "${PUBLISH_API_BASE_URL}/downloads/latest-mac.yml" | head`.
+
+The feed fallback is code, so it cannot be added retroactively to an executable
+that is already installed. Older builds that still have a working updater can
+receive the build that selects the API feed and then continue updating in
+place. If an installed build cannot check for updates, install the signed
+platform installer once; Settings → Software updates in builds with the
+transition guidance links directly to `LabTrax-Setup.exe` on Windows or
+`LabTrax.dmg` on macOS. These links deliberately bypass the download-page
+installer selection and never point to the portable ZIP.
+
+Do not claim that the old-to-new in-place path is available until a packaged
+N-to-N+1 update has been exercised on the matching operating system. For each
+supported OS, verify on an actual installed build:
+
+1. Install signed version N, then publish signed N+1 to the API generic feed.
+   For the compatibility check, install version N built with this transition
+   code and its normal installed location, but without a usable URL in
+   `app-update.yml`. Confirm the packaged `build-stamp.json` URL or the
+   production fallback is selected. This tests an absent/stale manifest URL;
+   it does not retrofit code into an already-installed binary.
+2. Launch version N and confirm `main.log` reports the generic
+   `${PUBLISH_API_BASE_URL}/downloads/` feed, then check for updates.
+3. Confirm the downloaded Windows payload is `LabTrax-Setup.exe` (not
+   `LabTrax-Windows-Portable.zip`), or the macOS manifest resolves to its
+   signed update ZIP. Restart and verify the installed version is N+1.
+4. Repeat with a portable Windows build and confirm it cannot check/install
+   through the updater, while its guidance links to `LabTrax-Setup.exe`.
+5. Install a Microsoft Store MSIX and confirm it remains Store-managed and
+   never advertises the standalone installer.
+
+Record the OS, installed N/N+1 versions, feed URL, payload filenames, and
+result in the release verification record. The source-level tests do not
+replace these installed-build checks.
 
 ### Users with broken shortcuts
 
-Users who installed via `LabTrax-Setup.exe` and have a broken shortcut
-after a Replit-native update (shortcut points at a stale path) should
-reinstall from the current `LabTrax-Setup.exe` at `/downloads/LabTrax-Setup.exe`.
-Their user data and settings are preserved — the NSIS installer writes to
-the same `%LOCALAPPDATA%\Programs\LabTrax\` directory.
+If an installed update fails or a shortcut points at a stale path, reinstall
+from the current signed installer. The NSIS installer uses the same
+`%LOCALAPPDATA%\Programs\LabTrax\` directory; user-data migration still needs
+to be verified on packaged N-to-N+1 builds rather than inferred from source.
 
 **Skip a rebuild:** include `[skip desktop-release]` or `[skip ci]` in the merge commit subject.
 
@@ -77,8 +103,8 @@ The Microsoft Store package is built and submitted separately from the
 standalone NSIS installer. The Store app relies on Store-managed updates and
 must not update itself with `LabTrax-Setup.exe`; `process.windowsStore` disables
 the generic `electron-updater` path only for the Store package. Direct NSIS
-installs continue to use `/downloads/latest.yml` and `LabTrax-Setup.exe` as
-before.
+installs use `/downloads/latest.yml`. The update Settings panel gives Store
+users a Store-specific message and does not show a direct-installer link.
 
 Use [microsoft-store-submission-checklist.md](./microsoft-store-submission-checklist.md)
 for the Partner Center variables, independent Store-package checks, direct
@@ -86,75 +112,32 @@ installer update smoke, listing requirements, and certification handoff.
 
 ---
 
-### Mode B: GitHub Actions (requires GitHub remote + secrets)
-
-Every desktop-relevant push to `main` cuts and ships a new patch release
-with **no manual steps** — this is what keeps the Electron installer in
-sync with the web app. `.github/workflows/auto-tag-desktop-release.yml`
-runs on `push` (branch `main`) and:
-
-1. Skips when only non-desktop paths changed. The `paths-ignore` filter
-   on the push trigger and the "Determine whether changes are
-   desktop-relevant" step both exclude `artifacts/labtrax/**`,
-   `artifacts/mockup-sandbox/**`, `docs/**`, `.local/**`,
-   `attached_assets/**`, and `**/*.md`. **Keep those two lists in sync.**
-   The step re-checks the diff since the last `v*` tag, because path
-   filters don't apply to `workflow_dispatch` and a single push may
-   bundle several commits.
-2. Skips when the head commit message contains `[skip desktop-release]`
-   or `[skip ci]` (the escape hatch for docs-only / infra-only merges).
-3. Bumps the patch version in `artifacts/labtrax-desktop/package.json`,
-   commits with `[skip ci]`, tags `vX.Y.Z`, and pushes both using
-   `BUILD_BOT_TOKEN` (a fine-grained PAT that can push to protected
-   `main`). The push is retried with a rebase if `main` moved underneath
-   the run.
-4. Calls `.github/workflows/release.yml` as a reusable workflow
-   (`workflow_call`) with the tag it just created, passing
-   `secrets: inherit`. That builds, signs, and notarizes Windows +
-   macOS and **must** auto-publish to `/downloads/`. Both publish steps
-   exit non-zero (not silently 0) when `PLATFORM_ADMIN_SECRET` or
-   `PUBLISH_API_BASE_URL` is missing — auto-release is the primary
-   delivery path, so a missing secret is a real misconfiguration to
-   surface, not a benign opt-out.
-
-Electron installs poll the feed every 4 hours, so users see the new
-version within 4 hours of the merge.
-
-**No infinite loop:** the bump commit touches
-`artifacts/labtrax-desktop/package.json`, which is deliberately *not* in
-`paths-ignore`, so the `[skip ci]` marker in
-`chore(desktop): release vX.Y.Z [skip ci]` is what stops the re-trigger.
-GitHub suppresses the push event for `[skip ci]` commits, and the `if:`
-on the `tag` job is the second, explicit guard. The same applies to
-`release.yml`'s `chore: bump desktop build number … [skip ci]` commit.
-
-**When it fails:** the release runs as a job inside the auto-tag run, so
-a build/publish failure fails that run and the standard GitHub Actions
-failure notification fires with a link to the failing job. The tag stays
-on origin — re-run by dispatching **Release** manually with that same
-tag. A failed release never blocks the next merge.
-
-To pause auto-release temporarily, disable the
-`auto-tag-desktop-release.yml` workflow in Actions → Workflows. To skip
-a single merge, append `[skip desktop-release]` to the merge commit
-message. To rebuild an existing tag, run **Release** from the Actions tab
-and enter the tag (`workflow_dispatch` is still supported alongside
-`workflow_call`).
-
-The runbook below verifies the *download / install swap* mechanics that
-unit tests can't cover. Run it before any release that changes
-`electron-builder.yml`, `electron/main.cjs` updater wiring, or the
-publish provider.
+The auto-tag workflow can build and stage a desktop release after desktop
+changes, but the stable in-app feed is updated only when **Publish Draft
+Release** succeeds. That explicit approval gate prevents a failed or
+unreviewed build from becoming an installed update.
 
 ---
 
 
-This runbook verifies that a packaged LabTrax Desktop build will actually
+This runbook describes how to verify that a packaged LabTrax Desktop build will actually
 download a newer version, swap binaries, and relaunch on the new version.
 Unit tests cover the IPC wiring and `releaseNotes` shape handling, but they
 stub `electron-updater`. Run this runbook before every major release to catch
 regressions in `electron-builder` config (wrong publish provider, missing
 `latest.yml`, signature mismatch, etc.) that unit tests cannot see.
+
+## Sign-in and preference retention status
+
+Automated tests simulate an app restart and check that encrypted sign-in data
+and a hidden Cases-table column can be read again from the same per-user data
+stores. These tests do **not** install or update a signed Windows or macOS app.
+Actual signed installer retention has not been verified on either operating
+system; no Windows/macOS build or update channel is recorded as tested.
+
+The signed-installer procedure in section 5a is the real-device check for a
+future Windows/macOS tester. Do not report its results as passed until it has
+been run on those computers.
 
 The runbook uses `electron-builder`'s **generic** publish provider against a
 local HTTP server, so no GitHub Release or code-signing certificate is
@@ -225,8 +208,13 @@ After the build:
   `/Applications`. Launch it.
 
 Open the app's Settings panel and confirm the version reads **9.9.0**.
-Quit the app fully (Windows: right-click tray icon → Quit; macOS:
-`Cmd-Q`). Auto-update only triggers on the next launch.
+Sign in with a dedicated test account and leave **Remember me** enabled. On
+the Cases page, open **Columns** and hide one visible column (for example,
+**Notes**). Confirm the column stays hidden after closing and reopening the
+app once. This establishes both pieces of state before the update.
+
+Quit the app fully (Windows: right-click tray icon → Quit; macOS: `Cmd-Q`).
+Auto-update only triggers on the next launch.
 
 > Save the contents of `$FEED_DIR` as the "N" snapshot if you want to
 > rerun the test without rebuilding:
@@ -298,7 +286,7 @@ takes precedence over `app-update.yml`.
 > **Note for production installs:** end-users never need to set
 > `UPDATE_FEED_URL`. The correct generic feed URL is already baked into
 > `resources/app-update.yml` at build time by
-> `scripts/desktop-build-publish.sh`. The runtime env-var override is a
+> the signed installer build in `.github/workflows/release.yml`. The runtime env-var override is a
 > runbook testing convenience only.
 
 **Windows (PowerShell):**
@@ -369,6 +357,58 @@ Confirm **all** of the following:
 If every box is checked, auto-update is working end-to-end. ✅
 
 ---
+
+
+## 5a. Verify signed update keeps sign-in and preferences
+
+Run this check separately on a supported Windows machine and a supported Mac.
+Use real signed N and N+1 builds for the same platform and architecture, made
+with the **same signing identity**. The update payload and manifest must come
+from the generic installer feed (`latest.yml` on Windows or `latest-mac.yml`
+on macOS); a portable ZIP, Store/MSIX package, unsigned build, or mocked
+updater test is not evidence for this check. The local HTTP feed in this
+runbook is acceptable if both builds are signed by the same identity and the
+N build receives N+1 through the in-app updater.
+
+Before updating, record the visible N version/build number, the feed channel,
+and the preference changed in step 1. Then:
+
+- [ ] Confirm N is signed and installed from its platform installer.
+- [ ] Confirm the test account is signed in and **Remember me** was enabled
+      when signing in. Do not record or copy any tokens.
+- [ ] Confirm the selected Cases column is hidden, then quit and relaunch N
+      once to confirm the preference is saved before the update.
+- [ ] Launch N with the N+1 feed available, wait for the in-app update to
+      download, and choose **Restart to install**.
+- [ ] Confirm the relaunched app reports N+1 and shows the visible N+1 marker
+      from step 2b.
+- [ ] Confirm the test account is still signed in without entering credentials.
+- [ ] Confirm the same Cases column is still hidden.
+- [ ] Confirm the updater log has no `Auto-updater error:` entries.
+- [ ] Confirm the installed app is still signed by the expected publisher /
+      Developer ID.
+
+Do not infer a pass from the encrypted token file existing. The proof is that
+the app restores the authenticated session and the chosen UI preference after
+the signed update and relaunch. The auth blob is stored under Electron's
+per-user `userData` directory (`auth-tokens.bin`); the Cases column preference
+is stored in the renderer's persistent profile. Never inspect or include token
+contents in the test record.
+
+### What the automated tests cover
+
+The Linux test suite covers two pieces of the restart behavior:
+
+- `electron/__tests__/auth-store.test.ts` reinitializes the token-store module
+  and checks that it can restore saved tokens from the same test user-data
+  directory.
+- `src/hooks/__tests__/useTableColumns.test.tsx` remounts the column-preference
+  hook and checks that a hidden column is restored from test local storage.
+
+These tests use mocked storage and do not run Electron's signed installer,
+`electron-updater`, Windows Authenticode, or macOS notarization. They are
+regression checks for persistence code only, not proof that an installed
+signed update retains state on either operating system.
 
 ## 6. Cleanup
 
@@ -575,3 +615,32 @@ Common causes:
 | `sha512 mismatch` in log | `latest.yml` is from an older build; rebuild step 2 with `$FEED_DIR` cleared first. |
 | App downloads but never relaunches | On Windows, antivirus (esp. SmartScreen for unsigned builds) is blocking the swap — re-test with a signed build. |
 | `Code signature at URL … did not pass validation` (macOS) | The new build is signed with a different certificate than the installed build. Re-sign both with the same identity. |
+
+### Signed state-retention test record
+
+Complete one record for each operating system. Leave a field blank until the
+corresponding run has actually been performed; a blank record is not a pass.
+
+| Field | Windows NSIS | macOS |
+|---|---|---|
+| Test date (UTC) |  |  |
+| OS version/build and device architecture |  |  |
+| Installer architecture | x64 | x64 or arm64 |
+| Signing publisher / Developer ID team |  |  |
+| N version and platform build number |  |  |
+| N+1 version and platform build number |  |  |
+| Release tag and workflow run URL |  |  |
+| Update channel (`installer`) and feed type |  |  |
+| Preference changed (hidden Cases column) |  |  |
+| Still signed in after update (pass/fail) |  |  |
+| Preference retained after update (pass/fail) |  |  |
+| Updater errors absent (pass/fail) |  |  |
+| Signature valid after update (pass/fail) |  |  |
+| Overall result and tester initials |  |  |
+
+The release workflow builds Windows and macOS with distinct platform build
+numbers. Record the number assigned to each platform artifact, not just the
+shared app version. Do not claim signed update state retention for an OS until
+its completed record is attached to the release evidence.
+
+---

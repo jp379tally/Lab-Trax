@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  isPrivateBackupPath,
   computeMissingCommits,
   computeChunkBoundaries,
   run,
@@ -15,6 +16,10 @@ import {
  * Build a fully-mocked isomorphic-git client. By default it behaves like a
  * healthy, fast-forwardable repo; individual tests override fields as needed.
  */
+function linearHistory(oids: string[]) {
+  return oids.map((oid, index) => ({ oid, commit: { parent: oids.slice(index + 1, index + 2) } }));
+}
+
 function makeGitMock(
   overrides: Partial<{
     localTip: string;
@@ -27,6 +32,7 @@ function makeGitMock(
 ): GitLike & {
   resolveRef: ReturnType<typeof vi.fn>;
   getRemoteInfo: ReturnType<typeof vi.fn>;
+  listFiles: ReturnType<typeof vi.fn>;
   log: ReturnType<typeof vi.fn>;
   writeRef: ReturnType<typeof vi.fn>;
   push: ReturnType<typeof vi.fn>;
@@ -54,9 +60,10 @@ function makeGitMock(
   });
 
   return {
+    listFiles: vi.fn().mockResolvedValue(["src/app.ts", "lib/db/migrations/0001.sql"]),
     resolveRef: vi.fn().mockResolvedValue(localTip),
     getRemoteInfo,
-    log: vi.fn().mockResolvedValue(logOids.map((oid) => ({ oid }))),
+    log: vi.fn().mockResolvedValue(linearHistory(logOids)),
     writeRef: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(pushResult),
     deleteRef: vi.fn().mockResolvedValue(undefined),
@@ -99,7 +106,8 @@ describe("computeMissingCommits", () => {
   it("returns missing commits oldest-first for a normal fast-forward", () => {
     // git.log order: newest -> oldest. Remote is at c2 (an ancestor).
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c5", "c4", "c3", "c2", "c1"],
+      linearHistory(["c5", "c4", "c3", "c2", "c1"]),
+      "c5",
       "c2",
     );
     expect(reachedRemote).toBe(true);
@@ -109,7 +117,8 @@ describe("computeMissingCommits", () => {
 
   it("flags diverged history when the remote tip is not an ancestor", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c5", "c4", "c3"],
+      linearHistory(["c5", "c4", "c3"]),
+      "c5",
       "not-an-ancestor",
     );
     expect(reachedRemote).toBe(false);
@@ -119,7 +128,8 @@ describe("computeMissingCommits", () => {
 
   it("treats a missing remote branch (undefined tip) as all-new, not diverged", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c3", "c2", "c1"],
+      linearHistory(["c3", "c2", "c1"]),
+      "c3",
       undefined,
     );
     // reachedRemote stays false but the caller must not treat this as diverged
@@ -130,7 +140,8 @@ describe("computeMissingCommits", () => {
 
   it("returns no missing commits when the remote tip is the newest commit", () => {
     const { ordered, reachedRemote } = computeMissingCommits(
-      ["c3", "c2", "c1"],
+      linearHistory(["c3", "c2", "c1"]),
+      "c3",
       "c3",
     );
     expect(reachedRemote).toBe(true);
@@ -275,7 +286,7 @@ describe("run", () => {
   it("stops starting new chunks once the time budget is exceeded", async () => {
     const gitMock = makeGitMock({
       localTip: "e",
-      remoteTips: ["a", "e"],
+      remoteTips: ["a", "b"],
       logOids: ["e", "d", "c", "b", "a"],
     });
 
@@ -295,5 +306,44 @@ describe("run", () => {
     // after the first chunk.
     expect(result.pushedChunks).toBe(1);
     expect(gitMock.push).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["b", "another-writer", undefined])(
+    "fails verification when a successful push leaves remote at %s",
+    async (remoteTip) => {
+      const gitMock = makeGitMock({
+        localTip: "e",
+        remoteTips: ["b", remoteTip],
+        logOids: ["e", "d", "c", "b", "a"],
+      });
+
+      await expect(run(baseOpts(gitMock))).rejects.toMatchObject({
+        code: 4,
+        message: "remote verification failed",
+      });
+      expect(gitMock.push).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+
+describe("private history fence", () => {
+  it.each(["labtrax_prod_2026-10-05.sql", "production.sql", "backup.dump", "AuthKey_example.p8", ".env.production", "attached_assets/patient.png", "support/report.json", "uploads/case.pdf", "scripts/database-fingerprint.json"])("blocks %s", (file) => {
+    expect(isPrivateBackupPath(file)).toBe(true);
+  });
+  it.each(["artifacts/labtrax/assets/icon.png", "lib/db/migrations/0001.sql", "scripts/src/push-to-github.ts"])("allows source %s", (file) => {
+    expect(isPrivateBackupPath(file)).toBe(false);
+  });
+  it.each([false, true])("refuses private data removed from HEAD, even with force=%s", async (force) => {
+    const mock = makeGitMock({localTip: "c", remoteTips: ["a"], logOids: ["c", "b", "a"]});
+    mock.listFiles.mockImplementation(async ({ ref }: {ref: string}) => ref === "b" ? ["labtrax_prod_private.sql"] : ["src/app.ts"]);
+    await expect(run(baseOpts(mock, {force, chunkSize: 1}))).rejects.toMatchObject({code: 5});
+    expect(mock.push).not.toHaveBeenCalled();
+  });
+  it("fails closed when history cannot be inspected", async () => {
+    const mock = makeGitMock({localTip: "b", remoteTips: ["a"], logOids: ["b", "a"]});
+    mock.listFiles.mockRejectedValue(new Error("unreadable history"));
+    await expect(run(baseOpts(mock))).rejects.toThrow("unreadable history");
+    expect(mock.push).not.toHaveBeenCalled();
   });
 });

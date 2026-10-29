@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
   assertNoDuplicateNamedExports,
   assertRetiredCaseReviewAbsent,
@@ -9,6 +11,47 @@ import {
   createGeneratedApiFingerprint,
   findDuplicateNamedExports,
 } from "./check-generated-api-exports";
+
+describe("generated API Zod runtime compatibility", () => {
+  it("targets the locked validator version and rejects a stale installation", () => {
+    const packagePath = resolve(import.meta.dirname, "../../lib/api-zod/package.json");
+    const requireZod = createRequire(packagePath);
+    const installedVersion = requireZod("zod/package.json").version;
+    const lockfile = parse(readFileSync(
+      resolve(import.meta.dirname, "../../pnpm-lock.yaml"), "utf8",
+    ));
+    const lockedVersion = lockfile.importers["lib/api-zod"].dependencies.zod.version;
+    expect(installedVersion).toBe(lockedVersion.split("(")[0]);
+    const major = Number(installedVersion.split(".")[0]);
+    const config = readFileSync(
+      resolve(import.meta.dirname, "../../lib/api-spec/orval.config.ts"), "utf8",
+    );
+    expect(config).toMatch(new RegExp(`version:\\s*${major}\\b`));
+  });
+
+  it("loads the complete generated module and preserves URL, UUID, and extensible-object validation", async () => {
+    // This is a runtime check of another package, not a scripts source import.
+    // Keep that package's sources outside the scripts TypeScript compilation.
+    const modulePath = resolve(import.meta.dirname, "../../lib/api-zod/src/generated/api.ts");
+    const schemas = await import(modulePath);
+    expect(schemas.CreateSubscriptionCheckoutBody.safeParse({
+      successUrl: "https://example.com/success",
+    }).success).toBe(true);
+    expect(schemas.CreateSubscriptionCheckoutBody.safeParse({
+      successUrl: "not a URL",
+    }).success).toBe(false);
+    expect(schemas.GetBackupRunStatusParams.safeParse({
+      runId: "123e4567-e89b-42d3-a456-426614174000",
+    }).success).toBe(true);
+    expect(schemas.GetBackupRunStatusParams.safeParse({
+      runId: "not a UUID",
+    }).success).toBe(false);
+    const extraData = { id: 123, customMetadata: { source: "regression" } };
+    expect(schemas.UpdateCase200Response.parse({
+      ok: true, data: extraData,
+    }).data).toEqual(extraData);
+  });
+});
 
 describe("retired case-review API guard", () => {
   it.each([

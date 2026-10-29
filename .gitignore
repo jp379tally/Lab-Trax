@@ -109,3 +109,8 @@ exports/
 /generated-artifacts/
 /.private-operator-reports/
 /support/rebuild-lost-cases-2026-10-06/created-at-repair-report.json
+
+# Uploaded reference copies used only by the private review comparison.
+/artifacts/mockup-sandbox/public/tooth-compare/reference3.png
+/artifacts/mockup-sandbox/public/tooth-compare/reference4.png
+/artifacts/mockup-sandbox/public/tooth-compare/reference5.png

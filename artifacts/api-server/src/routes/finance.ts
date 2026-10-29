@@ -1,4 +1,4 @@
-import { assertRecoveryReleased } from "../lib/recovery-billing-hold";
+import { assertHistoricalInvoiceNotHeld } from "../lib/historical-invoice-hold";
 import { GetRegisterAnalyticsQueryParams } from "@workspace/api-zod";
 import { registerAnalytics } from "../lib/register-analytics";
 import { Router } from "express";
@@ -1077,7 +1077,7 @@ async function syncTxnInvoiceLinks(
       throw new HttpError(400, "One or more invoices were not found.");
     }
     for (const inv of found) {
-      assertRecoveryReleased(inv);
+      assertHistoricalInvoiceNotHeld(inv);
       if (inv.labOrganizationId !== labOrganizationId) {
         throw new HttpError(
           400,
@@ -4528,7 +4528,7 @@ router.delete(
           .where(eq(invoices.id, pmt.invoiceId))
           .for("update");
         if (!inv) continue;
-        assertRecoveryReleased(inv);
+        assertHistoricalInvoiceNotHeld(inv);
 
         const restoredBalance =
           Number(inv.balanceDue) + Number(pmt.amount);

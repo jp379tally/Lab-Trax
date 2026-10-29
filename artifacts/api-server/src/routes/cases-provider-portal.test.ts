@@ -35,7 +35,7 @@ vi.mock("../lib/backup.js", () => ({
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
-const PROVIDER_TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-provider");
+const PROVIDER_TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-provider", "case-media");
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
   caseMediaDir: PROVIDER_TEST_MEDIA_DIR,
@@ -2318,6 +2318,8 @@ maybe("Provider portal foundation (db integration)", () => {
           subtotal: "250.00",
           total: "250.00",
           balanceDue: "250.00",
+          notes: "Private invoice note",
+          displayMetadataJson: {},
           createdByUserId: labOwnerId,
           createdAt: new Date(base),
         },
@@ -2362,6 +2364,8 @@ maybe("Provider portal foundation (db integration)", () => {
         expect(detail.invoiceId).toBe(activeInvoiceId);
         expect(detail.invoiceStatus).toBe("open");
         expect(detail.invoiceTotal).toBe("250.00");
+        expect(detail.invoiceNotes).toBeNull();
+        expect(JSON.stringify(detail)).not.toContain("Private invoice note");
         expect(detail.invoiceLines).toEqual([
           expect.objectContaining({
             description: "Full denture",
@@ -2372,6 +2376,13 @@ maybe("Provider portal foundation (db integration)", () => {
         ]);
         expect(JSON.stringify(detail)).not.toContain("999.00");
         expect(JSON.stringify(detail)).not.toContain("888.00");
+
+        await db
+          .update(invoicesTable)
+          .set({ displayMetadataJson: { shareNotesWithProvider: true } })
+          .where(eq(invoicesTable.id, activeInvoiceId));
+        const sharedDetail = await getDetail(caseAId);
+        expect(sharedDetail.invoiceNotes).toBe("Private invoice note");
       } finally {
         await db.delete(lineItemsTable).where(eq(lineItemsTable.id, lineId));
         await db

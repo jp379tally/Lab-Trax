@@ -1,6 +1,7 @@
 // Real Expo-web geometry and state checks; called by the shared export runner.
 const { strict: assert } = require("node:assert");
 const { mkdirSync } = require("node:fs");
+const { expect } = require("@playwright/test");
 
 const caseId = "header-locator-browser-case";
 const detail = {
@@ -71,12 +72,16 @@ async function verifyCaseHeader(page, baseUrl) {
   await select.click();
   assert.equal(await page.getByTestId("option-station-polish").count(), 0);
   await page.getByTestId("option-station-glaze").click();
+  await page.getByTestId("locate-success").waitFor();
+  await expect(page.getByTestId("overview-current-location")).toHaveText(locations[1].name);
+  assert.deepEqual(patches, [{ status: "qc", labLocationId: "station-glaze" }]);
+  assert.equal(await page.getByTestId("locate-confirm").count(), 0);
 
   for (const tab of ["history", "notes", "files", "restorations", "overview"]) {
     await page.getByTestId(`section-tab-${tab}`).click();
     await select.waitFor();
     assert.equal(await select.count(), 1, `One locator required on ${tab}`);
-    assert.match(await select.innerText(), /Glaze Oven/);
+    await expect(page.getByTestId("overview-current-location")).toHaveText(locations[1].name);
     assert.equal(await page.getByTestId("case-detail-body").getByTestId("locate-select").count(), 0);
   }
   await page.getByTestId("overview-edit").click();
@@ -84,11 +89,70 @@ async function verifyCaseHeader(page, baseUrl) {
   assert.equal(await page.getByTestId("case-header-location").count(), 1);
   await page.getByTestId("overview-cancel").click();
   await select.waitFor();
-  assert.match(await select.innerText(), /Glaze Oven/);
+  await expect(page.getByTestId("overview-current-location")).toHaveText(locations[1].name);
+  await select.click();
+  assert.equal(await page.getByTestId("option-station-glaze").count(), 0);
+  await page.getByTestId("option-station-polish").click();
+  await expect(page.getByTestId("overview-current-location")).toHaveText(locations[0].name);
+  assert.deepEqual(patches, [
+    { status: "qc", labLocationId: "station-glaze" },
+    { status: "qc", labLocationId: "station-polish" },
+  ]);
+  console.log("✓ Expo web header retains location across tabs/edits and routes same-status stations by exact id");
 
   mkdirSync("/tmp/case-header-expo-web", { recursive: true });
-  for (const width of [320, 375, 430, 1024]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const name of [
+    { label: "short", first: "Jane", last: "Doe" },
+    { label: "long", first: "Alexandria Catherine", last: "Montgomery Worthington Smythe" },
+    { label: "unbroken", first: "AlexandriaCatherineMontgomeryWorthingtonSmythe", last: "" },
+  ]) {
+    // Exercise the real name source and component, not a replacement DOM fixture.
+    await page.getByTestId("case-back").click();
+    await page.getByTestId(`case-card-${caseId}`).waitFor();
+    detail.patientFirstName = name.first;
+    detail.patientLastName = name.last;
+    await page.getByTestId(`case-card-${caseId}`).click();
+    await expect(page.getByTestId("case-header-patient")).toHaveText(`${name.first} ${name.last}`.trim());
+    await page.getByTestId("section-tab-overview").click();
+    await page.getByTestId("locate-select").waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    const scenarios = name.label === "short"
+      ? [{ width: 375, fontScale: 1 }]
+      : [
+        { width: 320, fontScale: 1 },
+        { width: 375, fontScale: 1 },
+        { width: 430, fontScale: 1 },
+        { width: 1024, fontScale: 1 },
+        { width: 320, fontScale: 2 },
+        { width: 375, fontScale: 1.8 },
+      ];
+    for (const scenario of scenarios) {
+      await verifyHeaderGeometry(page, name.label, scenario);
+    }
+  }
+  await page.getByTestId("case-back").click();
+  await page.getByTestId(`case-card-${caseId}`).waitFor();
+  console.log("✓ Real case back navigation retained");
+}
+
+async function verifyHeaderGeometry(page, name, { width, fontScale }) {
+    await page.setViewportSize({ width, height: 720 });
+    // RN Web does not implement native Dynamic Type. Enlarge the actual header's
+    // text and line heights (not the icons) to measure a text-only scaling proxy.
+    // Native allowFontScaling/no-cap contracts are covered by the screen tests.
+    await page.getByTestId("case-top-header").evaluate((header, scale) => {
+      for (const element of header.querySelectorAll("*")) {
+        const hasText = Array.from(element.childNodes).some((node) =>
+          node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+        const style = getComputedStyle(element);
+        if (!hasText || /ionicons/i.test(style.fontFamily)) continue;
+        element.dataset.headerBaseFontSize ??= style.fontSize;
+        element.dataset.headerBaseLineHeight ??= style.lineHeight;
+        element.style.fontSize = `${parseFloat(element.dataset.headerBaseFontSize) * scale}px`;
+        const lineHeight = parseFloat(element.dataset.headerBaseLineHeight);
+        if (Number.isFinite(lineHeight)) element.style.lineHeight = `${lineHeight * scale}px`;
+      }
+    }, fontScale);
     const geometry = await page.evaluate(() => {
       const el = (id) => document.querySelector(`[data-testid="${id}"]`);
       const rect = (element) => {
@@ -97,9 +161,33 @@ async function verifyCaseHeader(page, baseUrl) {
       };
       const header = el("case-top-header");
       const locator = el("case-header-location");
-      const controls = ["locate-select", "locate-confirm", "case-back", "case-ask-maynard-btn", "case-remake-btn", "case-delete-btn", "case-print"];
+      const patient = el("case-header-patient");
+      const patientStyle = getComputedStyle(patient);
+      // RN Web uses pre-wrap: a trailing space may legally hang outside its
+      // line. Measure visible glyphs, not that non-painted whitespace rectangle.
+      const patientGlyphs = [];
+      const walker = document.createTreeWalker(patient, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        for (let offset = 0; offset < node.textContent.length; offset++) {
+          if (/\s/.test(node.textContent[offset])) continue;
+          const range = document.createRange();
+          range.setStart(node, offset);
+          range.setEnd(node, offset + 1);
+          const r = range.getBoundingClientRect();
+          patientGlyphs.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+        }
+      }
+      const controls = ["locate-select", "case-back", "case-ask-maynard-btn", "case-remake-btn", "case-delete-btn", "case-print"];
       return {
-        patient: rect(el("case-header-patient")),
+        patient: rect(patient),
+        patientGlyphs,
+        patientStyle: {
+          fontSize: parseFloat(patientStyle.fontSize),
+          lineHeight: parseFloat(patientStyle.lineHeight),
+          fontFamily: patientStyle.fontFamily,
+          fontLoaded: document.fonts.check(`18px ${patientStyle.fontFamily}`),
+        },
+        patientColumn: rect(patient.parentElement),
         location: rect(locator),
         tabs: rect(el("section-tab-overview")),
         header: rect(header),
@@ -119,34 +207,43 @@ async function verifyCaseHeader(page, baseUrl) {
         overflow: document.documentElement.scrollWidth > innerWidth + 1,
       };
     });
-    assert(geometry.inHeader && geometry.singleLocator, `One header locator required at ${width}px`);
-    assert(geometry.patient.bottom <= geometry.location.top, `Locator must be below patient at ${width}px`);
-    assert(geometry.location.bottom <= geometry.tabs.top, `Locator must be above tabs at ${width}px`);
-    assert(!geometry.overflow, `Page overflow at ${width}px`);
+    const context = `${name}, ${width}px, ${fontScale}x text`;
+    assert.equal(geometry.patientStyle.fontSize, 18 * fontScale, context);
+    assert.equal(geometry.patientStyle.lineHeight, 24 * fontScale, context);
+    assert.match(geometry.patientStyle.fontFamily, /Inter_700Bold/, context);
+    assert(geometry.patientStyle.fontLoaded, `Bold font not loaded: ${context}`);
+    assert(geometry.inHeader && geometry.singleLocator, `One header locator required: ${context}`);
+    assert(geometry.patient.bottom <= geometry.location.top, `Locator must be below patient: ${context}`);
+    assert(geometry.location.bottom <= geometry.tabs.top, `Locator must be above tabs: ${context}`);
+    assert(!geometry.overflow, `Page overflow: ${context}`);
+    assert(geometry.patientGlyphs.length > 0, `Missing rendered name: ${context}`);
+    if (name !== "short" && width <= 430) {
+      assert(geometry.patient.height > geometry.patientStyle.lineHeight + 1, `Long name must wrap: ${context}`);
+    }
+    for (const glyph of geometry.patientGlyphs) {
+      assert(glyph.left >= geometry.patientColumn.left - 1 && glyph.right <= geometry.patientColumn.right + 1,
+        `Patient text overflows its column: ${context}: ${JSON.stringify(glyph)}`);
+      assert(glyph.top >= geometry.patient.top - 1 && glyph.bottom <= geometry.patient.bottom + 1,
+        `Patient text clipped vertically: ${context}`);
+    }
     for (const control of geometry.controls) {
-      assert(control.left >= geometry.header.left && control.right <= geometry.header.right, `${control.id} clipped at ${width}px`);
-      assert(control.reachable, `${control.id} covered at ${width}px`);
-      assert(control.contentsFit, `${control.id} text/icon clipped at ${width}px: ${JSON.stringify(control)}`);
+      assert(control.left >= geometry.header.left && control.right <= geometry.header.right, `${control.id} clipped: ${context}`);
+      assert(control.reachable, `${control.id} covered: ${context}`);
+      assert(control.contentsFit, `${control.id} text/icon clipped: ${context}: ${JSON.stringify(control)}`);
+      assert(!overlaps(geometry.patient, control), `Patient name overlaps ${control.id}: ${context}`);
     }
     for (let i = 0; i < geometry.controls.length; i++) {
       const a = geometry.controls[i];
       for (const b of geometry.controls.slice(i + 1)) {
-        assert(!(a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom),
-          `${a.id} overlaps ${b.id} at ${width}px`);
+        assert(!overlaps(a, b), `${a.id} overlaps ${b.id}: ${context}`);
       }
     }
-    await page.screenshot({ path: `/tmp/case-header-expo-web/${width}.png` });
-    console.log(`✓ Expo web header locator geometry and controls verified at ${width}px`);
-  }
-  await page.getByTestId("section-tab-history").click();
-  await page.getByTestId("locate-confirm").click();
-  await page.getByTestId("locate-success").waitFor();
-  assert.deepEqual(patches, [{ status: "qc", labLocationId: "station-glaze" }]);
-  await page.getByTestId("overview-current-location").getByText(locations[1].name, { exact: true }).waitFor();
-  await select.click();
-  assert.equal(await page.getByTestId("option-station-glaze").count(), 0);
-  await page.getByTestId("option-station-polish").waitFor();
-  console.log("✓ Expo web header locator retains selection across tabs/edits and routes same-status stations by exact id");
+    await page.screenshot({ path: `/tmp/case-header-expo-web/${name}-${width}-${fontScale}x.png` });
+    console.log(`✓ Rendered Expo web name, wrapping, no overlap/overflow, and controls verified: ${context}`);
+}
+
+function overlaps(a, b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
 module.exports = { caseHeaderResponse, verifyCaseHeader };

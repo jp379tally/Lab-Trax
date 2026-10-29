@@ -47,6 +47,7 @@ import type {
   AuditedOrganizationRecoveryResult,
   AuthResult,
   AuthTokensResult,
+  BackupJobStatus,
   BackupRunRequest,
   BackupRunResult,
   BackupScheduleInput,
@@ -115,6 +116,8 @@ import type {
   CreatorRevenue,
   CreatorUnlockResult,
   CurrentUserResult,
+  DatabaseProtectionRetentionInput,
+  DatabaseProtectionRetentionResult,
   DeleteAiMemory200,
   DeleteCaseSavedViewParams,
   DeleteCatalogEntryParams,
@@ -211,6 +214,7 @@ import type {
   ImportCaseFromIteroRxBody,
   ImportCaseFromIteroZipBody,
   ImportCasesFromIteroZipBatchBody,
+  IntakePracticeContactInput,
   InvitationListResult,
   InvitationResult,
   InvoiceDateRepairInput,
@@ -319,18 +323,6 @@ import type {
   ReceivePaymentsResult,
   ReconciliationHistoryListResult,
   RecordSavedCardSetupOutcomeBody,
-  RecoveryAnalysis,
-  RecoveryBillingList,
-  RecoveryEvidenceInput,
-  RecoveryExclusionInput,
-  RecoveryExclusionResult,
-  RecoveryPreviewInput,
-  RecoveryPricePreview,
-  RecoveryProposalInput,
-  RecoveryProposalReference,
-  RecoveryProposalResult,
-  RecoveryReleaseInput,
-  RecoveryWriteResult,
   RefreshSessionInput,
   RegisterAnalytics,
   RegisterUserInput,
@@ -399,6 +391,8 @@ import type {
   SubscriptionCheckoutResult,
   SuccessEnvelope,
   SuccessResult,
+  ToothChartCommitInput,
+  ToothChartCommitResult,
   TransactionCategoryListResult,
   TransactionCategoryResult,
   TranscribeAudioBody,
@@ -452,6 +446,8 @@ import type {
   VendorResult,
   VerificationSendResult,
   VerificationVerifyResult,
+  VerifyAdminPinInput,
+  VerifyAdminPinResult,
   VerifyEmailCodeInput,
   VerifyPhoneCodeInput,
   VocabularyItemResult,
@@ -1587,565 +1583,6 @@ export function useGetInvoiceDiscountsReport<TData = Awaited<ReturnType<typeof g
 
 
 
-
-export const getGetRecoveryBillingUrl = () => {
-
-
-
-
-  return `/api/billing-recovery`
-}
-
-/**
- * @summary List evidence-backed recovered-case billing for authorized lab billing staff
- */
-export const getRecoveryBilling = async ( options?: RequestInit): Promise<RecoveryBillingList> => {
-
-  return customFetch<RecoveryBillingList>(getGetRecoveryBillingUrl(),
-  {
-    ...options,
-    method: 'GET'
-
-
-  }
-);}
-
-
-
-
-
-export const getGetRecoveryBillingQueryKey = () => {
-    return [
-    `/api/billing-recovery`
-    ] as const;
-    }
-
-
-export const getGetRecoveryBillingQueryOptions = <TData = Awaited<ReturnType<typeof getRecoveryBilling>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRecoveryBilling>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-) => {
-
-const {query: queryOptions, request: requestOptions} = options ?? {};
-
-  const queryKey =  queryOptions?.queryKey ?? getGetRecoveryBillingQueryKey();
-
-
-
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRecoveryBilling>>> = ({ signal }) => getRecoveryBilling({ signal, ...requestOptions });
-
-
-
-
-
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRecoveryBilling>>, TError, TData> & { queryKey: QueryKey }
-}
-
-export type GetRecoveryBillingQueryResult = NonNullable<Awaited<ReturnType<typeof getRecoveryBilling>>>
-export type GetRecoveryBillingQueryError = ErrorType<unknown>
-
-
-/**
- * @summary List evidence-backed recovered-case billing for authorized lab billing staff
- */
-
-export function useGetRecoveryBilling<TData = Awaited<ReturnType<typeof getRecoveryBilling>>, TError = ErrorType<unknown>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRecoveryBilling>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-
- ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-
-  const queryOptions = getGetRecoveryBillingQueryOptions(options)
-
-  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
-
-  return withQueryKey(query, queryOptions.queryKey);
-}
-
-
-
-
-
-
-
-export const getAnalyzeRecoveryPrescriptionUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/analyze`
-}
-
-export const analyzeRecoveryPrescription = async (caseId: string,
-    recoveryEvidenceInput: RecoveryEvidenceInput, options?: RequestInit): Promise<RecoveryAnalysis> => {
-
-  return customFetch<RecoveryAnalysis>(getAnalyzeRecoveryPrescriptionUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryEvidenceInput)
-  }
-);}
-
-
-
-
-
-export const getAnalyzeRecoveryPrescriptionMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeRecoveryPrescription>>, TError,{caseId: string;data: BodyType<RecoveryEvidenceInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof analyzeRecoveryPrescription>>, TError,{caseId: string;data: BodyType<RecoveryEvidenceInput>}, TContext> => {
-
-const mutationKey = ['analyzeRecoveryPrescription'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof analyzeRecoveryPrescription>>, {caseId: string;data: BodyType<RecoveryEvidenceInput>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  analyzeRecoveryPrescription(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type AnalyzeRecoveryPrescriptionMutationResult = NonNullable<Awaited<ReturnType<typeof analyzeRecoveryPrescription>>>
-    export type AnalyzeRecoveryPrescriptionMutationBody = BodyType<RecoveryEvidenceInput>
-    export type AnalyzeRecoveryPrescriptionMutationError = ErrorType<unknown>
-
-    export const useAnalyzeRecoveryPrescription = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof analyzeRecoveryPrescription>>, TError,{caseId: string;data: BodyType<RecoveryEvidenceInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof analyzeRecoveryPrescription>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryEvidenceInput>},
-        TContext
-      > => {
-      return useMutation(getAnalyzeRecoveryPrescriptionMutationOptions(options));
-    }
-
-export const getPreviewRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/preview`
-}
-
-/**
- * Runs the same eligibility checks and current-catalog pricing as staging, but needs no review confirmations or notes and writes no proposal, work or invoice. The result is a current-rate replacement estimate, not the original invoice total.
- * @summary Price entered recovered-case work at current catalog rates without saving anything
- */
-export const previewRecoveryBilling = async (caseId: string,
-    recoveryPreviewInput: RecoveryPreviewInput, options?: RequestInit): Promise<RecoveryPricePreview> => {
-
-  return customFetch<RecoveryPricePreview>(getPreviewRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryPreviewInput)
-  }
-);}
-
-
-
-
-
-export const getPreviewRecoveryBillingMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof previewRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryPreviewInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof previewRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryPreviewInput>}, TContext> => {
-
-const mutationKey = ['previewRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof previewRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryPreviewInput>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  previewRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type PreviewRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof previewRecoveryBilling>>>
-    export type PreviewRecoveryBillingMutationBody = BodyType<RecoveryPreviewInput>
-    export type PreviewRecoveryBillingMutationError = ErrorType<void>
-
-    /**
- * @summary Price entered recovered-case work at current catalog rates without saving anything
- */
-export const usePreviewRecoveryBilling = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof previewRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryPreviewInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof previewRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryPreviewInput>},
-        TContext
-      > => {
-      return useMutation(getPreviewRecoveryBillingMutationOptions(options));
-    }
-
-export const getProposeRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/proposal`
-}
-
-export const proposeRecoveryBilling = async (caseId: string,
-    recoveryProposalInput: RecoveryProposalInput, options?: RequestInit): Promise<RecoveryProposalResult> => {
-
-  return customFetch<RecoveryProposalResult>(getProposeRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryProposalInput)
-  }
-);}
-
-
-
-
-
-export const getProposeRecoveryBillingMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof proposeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof proposeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalInput>}, TContext> => {
-
-const mutationKey = ['proposeRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof proposeRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryProposalInput>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  proposeRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ProposeRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof proposeRecoveryBilling>>>
-    export type ProposeRecoveryBillingMutationBody = BodyType<RecoveryProposalInput>
-    export type ProposeRecoveryBillingMutationError = ErrorType<unknown>
-
-    export const useProposeRecoveryBilling = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof proposeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof proposeRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryProposalInput>},
-        TContext
-      > => {
-      return useMutation(getProposeRecoveryBillingMutationOptions(options));
-    }
-
-export const getApplyRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/apply`
-}
-
-/**
- * Creates the case's held replacement invoice from its latest staged proposal. The invoice stays held (balance 0.00, not on the customer's balance) until an owner/admin releases it. The proposal must be the latest for the case and have no exceptions; the case must be unchanged since staging, re-resolved current pricing must match, and no other billing may exist. Repeating the request for the same proposal returns the same invoice. Applying one case here needs no operator run approval; the operator batch tooling still applies only proposals authorized by its rehearsed run approval.
- * @summary Owner/admin application of one exact staged proposal as a held replacement invoice
- */
-export const applyRecoveryBilling = async (caseId: string,
-    recoveryProposalReference: RecoveryProposalReference, options?: RequestInit): Promise<RecoveryWriteResult> => {
-
-  return customFetch<RecoveryWriteResult>(getApplyRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryProposalReference)
-  }
-);}
-
-
-
-
-
-export const getApplyRecoveryBillingMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof applyRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof applyRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext> => {
-
-const mutationKey = ['applyRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof applyRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryProposalReference>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  applyRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ApplyRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof applyRecoveryBilling>>>
-    export type ApplyRecoveryBillingMutationBody = BodyType<RecoveryProposalReference>
-    export type ApplyRecoveryBillingMutationError = ErrorType<void>
-
-    /**
- * @summary Owner/admin application of one exact staged proposal as a held replacement invoice
- */
-export const useApplyRecoveryBilling = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof applyRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof applyRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryProposalReference>},
-        TContext
-      > => {
-      return useMutation(getApplyRecoveryBillingMutationOptions(options));
-    }
-
-export const getCorrectRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/correct`
-}
-
-export const correctRecoveryBilling = async (caseId: string,
-    recoveryProposalReference: RecoveryProposalReference, options?: RequestInit): Promise<RecoveryWriteResult> => {
-
-  return customFetch<RecoveryWriteResult>(getCorrectRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryProposalReference)
-  }
-);}
-
-
-
-
-
-export const getCorrectRecoveryBillingMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof correctRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof correctRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext> => {
-
-const mutationKey = ['correctRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof correctRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryProposalReference>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  correctRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type CorrectRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof correctRecoveryBilling>>>
-    export type CorrectRecoveryBillingMutationBody = BodyType<RecoveryProposalReference>
-    export type CorrectRecoveryBillingMutationError = ErrorType<unknown>
-
-    export const useCorrectRecoveryBilling = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof correctRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryProposalReference>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof correctRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryProposalReference>},
-        TContext
-      > => {
-      return useMutation(getCorrectRecoveryBillingMutationOptions(options));
-    }
-
-export const getExcludeRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/do-not-bill`
-}
-
-export const excludeRecoveryBilling = async (caseId: string,
-    recoveryExclusionInput: RecoveryExclusionInput, options?: RequestInit): Promise<RecoveryExclusionResult> => {
-
-  return customFetch<RecoveryExclusionResult>(getExcludeRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryExclusionInput)
-  }
-);}
-
-
-
-
-
-export const getExcludeRecoveryBillingMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof excludeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryExclusionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof excludeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryExclusionInput>}, TContext> => {
-
-const mutationKey = ['excludeRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof excludeRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryExclusionInput>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  excludeRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ExcludeRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof excludeRecoveryBilling>>>
-    export type ExcludeRecoveryBillingMutationBody = BodyType<RecoveryExclusionInput>
-    export type ExcludeRecoveryBillingMutationError = ErrorType<unknown>
-
-    export const useExcludeRecoveryBilling = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof excludeRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryExclusionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof excludeRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryExclusionInput>},
-        TContext
-      > => {
-      return useMutation(getExcludeRecoveryBillingMutationOptions(options));
-    }
-
-export const getReleaseRecoveryBillingUrl = (caseId: string,) => {
-
-
-
-
-  return `/api/billing-recovery/cases/${caseId}/release`
-}
-
-/**
- * @summary Lab-admin-only explicit charge and historical-settlement review
- */
-export const releaseRecoveryBilling = async (caseId: string,
-    recoveryReleaseInput: RecoveryReleaseInput, options?: RequestInit): Promise<RecoveryWriteResult> => {
-
-  return customFetch<RecoveryWriteResult>(getReleaseRecoveryBillingUrl(caseId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(recoveryReleaseInput)
-  }
-);}
-
-
-
-
-
-export const getReleaseRecoveryBillingMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof releaseRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryReleaseInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof releaseRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryReleaseInput>}, TContext> => {
-
-const mutationKey = ['releaseRecoveryBilling'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof releaseRecoveryBilling>>, {caseId: string;data: BodyType<RecoveryReleaseInput>}> = (props) => {
-          const {caseId,data} = props ?? {};
-
-          return  releaseRecoveryBilling(caseId,data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ReleaseRecoveryBillingMutationResult = NonNullable<Awaited<ReturnType<typeof releaseRecoveryBilling>>>
-    export type ReleaseRecoveryBillingMutationBody = BodyType<RecoveryReleaseInput>
-    export type ReleaseRecoveryBillingMutationError = ErrorType<void>
-
-    /**
- * @summary Lab-admin-only explicit charge and historical-settlement review
- */
-export const useReleaseRecoveryBilling = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof releaseRecoveryBilling>>, TError,{caseId: string;data: BodyType<RecoveryReleaseInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof releaseRecoveryBilling>>,
-        TError,
-        {caseId: string;data: BodyType<RecoveryReleaseInput>},
-        TContext
-      > => {
-      return useMutation(getReleaseRecoveryBillingMutationOptions(options));
-    }
 
 export const getRecordSavedCardSetupOutcomeUrl = () => {
 
@@ -7514,6 +6951,63 @@ if(importCaseFromIteroRxBody.patientFirstNameHint !== undefined) {
 if(importCaseFromIteroRxBody.patientLastNameHint !== undefined) {
  formData.append(`patientLastNameHint`, importCaseFromIteroRxBody.patientLastNameHint);
  }
+if(importCaseFromIteroRxBody.receivedAt !== undefined) {
+ formData.append(`receivedAt`, importCaseFromIteroRxBody.receivedAt);
+ }
+if(importCaseFromIteroRxBody.scanDateHint !== undefined) {
+ formData.append(`scanDateHint`, importCaseFromIteroRxBody.scanDateHint);
+ }
+if(importCaseFromIteroRxBody.rxDueDateHint !== undefined) {
+ formData.append(`rxDueDateHint`, importCaseFromIteroRxBody.rxDueDateHint);
+ }
+if(importCaseFromIteroRxBody.labDueDateHint !== undefined) {
+ formData.append(`labDueDateHint`, importCaseFromIteroRxBody.labDueDateHint);
+ }
+if(importCaseFromIteroRxBody.externalPatientIdHint !== undefined) {
+ formData.append(`externalPatientIdHint`, importCaseFromIteroRxBody.externalPatientIdHint);
+ }
+if(importCaseFromIteroRxBody.casePanBarcodeHint !== undefined) {
+ formData.append(`casePanBarcodeHint`, importCaseFromIteroRxBody.casePanBarcodeHint);
+ }
+if(importCaseFromIteroRxBody.providerContactSnapshot !== undefined) {
+ formData.append(`providerContactSnapshot`, importCaseFromIteroRxBody.providerContactSnapshot);
+ }
+if(importCaseFromIteroRxBody.invoiceNotesHint !== undefined) {
+ formData.append(`invoiceNotesHint`, importCaseFromIteroRxBody.invoiceNotesHint);
+ }
+if(importCaseFromIteroRxBody.toothIndicesHint !== undefined) {
+ formData.append(`toothIndicesHint`, importCaseFromIteroRxBody.toothIndicesHint);
+ }
+if(importCaseFromIteroRxBody.shadeHint !== undefined) {
+ formData.append(`shadeHint`, importCaseFromIteroRxBody.shadeHint);
+ }
+if(importCaseFromIteroRxBody.materialHint !== undefined) {
+ formData.append(`materialHint`, importCaseFromIteroRxBody.materialHint);
+ }
+if(importCaseFromIteroRxBody.caseTypeHint !== undefined) {
+ formData.append(`caseTypeHint`, importCaseFromIteroRxBody.caseTypeHint);
+ }
+if(importCaseFromIteroRxBody.archHint !== undefined) {
+ formData.append(`archHint`, importCaseFromIteroRxBody.archHint);
+ }
+if(importCaseFromIteroRxBody.removableSubtypeHint !== undefined) {
+ formData.append(`removableSubtypeHint`, importCaseFromIteroRxBody.removableSubtypeHint);
+ }
+if(importCaseFromIteroRxBody.reviewedRestorationsHint !== undefined) {
+ formData.append(`reviewedRestorationsHint`, importCaseFromIteroRxBody.reviewedRestorationsHint);
+ }
+if(importCaseFromIteroRxBody.toothAssignments !== undefined) {
+ formData.append(`toothAssignments`, importCaseFromIteroRxBody.toothAssignments);
+ }
+if(importCaseFromIteroRxBody.bridgeConnectors !== undefined) {
+ formData.append(`bridgeConnectors`, importCaseFromIteroRxBody.bridgeConnectors);
+ }
+if(importCaseFromIteroRxBody.notesHint !== undefined) {
+ formData.append(`notesHint`, importCaseFromIteroRxBody.notesHint);
+ }
+if(importCaseFromIteroRxBody.invoiceOverrideLines !== undefined) {
+ formData.append(`invoiceOverrideLines`, importCaseFromIteroRxBody.invoiceOverrideLines);
+ }
 
   return customFetch<IteroImportResult>(getImportCaseFromIteroRxUrl(),
   {
@@ -10056,6 +9550,81 @@ export const useAddCaseRestoration = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getAddCaseRestorationMutationOptions(options));
+    }
+
+export const getSaveCaseToothChartUrl = (caseId: string,) => {
+
+
+
+
+  return `/api/cases/${caseId}/tooth-chart`
+}
+
+/**
+ * Requires lab billing permission. Missing is a nonbillable tooth status.
+ * Refuses paid, finalized or reviewed invoices without committing chart changes.
+ * The chart, connector graph and invoice rebuild commit together or roll back.
+ * @summary Save staged tooth assignments and the case invoice atomically
+ */
+export const saveCaseToothChart = async (caseId: string,
+    toothChartCommitInput: ToothChartCommitInput, options?: RequestInit): Promise<ToothChartCommitResult> => {
+
+  return customFetch<ToothChartCommitResult>(getSaveCaseToothChartUrl(caseId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(toothChartCommitInput)
+  }
+);}
+
+
+
+
+
+export const getSaveCaseToothChartMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveCaseToothChart>>, TError,{caseId: string;data: BodyType<ToothChartCommitInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof saveCaseToothChart>>, TError,{caseId: string;data: BodyType<ToothChartCommitInput>}, TContext> => {
+
+const mutationKey = ['saveCaseToothChart'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof saveCaseToothChart>>, {caseId: string;data: BodyType<ToothChartCommitInput>}> = (props) => {
+          const {caseId,data} = props ?? {};
+
+          return  saveCaseToothChart(caseId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SaveCaseToothChartMutationResult = NonNullable<Awaited<ReturnType<typeof saveCaseToothChart>>>
+    export type SaveCaseToothChartMutationBody = BodyType<ToothChartCommitInput>
+    export type SaveCaseToothChartMutationError = ErrorType<void>
+
+    /**
+ * @summary Save staged tooth assignments and the case invoice atomically
+ */
+export const useSaveCaseToothChart = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveCaseToothChart>>, TError,{caseId: string;data: BodyType<ToothChartCommitInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof saveCaseToothChart>>,
+        TError,
+        {caseId: string;data: BodyType<ToothChartCommitInput>},
+        TContext
+      > => {
+      return useMutation(getSaveCaseToothChartMutationOptions(options));
     }
 
 export const getUpdateCaseRestorationHierarchyUrl = (caseId: string,) => {
@@ -13949,6 +13518,83 @@ export const useRunBackupNow = <TError = ErrorType<void>,
       return useMutation(getRunBackupNowMutationOptions(options));
     }
 
+export const getGetBackupRunStatusUrl = (runId: string,) => {
+
+
+
+
+  return `/api/admin/backup/status/${runId}`
+}
+
+/**
+ * @summary Get shared phase and exact terminal result for one backup run
+ */
+export const getBackupRunStatus = async (runId: string, options?: RequestInit): Promise<BackupJobStatus> => {
+
+  return customFetch<BackupJobStatus>(getGetBackupRunStatusUrl(runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetBackupRunStatusQueryKey = (runId: string,) => {
+    return [
+    `/api/admin/backup/status/${runId}`
+    ] as const;
+    }
+
+
+export const getGetBackupRunStatusQueryOptions = <TData = Awaited<ReturnType<typeof getBackupRunStatus>>, TError = ErrorType<void>>(runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getBackupRunStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetBackupRunStatusQueryKey(runId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getBackupRunStatus>>> = ({ signal }) => getBackupRunStatus(runId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: runId !== null && runId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getBackupRunStatus>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetBackupRunStatusQueryResult = NonNullable<Awaited<ReturnType<typeof getBackupRunStatus>>>
+export type GetBackupRunStatusQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get shared phase and exact terminal result for one backup run
+ */
+
+export function useGetBackupRunStatus<TData = Awaited<ReturnType<typeof getBackupRunStatus>>, TError = ErrorType<void>>(
+ runId: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getBackupRunStatus>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetBackupRunStatusQueryOptions(runId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export const getGetBackupScheduleUrl = () => {
 
 
@@ -14173,6 +13819,80 @@ export const useDisableBackupSchedule = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getDisableBackupScheduleMutationOptions(options));
+    }
+
+export const getSaveDatabaseProtectionRetentionUrl = () => {
+
+
+
+
+  return `/api/admin/backup/database-retention`
+}
+
+/**
+ * Updates the dependency-aware retention policy for production database
+ * recovery points. Enabling cleanup requires explicit owner approval.
+ * The retention policy is disabled by default.
+ * @summary Save the approved production database retention policy
+ */
+export const saveDatabaseProtectionRetention = async (databaseProtectionRetentionInput: DatabaseProtectionRetentionInput, options?: RequestInit): Promise<DatabaseProtectionRetentionResult> => {
+
+  return customFetch<DatabaseProtectionRetentionResult>(getSaveDatabaseProtectionRetentionUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(databaseProtectionRetentionInput)
+  }
+);}
+
+
+
+
+
+export const getSaveDatabaseProtectionRetentionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>, TError,{data: BodyType<DatabaseProtectionRetentionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>, TError,{data: BodyType<DatabaseProtectionRetentionInput>}, TContext> => {
+
+const mutationKey = ['saveDatabaseProtectionRetention'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>, {data: BodyType<DatabaseProtectionRetentionInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  saveDatabaseProtectionRetention(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SaveDatabaseProtectionRetentionMutationResult = NonNullable<Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>>
+    export type SaveDatabaseProtectionRetentionMutationBody = BodyType<DatabaseProtectionRetentionInput>
+    export type SaveDatabaseProtectionRetentionMutationError = ErrorType<void>
+
+    /**
+ * @summary Save the approved production database retention policy
+ */
+export const useSaveDatabaseProtectionRetention = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>, TError,{data: BodyType<DatabaseProtectionRetentionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof saveDatabaseProtectionRetention>>,
+        TError,
+        {data: BodyType<DatabaseProtectionRetentionInput>},
+        TContext
+      > => {
+      return useMutation(getSaveDatabaseProtectionRetentionMutationOptions(options));
     }
 
 export const getGetOneDriveBackupStatusUrl = () => {
@@ -18360,6 +18080,78 @@ export const useUpdateOrganization = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getUpdateOrganizationMutationOptions(options));
+    }
+
+export const getUpdateIntakePracticeContactUrl = (organizationId: string,) => {
+
+
+
+
+  return `/api/organizations/${organizationId}/intake-contact`
+}
+
+/**
+ * @summary Save contact fields explicitly approved during AI case intake
+ */
+export const updateIntakePracticeContact = async (organizationId: string,
+    intakePracticeContactInput: IntakePracticeContactInput, options?: RequestInit): Promise<OrganizationResult> => {
+
+  return customFetch<OrganizationResult>(getUpdateIntakePracticeContactUrl(organizationId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(intakePracticeContactInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateIntakePracticeContactMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateIntakePracticeContact>>, TError,{organizationId: string;data: BodyType<IntakePracticeContactInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateIntakePracticeContact>>, TError,{organizationId: string;data: BodyType<IntakePracticeContactInput>}, TContext> => {
+
+const mutationKey = ['updateIntakePracticeContact'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateIntakePracticeContact>>, {organizationId: string;data: BodyType<IntakePracticeContactInput>}> = (props) => {
+          const {organizationId,data} = props ?? {};
+
+          return  updateIntakePracticeContact(organizationId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateIntakePracticeContactMutationResult = NonNullable<Awaited<ReturnType<typeof updateIntakePracticeContact>>>
+    export type UpdateIntakePracticeContactMutationBody = BodyType<IntakePracticeContactInput>
+    export type UpdateIntakePracticeContactMutationError = ErrorType<void>
+
+    /**
+ * @summary Save contact fields explicitly approved during AI case intake
+ */
+export const useUpdateIntakePracticeContact = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateIntakePracticeContact>>, TError,{organizationId: string;data: BodyType<IntakePracticeContactInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateIntakePracticeContact>>,
+        TError,
+        {organizationId: string;data: BodyType<IntakePracticeContactInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateIntakePracticeContactMutationOptions(options));
     }
 
 export const getCreateInvitationUrl = (organizationId: string,) => {
@@ -22982,6 +22774,77 @@ export function useListAdminProviderSubscriptions<TData = Awaited<ReturnType<typ
 
 
 
+
+export const getVerifyAdminPinUrl = () => {
+
+
+
+
+  return `/api/admin/pin/verify`
+}
+
+/**
+ * @summary Verify the signed-in administrator PIN without creating a platform-admin session
+ */
+export const verifyAdminPin = async (verifyAdminPinInput: VerifyAdminPinInput, options?: RequestInit): Promise<VerifyAdminPinResult> => {
+
+  return customFetch<VerifyAdminPinResult>(getVerifyAdminPinUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(verifyAdminPinInput)
+  }
+);}
+
+
+
+
+
+export const getVerifyAdminPinMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyAdminPin>>, TError,{data: BodyType<VerifyAdminPinInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof verifyAdminPin>>, TError,{data: BodyType<VerifyAdminPinInput>}, TContext> => {
+
+const mutationKey = ['verifyAdminPin'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof verifyAdminPin>>, {data: BodyType<VerifyAdminPinInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  verifyAdminPin(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type VerifyAdminPinMutationResult = NonNullable<Awaited<ReturnType<typeof verifyAdminPin>>>
+    export type VerifyAdminPinMutationBody = BodyType<VerifyAdminPinInput>
+    export type VerifyAdminPinMutationError = ErrorType<void>
+
+    /**
+ * @summary Verify the signed-in administrator PIN without creating a platform-admin session
+ */
+export const useVerifyAdminPin = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof verifyAdminPin>>, TError,{data: BodyType<VerifyAdminPinInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof verifyAdminPin>>,
+        TError,
+        {data: BodyType<VerifyAdminPinInput>},
+        TContext
+      > => {
+      return useMutation(getVerifyAdminPinMutationOptions(options));
+    }
 
 export const getUpdateAdminProviderSubscriptionUrl = (id: string,) => {
 

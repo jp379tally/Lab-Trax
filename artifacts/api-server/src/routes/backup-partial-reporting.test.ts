@@ -13,6 +13,12 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
 import request from "supertest";
+import { randomUUID } from "node:crypto";
+import { db, backupRuns } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { getBackupRunId } from "../lib/backup-phase";
+
+vi.mock("../lib/db-constraints", () => ({ ensureStartupDbConstraints: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
@@ -39,7 +45,7 @@ const PLATFORM_ADMIN_SECRET = "backup-partial-reporting-test-secret";
 process.env["PLATFORM_ADMIN_SECRET"] = PLATFORM_ADMIN_SECRET;
 
 const WARNING =
-  "Retried without profile photos and succeeded: 42 profile photo file(s) were NOT included in this backup.";
+  "Missing file references: 526. Unavailable files are listed by opaque technical identifiers in complete-recovery.json. This archive is not a complete recovery point.";
 
 maybe("partial backups in the backup run responses", () => {
   let appMod: { default: import("express").Express };
@@ -57,7 +63,8 @@ maybe("partial backups in the backup run responses", () => {
     await (await import("./index.js")).labtraxRoutesReady;
   });
 
-  it("POST /admin/backup/run reports a dropped-content run as partial", async () => {
+  it("reports partial delivery from the synchronous manual backup endpoint", async () => {
+    const runId = randomUUID();
     vi.mocked(backupMod.runBackup).mockResolvedValue({
       size: 5_242_880,
       completedAt: "2026-10-06T09:30:00.000Z",
@@ -66,20 +73,21 @@ maybe("partial backups in the backup run responses", () => {
       path: null,
       partialFailure: true,
       warnings: WARNING,
+      missingFileCount: 526,
     } as never);
 
-    const res = await withSecret(request(appMod.default).post("/api/admin/backup/run")).send({
-      destination: "onedrive",
-    });
+    const res = await withSecret(
+      request(appMod.default).post("/api/admin/backup/run"),
+    ).send({ destination: "onedrive", runId });
 
     expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
+    expect(res.body.runId).toBe(runId);
     expect(res.body.partialFailure).toBe(true);
     expect(res.body.warnings).toBe(WARNING);
   });
 
-  it("POST /admin/backup/run leaves a clean run clean", async () => {
-    vi.mocked(backupMod.runBackup).mockResolvedValue({
+  it("reports a complete scheduled run as not partial", async () => {
+    vi.mocked(backupMod.runScheduledBackupNow).mockResolvedValue({
       size: 5_242_880,
       completedAt: "2026-10-06T09:30:00.000Z",
       fileName: "labtrax-backup-2026-10-06.zip.enc",
@@ -87,16 +95,15 @@ maybe("partial backups in the backup run responses", () => {
       path: null,
     } as never);
 
-    const res = await withSecret(request(appMod.default).post("/api/admin/backup/run")).send({
-      destination: "onedrive",
-    });
-
+    const res = await withSecret(
+      request(appMod.default).post("/api/admin/backup/schedule/run-now"),
+    ).send({});
     expect(res.status).toBe(200);
     expect(res.body.partialFailure).toBe(false);
     expect(res.body.warnings).toBeNull();
   });
 
-  it("POST /admin/backup/schedule/run-now reports a dropped-content run as partial", async () => {
+  it("reports a scheduled run with dropped content as partial", async () => {
     vi.mocked(backupMod.runScheduledBackupNow).mockResolvedValue({
       size: 5_242_880,
       completedAt: "2026-10-06T09:30:00.000Z",
@@ -114,5 +121,55 @@ maybe("partial backups in the backup run responses", () => {
     expect(res.status).toBe(200);
     expect(res.body.partialFailure).toBe(true);
     expect(res.body.warnings).toBe(WARNING);
+    expect(res.body.warningMessage).toBeTruthy();
+  });
+
+  it("accepts a cloud job immediately, starts duplicate UUIDs once, and returns its exact verified history", async () => {
+    const runId = randomUUID();
+    let finish!: () => void;
+    const delayed = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(backupMod.runBackup).mockClear();
+    vi.mocked(backupMod.runBackup).mockImplementationOnce(async () => {
+      await delayed;
+      expect(getBackupRunId()).toBe(runId);
+      const result = {
+        size: 1234, completedAt: new Date().toISOString(), fileName: "synthetic-exact-run.enc",
+        destination: "onedrive" as const, partialFailure: true, warnings: WARNING,
+      };
+      await db.insert(backupRuns).values({
+        destination: result.destination, triggeredBy: "manual:synthetic",
+        fileName: result.fileName, sizeBytes: result.size, completedAt: new Date(result.completedAt),
+        status: "success", downloadRunId: runId, partialFailure: true, warnings: WARNING,
+      });
+      return result;
+    });
+    try {
+      const started = Date.now();
+      const accepted = await withSecret(request(appMod.default).post("/api/admin/backup/run"))
+        .send({ destination: "onedrive", runId, respondAsync: true });
+      expect(accepted.status).toBe(202);
+      expect(accepted.body).toEqual({ ok: true, runId, state: "running" });
+      expect(Date.now() - started).toBeLessThan(2000);
+      const duplicate = await withSecret(request(appMod.default).post("/api/admin/backup/run"))
+        .send({ destination: "onedrive", runId, respondAsync: true });
+      expect(duplicate.status).toBe(202);
+      const running = await withSecret(request(appMod.default).get(`/api/admin/backup/status/${runId}`));
+      expect(running.body.state).toBe("running");
+      expect(running.body.result).toBeUndefined();
+      finish();
+      await vi.waitFor(async () => {
+        const completed = await withSecret(request(appMod.default).get(`/api/admin/backup/status/${runId}`));
+        expect(completed.body.state).toBe("completed");
+        expect(completed.body.result).toMatchObject({
+          runId, size: 1234, fileName: "synthetic-exact-run.enc",
+          partialFailure: true, warnings: WARNING,
+        });
+      });
+      expect(backupMod.runBackup).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(backupRuns).where(eq(backupRuns.downloadRunId, runId))).toHaveLength(1);
+    } finally {
+      finish();
+      await db.delete(backupRuns).where(eq(backupRuns.downloadRunId, runId));
+    }
   });
 });

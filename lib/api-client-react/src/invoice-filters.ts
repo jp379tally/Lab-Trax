@@ -455,11 +455,9 @@ export function matchesOverdueFilter(
   if (filter === "all") return true;
   if (filter === "custom") {
     if (!customStart || !customEnd || customEnd < customStart) return true;
-    const issued = invoiceFilterDate(invoice);
-    return Boolean(
-      issued
-      && issued >= startOfDay(customStart)
-      && issued < addDays(startOfDay(customEnd), 1),
+    return matchesDateRange(
+      invoice,
+      dateRangeForFilter("custom", now, customStart, customEnd),
     );
   }
   if (invoice.frozen) return false;

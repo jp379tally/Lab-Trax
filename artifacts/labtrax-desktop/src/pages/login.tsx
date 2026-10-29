@@ -5,7 +5,14 @@ import {
   INVALID_ACCOUNT_NUMBER_MESSAGE,
 } from "@workspace/account-number";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError, apiFetch, getApiOrigin, getRememberMe, saveRememberMe } from "@/lib/api";
+import {
+  ApiError,
+  apiFetch,
+  getApiOrigin,
+  getRememberMe,
+  isElectronRenderer,
+  saveRememberMe,
+} from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
 import { LoginBrandMark } from "@/components/login-art";
@@ -27,6 +34,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(() => getRememberMe());
+  const isElectron = isElectronRenderer();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showIdleNotice, setShowIdleNotice] = useState(false);
@@ -522,15 +530,21 @@ export default function LoginPage() {
                       </button>
                     </div>
                   </div>
-                  <label className="flex w-fit cursor-pointer select-none items-center gap-2.5 pt-0.5">
-                    <input
-                      type="checkbox"
-                      checked={rememberMe}
-                      onChange={(e) => setRememberMe(e.target.checked)}
-                      className="h-[18px] w-[18px] cursor-pointer rounded border-[#A8B9CD] accent-[#0F62BF]"
-                    />
-                    <span className="text-[13px] text-[#24364D]">Remember me</span>
-                  </label>
+                  {isElectron ? (
+                    <label className="flex w-fit cursor-pointer select-none items-center gap-2.5 pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                        className="h-[18px] w-[18px] cursor-pointer rounded border-[#A8B9CD] accent-[#0F62BF]"
+                      />
+                      <span className="text-[13px] text-[#24364D]">Remember me</span>
+                    </label>
+                  ) : (
+                    <p className="pt-0.5 text-[13px] text-[#5B6F8A]">
+                      This tab won&apos;t retain your sign-in after you close it.
+                    </p>
+                  )}
                   {error && (
                     <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
                       {error}

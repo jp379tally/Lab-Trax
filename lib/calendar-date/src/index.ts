@@ -102,6 +102,60 @@ export function isValidCalendarDate(value: string): boolean {
   return parseCalendarDate(value) !== null;
 }
 
+/** Add whole calendar days to a date-only value without a timezone shift. */
+export function addCalendarDays(
+  value: string | null | undefined,
+  days: number,
+): string | null {
+  const parts = value ? parseCalendarDate(value) : null;
+  if (!parts || !Number.isInteger(days)) return null;
+
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day + days);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** True when a valid date-only value falls inside an inclusive date range. */
+export function isCalendarDateInInclusiveRange(
+  value: string | null | undefined,
+  start: string | null | undefined,
+  end: string | null | undefined,
+): boolean {
+  return !!value &&
+    !!start &&
+    !!end &&
+    isValidCalendarDate(value) &&
+    isValidCalendarDate(start) &&
+    isValidCalendarDate(end) &&
+    value >= start &&
+    value <= end;
+}
+
+/**
+ * Keep an extracted Rx date only within the received-to-turnaround window.
+ * With no positive configured turnaround, preserve any valid extracted date.
+ */
+export function resolveAiIntakePrescriptionDueDate(
+  prescriptionDueDate: string | null | undefined,
+  receivedDate: string | null | undefined,
+  defaultCaseDueDays: number | null | undefined,
+): string | null {
+  if (!prescriptionDueDate || !isValidCalendarDate(prescriptionDueDate)) return null;
+  if (defaultCaseDueDays == null || defaultCaseDueDays <= 0) {
+    return prescriptionDueDate;
+  }
+  if (!Number.isInteger(defaultCaseDueDays) || !receivedDate) return null;
+  const latestAllowedDate = addCalendarDays(receivedDate, defaultCaseDueDays);
+  return latestAllowedDate &&
+    isCalendarDateInInclusiveRange(prescriptionDueDate, receivedDate, latestAllowedDate)
+    ? prescriptionDueDate
+    : null;
+}
+
 /** Format an exact calendar value as fixed-order MM/DD/YYYY. */
 export function formatCalendarDate(value: string): string | null {
   const parts = parseCalendarDate(value);

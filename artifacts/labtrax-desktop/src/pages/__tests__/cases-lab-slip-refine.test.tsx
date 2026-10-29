@@ -47,6 +47,8 @@ interface HarnessOptions {
   organizations?: Array<Record<string, unknown>>;
   locations?: Array<Record<string, unknown>>;
   hierarchyResult?: Record<string, unknown>;
+  chartFailure?: string;
+  routeFailure?: string;
 }
 
 interface Harness {
@@ -64,6 +66,7 @@ function makeHarness(options: HarnessOptions): Harness {
   const detail = JSON.parse(JSON.stringify(options.detail)) as Record<string, unknown>;
   const patches: Array<{ path: string; body: unknown }> = [];
   let detailFetches = 0;
+  let routeFailure = options.routeFailure;
 
   vi.stubGlobal(
     "fetch",
@@ -75,6 +78,19 @@ function makeHarness(options: HarnessOptions): Harness {
       const method = (init?.method ?? "GET").toUpperCase();
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
+      if (method === "PATCH" && path.endsWith(`/cases/${caseId}/tooth-chart`)) {
+        patches.push({ path, body });
+        if (options.chartFailure) return json({ error: options.chartFailure }, 409);
+        const rows = (detail.restorations ?? []) as Array<Record<string, unknown>>;
+        detail.restorations = [
+          ...rows.filter((row) => !body.deletes.includes(row.id)).map((row) => ({
+            ...row, ...body.updates.find((update: Record<string, unknown>) => update.restorationId === row.id),
+          })),
+          ...body.creates.map((row: Record<string, unknown>) => ({ ...row, id: row.localId, caseId })),
+        ];
+        detail.bridgeConnectors = body.bridgeConnectors;
+        return json({ ok: true, data: { invoiceAction: "updated", invoiceId: "synthetic-invoice" } });
+      }
       if (
         method === "PATCH" &&
         path.endsWith(`/cases/${caseId}/restorations/hierarchy`)
@@ -141,6 +157,11 @@ function makeHarness(options: HarnessOptions): Harness {
       }
       if (method === "PATCH" && path.endsWith(`/cases/${caseId}`)) {
         patches.push({ path, body });
+        if (routeFailure) {
+          const message = routeFailure;
+          routeFailure = undefined;
+          return json({ error: message }, 409);
+        }
         Object.assign(detail, body);
         return json(detail);
       }
@@ -239,6 +260,107 @@ afterEach(() => {
 });
 
 describe("Lab Slip clinical details", () => {
+  it.each(["Lab Slip", "Restorations"])("opens whole-arch assignment from %s without replacing a saved individual crown", async (tab) => {
+    const harness = makeHarness({ detail: {
+      ...AI_INTAKE_CASE, id: "chart-arch-case",
+      restorations: [restoration({ id: "crown-1", toothNumber: "1", restorationType: "Crown", shade: "A2" })],
+    } });
+    harness.render();
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${tab}`) }));
+    fireEvent.click(await screen.findByRole("button", { name: "Select upper arch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign 16 selected teeth" }));
+    const dialog = await screen.findByRole("dialog", { name: "Tooth 1 action" });
+    expect(within(dialog).queryByRole("button", { name: "Remove restoration" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Denture" }));
+    expect(within(dialog).getByRole("button", { name: "upper arch" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(harness.patches).toEqual([]);
+  });
+
+  it.each(["Lab Slip", "Restorations"])("adds a Crown from %s with a server-valid stable UUID and one atomic save", async (tab) => {
+    const harness = makeHarness({ detail: {
+      ...AI_INTAKE_CASE, id: "chart-create-case",
+      restorations: [restoration({ id: "crown-2", toothNumber: "2", restorationType: "Crown", shade: "A2" })],
+    } });
+    harness.render();
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${tab}`) }));
+    const tooth = await waitFor(() => {
+      const node = document.querySelector('[data-tooth-id="5"]');
+      expect(node).not.toBeNull(); return node!;
+    });
+    fireEvent.click(tooth);
+    const dialog = await screen.findByRole("dialog", { name: "Tooth 5 action" });
+    expect(within(dialog).getByRole("button", { name: "Crown" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Zirconia/ }));
+    expect(harness.patches).toEqual([]);
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Confirm/ }));
+    expect(harness.patches).toEqual([]);
+    fireEvent.click(screen.getByTestId("case-pending-save"));
+    await waitFor(() => expect(harness.patches).toHaveLength(1));
+    expect(harness.patches[0]).toMatchObject({
+      path: "/cases/chart-create-case/tooth-chart",
+      body: { creates: [expect.objectContaining({ toothNumber: "5", restorationType: "Crown", quantity: 1 })], updates: [], deletes: [] },
+    });
+    const body = harness.patches[0].body as { creates: { localId: string }[] };
+    expect(body.creates[0].localId).toMatch(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
+  });
+
+  it.each(["Lab Slip", "Restorations"])("stages Missing from %s and saves chart/invoice with one request", async (tab) => {
+    const harness = makeHarness({ detail: {
+      ...AI_INTAKE_CASE, id: "chart-save-case",
+      restorations: [restoration({ id: "crown-2", toothNumber: "2", restorationType: "Crown", shade: "A2" })],
+    } });
+    harness.render();
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${tab}`) }));
+    const tooth = await waitFor(() => {
+      const node = document.querySelector('[data-tooth-id="2"]');
+      expect(node).not.toBeNull();
+      return node!;
+    });
+    fireEvent.click(tooth);
+    const dialog = await screen.findByRole("dialog", { name: "Tooth 2 action" });
+    for (const name of ["Crown", "Pontic", "Veneer", "Missing"]) {
+      expect(within(dialog).getByRole("button", { name })).toBeInTheDocument();
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: /Missing/ }));
+    expect(harness.patches).toEqual([]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply missing status" }));
+    expect(harness.patches).toEqual([]);
+    fireEvent.click(screen.getByTestId("case-pending-save"));
+    await waitFor(() => expect(harness.patches).toHaveLength(1));
+    expect(harness.patches[0]).toMatchObject({
+      path: "/cases/chart-save-case/tooth-chart",
+      body: { deletes: ["crown-2"], updates: [], creates: [expect.objectContaining({
+        toothNumber: "2", restorationType: "missing", quantity: 1, unitPrice: 0,
+      })] },
+    });
+    await waitFor(() => expect(screen.queryByTestId("case-pending-save")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: tab === "Lab Slip" ? /^Restorations/ : /^Lab Slip/ }));
+    expect(document.querySelector('[data-tooth-id="2"]')).toHaveAttribute("data-tooth-role", "missing");
+  });
+
+  it("canceling Missing makes no writes, and a refused atomic save keeps the draft with an explicit error", async () => {
+    const harness = makeHarness({ chartFailure: "The invoice is paid. Nothing was saved.", detail: {
+      ...AI_INTAKE_CASE, id: "chart-refused-case", restorations: [],
+    } });
+    harness.render();
+    fireEvent.click(await screen.findByRole("tab", { name: "Lab Slip" }));
+    await waitFor(() => expect(document.querySelector('[data-tooth-id="5"]')).not.toBeNull());
+    fireEvent.click(document.querySelector('[data-tooth-id="5"]')!);
+    let dialog = await screen.findByRole("dialog", { name: "Tooth 5 action" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Missing/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(harness.patches).toEqual([]);
+    fireEvent.click(document.querySelector('[data-tooth-id="5"]')!);
+    dialog = await screen.findByRole("dialog", { name: "Tooth 5 action" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Missing/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply missing status" }));
+    fireEvent.click(screen.getByTestId("case-pending-save"));
+    await screen.findByText(/The invoice is paid. Nothing was saved./);
+    expect(screen.getByTestId("case-pending-save")).toBeEnabled();
+    expect(harness.patches).toHaveLength(1);
+  });
+
   it("saves implant metadata independently without hierarchy or invoice writes after a label round trip", async () => {
     const harness = makeHarness({
       detail: {
@@ -447,6 +569,29 @@ describe("Lab Slip practice details", () => {
 });
 
 describe("Lab Slip header, routing and Step", () => {
+  it.each([
+    { dueTime: null, expected: "01/19/2026" },
+    { dueTime: "13:30", expected: "01/19/2026 at 1:30 PM" },
+  ])("keeps one due date below creation with due time $dueTime", async ({ dueTime, expected }) => {
+    makeHarness({
+      detail: { ...AI_INTAKE_CASE, dueDate: "2026-01-19", dueTime },
+    }).render();
+
+    const metadata = await screen.findByTestId("case-details-metadata");
+    const dates = within(metadata).getByTestId("case-details-dates");
+    expect(dates).toHaveClass("flex-col", "items-start");
+    expect(Array.from(dates.children)).toEqual([
+      within(metadata).getByTestId("case-details-date-created"),
+      within(metadata).getByTestId("case-details-due-date"),
+    ]);
+    expect(within(metadata).getAllByText(/Due Date:/)).toHaveLength(1);
+    expect(within(dates).getByText(expected)).toBeInTheDocument();
+    expect(within(dates).getByText("01/15/2026")).toBeInTheDocument();
+    expect(within(dates).queryByTestId("case-details-metadata-divider")).not.toBeInTheDocument();
+    expect(within(metadata).getAllByTestId("case-details-metadata-divider")).toHaveLength(1);
+    expect(within(metadata).getByRole("button", { name: "Mark rush" })).toBeEnabled();
+  });
+
   it("puts case number and one Location control under the Case Details divider", async () => {
     makeHarness({
       locations: [
@@ -457,11 +602,10 @@ describe("Lab Slip header, routing and Step", () => {
     }).render();
 
     expect(await screen.findByText("Case #")).toBeInTheDocument();
-    expect(screen.getByText("26-777")).toBeInTheDocument();
-    // Exactly one location control on the drawer — the lower Locate Case
-    // section is gone, not duplicated.
+    expect(screen.getByText("Case #").parentElement).toHaveTextContent("26-777");
+    // Exactly one location control on the drawer; no separate confirmation.
     expect(screen.getAllByTestId("locate-case-select")).toHaveLength(1);
-    expect(screen.getAllByTestId("locate-case-submit")).toHaveLength(1);
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
     expect(screen.getByTestId("case-header-location").closest("header")).toContainElement(
       screen.getByTestId("case-header-patient"),
     );
@@ -485,45 +629,62 @@ describe("Lab Slip header, routing and Step", () => {
   });
 
   it("asks about the due date when a completed case is routed back to intake", async () => {
-    makeHarness({
+    const harness = makeHarness({
       locations: [
         { id: "station-received", code: "RECEIVED", name: "Received", status: "received" },
-        { id: "station-complete", code: "COMPLETE", name: "Complete", status: "completed" },
+        { id: "station-complete", code: "COMPLETE", name: "Complete", status: "complete" },
       ],
       detail: {
         ...AI_INTAKE_CASE,
         id: "return-case",
-        status: "completed",
+        status: "complete",
         labLocationId: "station-complete",
         labLocationName: "Complete",
       },
-    }).render();
+    });
+    harness.render();
 
     const select = (await screen.findByTestId("locate-case-select")) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Received" });
     await waitFor(() => {
       expect(
         Array.from(select.options).some((o) => o.value === "station-received"),
       ).toBe(true);
     });
     fireEvent.change(select, { target: { value: "station-received" } });
-    fireEvent.click(screen.getByTestId("locate-case-submit"));
-
-    expect(
-      await screen.findByText(/due date/i, { selector: "*" }),
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("return-wizard-dialog")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("return-wizard-dialog")).toHaveTextContent(/due date/i);
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
+    expect(harness.patches).toEqual([]);
   });
 
-  it("reports a routing failure without claiming the case moved", async () => {
-    makeHarness({
+  it("reports a routing failure and allows retry by selecting a station again", async () => {
+    const harness = makeHarness({
       locations: [
         { id: "station-received", code: "RECEIVED", name: "Received", status: "received" },
+        { id: "station-model", code: "MODEL", name: "Model Room", status: "in_progress" },
       ],
       detail: { ...AI_INTAKE_CASE, id: "route-error-case" },
-    }).render();
+      routeFailure: "Route refused.",
+    });
+    harness.render();
 
-    const submit = await screen.findByTestId("locate-case-submit");
-    // Nothing selected yet: the button stays disabled rather than guessing.
-    expect(submit).toBeDisabled();
+    const select = (await screen.findByTestId("locate-case-select")) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Model Room" });
+    fireEvent.change(select, { target: { value: "station-model" } });
+    expect(await screen.findByText("Route refused.")).toBeInTheDocument();
+    expect(screen.queryByText("Case located successfully.")).not.toBeInTheDocument();
+    expect(select).toHaveValue("");
+    await waitFor(() => expect(select).toBeEnabled());
+    fireEvent.change(select, { target: { value: "station-model" } });
+    await waitFor(() => {
+      expect(
+        harness.patches.filter(({ path }) => path.endsWith("/cases/route-error-case")),
+      ).toHaveLength(2);
+    });
+    expect(screen.queryByTestId("locate-case-submit")).not.toBeInTheDocument();
   });
 
   it("shows Step beside Case Type for removable cases only", async () => {

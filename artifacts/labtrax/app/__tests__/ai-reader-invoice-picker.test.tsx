@@ -20,7 +20,13 @@ function seed(
   role = "owner",
   emptyPreview = false,
   failedPreview = false,
-  options: { toothAssignments?: unknown; userOverrides?: AiReaderUserOverrides } = {},
+  options: {
+    toothAssignments?: unknown;
+    userOverrides?: AiReaderUserOverrides;
+    caseType?: string;
+    material?: string;
+    shade?: string;
+  } = {},
 ) {
   const previewState: { failed: boolean; calls: number; restorations: unknown[] | null } = {
     failed: failedPreview,
@@ -41,7 +47,10 @@ function seed(
     pages: [],
     extracted: {
       doctorName: "Dr. Synthetic063", patientName: "Jane Doe", patientInitials: null,
-      caseType: "Crown & Bridge", toothIndices: "14", shade: "A2", material: "Zirconia",
+      caseType: options.caseType ?? "Crown & Bridge",
+      toothIndices: "14",
+      shade: options.shade ?? "A2",
+      material: options.material ?? "Zirconia",
       toothAssignments: options.toothAssignments ?? [{ toothNumber: "14", role: "prepared_crown", roleEvidence: "Prepared crown #14", material: "Zirconia", shade: "A2", requiresReview: false }],
       dueDate: null, isRush: null, notes: null, practiceName: "First Practice",
       practiceAddress: null, practicePhone: null, confidence: null, step: null,
@@ -129,12 +138,96 @@ describe("AI Reader invoice item picker", () => {
     ]);
   });
 
+  it("defaults mobile AI intake to Diagnostic Wax Up and keeps the subtype through manual edits", async () => {
+    const previewState = seed();
+    const screen = await ready();
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Crown & Bridge, Removable…"),
+      "Diagnostic Wax Up",
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByPlaceholderText("Zirconia, E max…").props.value,
+      ).toBe("Diagnostic Wax Up");
+      expect(screen.getByPlaceholderText("A2, B1…").props.value).toBe(
+        "Diagnostic Wax Up",
+      );
+      expect(previewState.restorations).toEqual([
+        expect.objectContaining({
+          toothNumber: "14",
+          restorationType: "Crown",
+          restorationSubtype: "restorative/diagnostic_wax_up",
+          material: "Diagnostic Wax Up",
+          shade: "Diagnostic Wax Up",
+        }),
+      ]);
+    }, { timeout: 5000 });
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Zirconia, E max…"),
+      "PFM",
+    );
+    await fireEvent.changeText(screen.getByPlaceholderText("A2, B1…"), "A3");
+    await waitFor(() => {
+      expect(previewState.restorations).toEqual([
+        expect.objectContaining({
+          restorationType: "Crown",
+          restorationSubtype: "restorative/diagnostic_wax_up",
+          material: "PFM",
+          shade: "A3",
+        }),
+      ]);
+    }, { timeout: 5000 });
+
+    await fireEvent.changeText(screen.getByPlaceholderText("e.g. 26-42"), "CASE-DIAGNOSTIC-WAX-UP");
+    await fireEvent.press(screen.getByTestId("ai-reader-create-btn"));
+    await waitFor(() => expect(mockCreateCaseMutateAsync).toHaveBeenCalledTimes(1));
+    const payload = (mockCreateCaseMutateAsync.mock.calls[0][0] as {
+      data: { restorations: Array<Record<string, unknown>> };
+    }).data;
+    expect(payload.restorations).toEqual([
+      expect.objectContaining({
+        toothNumber: "14",
+        restorationType: "Crown",
+        restorationSubtype: "restorative/diagnostic_wax_up",
+        material: "PFM",
+        shade: "A3",
+      }),
+    ]);
+  });
+
+  it("defaults material and shade when mobile AI extraction identifies Diagnostic Wax Up", async () => {
+    const previewState = seed("owner", false, false, {
+      caseType: "Diagnostic Wax Up",
+      material: "Zirconia",
+      shade: "A2",
+    });
+    const screen = await ready();
+    expect(screen.getByPlaceholderText("Zirconia, E max…").props.value).toBe(
+      "Diagnostic Wax Up",
+    );
+    expect(screen.getByPlaceholderText("A2, B1…").props.value).toBe(
+      "Diagnostic Wax Up",
+    );
+    await waitFor(() => expect(previewState.restorations).toEqual([
+      expect.objectContaining({
+        restorationType: "Crown",
+        restorationSubtype: "restorative/diagnostic_wax_up",
+        material: "Diagnostic Wax Up",
+        shade: "Diagnostic Wax Up",
+      }),
+    ]), { timeout: 5000 });
+  });
+
   it("keeps an empty preview visible when the extraction has no billable details", async () => {
     const previewState = seed("owner", true, false, {
       toothAssignments: [],
       userOverrides: { toothIndices: "", caseType: "", material: "", shade: "" },
     });
     const screen = await render(<AiReaderExtractedScreen />);
+    // Wait for the manual editor to initialize so a transient preview is not enough.
+    await waitFor(() => expect(screen.getByTestId("ai-reader-invoice-add-line")).toBeTruthy());
     await waitFor(() => expect(
       screen.getByText("No billable line items were found in the prescription."),
     ).toBeTruthy(), { timeout: 5000 });

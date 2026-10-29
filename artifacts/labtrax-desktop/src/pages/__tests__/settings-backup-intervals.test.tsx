@@ -2,8 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
+import { setSessionSecret, clearSessionSecret } from "@/lib/platform-admin-session";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 import { setScheduledLocalBackupProgress } from "@/lib/local-backup-progress";
+import { resetManualBackupProgress } from "@/lib/manual-backup-progress";
 
 const ADMIN_USER = {
   id: "u1",
@@ -18,6 +20,8 @@ const ADMIN_USER = {
 };
 
 const emptySchedule = {
+  sourceEnvironment: "production",
+  allowedScheduleIntervalsMinutes: [5, 15, 20, 30, 60, 360, 1440],
   interval: null,
   unit: null,
   destination: null,
@@ -30,6 +34,7 @@ const emptySchedule = {
 };
 
 let schedule: Record<string, unknown>;
+let savedSchedule: Record<string, unknown> | null;
 let manualProgressPhase = "case-media transfer into archive";
 let manualProgressMetrics: Record<string, number> = { completedBytes: 2048, totalBytes: 4096 };
 
@@ -41,18 +46,25 @@ function jsonResponse(body: unknown) {
 }
 
 beforeEach(() => {
+  setSessionSecret("synthetic-backup-settings-test-pin");
+  window.localStorage.clear();
   schedule = { ...emptySchedule };
+  savedSchedule = null;
   manualProgressPhase = "case-media transfer into archive";
   manualProgressMetrics = { completedBytes: 2048, totalBytes: 4096 };
+  resetManualBackupProgress("", "");
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/admin/backup/status/")) {
         return jsonResponse({
           runId: url.split("/").pop(),
           state: "running",
           phase: manualProgressPhase,
+          overallProgress: manualProgressPhase === "case-media transfer into archive" ? 51
+            : manualProgressPhase === "database dump" ? 5
+              : manualProgressPhase === "local download" ? 83 : 2,
           startedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           elapsedMs: 1500,
@@ -61,6 +73,9 @@ beforeEach(() => {
       }
       if (url.includes("/admin/backup/onedrive-status")) {
         return jsonResponse({ ok: true, connected: true, folder: "LabTrax Backups" });
+      }
+      if (url.includes("/admin/backup/google-drive-status")) {
+        return jsonResponse({ ok: true, connected: true, folder: "LabTrax Backups", accountName: null, accountEmail: null, error: null, manageUrl: null });
       }
       if (url.includes("/admin/backup/run")) {
         return new Promise<Response>((resolve) => {
@@ -86,7 +101,10 @@ beforeEach(() => {
         });
       }
       if (url.includes("/admin/backup/history")) return jsonResponse({ ok: true, runs: [] });
-      if (url.includes("/admin/backup/schedule")) return jsonResponse(schedule);
+      if (url.includes("/admin/backup/schedule")) {
+        if (init?.method === "PUT") savedSchedule = JSON.parse(String(init.body));
+        return jsonResponse(schedule);
+      }
       return jsonResponse({ ok: true });
     }),
   );
@@ -95,24 +113,32 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearSessionSecret();
   setScheduledLocalBackupProgress(null);
+  resetManualBackupProgress("", "");
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
 });
 
-async function renderBackupTab() {
+async function renderBackupTab(options: { adminSettingsPin?: string | null } = {}) {
   const Wrapper = makeAuthWrapper("/settings?tab=backup", {
     user: ADMIN_USER as any,
     status: "authed",
     restoreStatus: "ok",
     restoreNoticeDismissed: true,
     refresh: vi.fn(async () => {}),
-  });
+  }, options);
   return render(<Wrapper><SettingsPage /></Wrapper>);
 }
 
 describe("Settings → Backup → schedule intervals", () => {
-  it("keeps the summary, schedule, manual backup, history, and restore in DOM order", async () => {
+  it("keeps backup settings locked until the admin PIN session is present", async () => {
+    clearSessionSecret();
+    await renderBackupTab({ adminSettingsPin: null });
+    expect(await screen.findByTestId("admin-settings-pin-gate")).toBeVisible();
+    expect(screen.queryByTestId("backup-schedule-destination")).not.toBeInTheDocument();
+  });
+  it("shows the compact recovery layout while preserving schedule, manual backup, history, and restore", async () => {
     await renderBackupTab();
 
     const summary = await screen.findByTestId("backup-summary");
@@ -121,6 +147,11 @@ describe("Settings → Backup → schedule intervals", () => {
     const historySection = screen.getByTestId("backup-history-section");
     const restoreSection = screen.getByTestId("backup-restore-section");
 
+    expect(screen.getByRole("heading", { name: "Backup & Recovery" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Schedule Automatic Backups" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Production Data Backup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recent Backups" })).toBeInTheDocument();
+    expect(screen.getByText("Manage encrypted backups and recovery destinations.")).toBeInTheDocument();
     expect(summary).toHaveAccessibleName("Backup status summary");
     expect(summary.compareDocumentPosition(scheduleSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(scheduleSection.compareDocumentPosition(manualSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -129,6 +160,11 @@ describe("Settings → Backup → schedule intervals", () => {
     expect(screen.getByTestId("backup-summary-latest")).toBeVisible();
     expect(screen.getByTestId("backup-summary-upcoming")).toBeVisible();
     expect(screen.getByTestId("backup-summary-destination")).toBeVisible();
+    expect(summary).toContainElement(await screen.findByTestId("backup-stale-headline"));
+    expect(scheduleSection.parentElement).toBe(manualSection.parentElement);
+    expect(scheduleSection.parentElement).toHaveClass("grid-cols-1", "xl:grid-cols-2", "min-w-0");
+    expect(screen.getByText("Keep for (days)")).toBeInTheDocument();
+    expect(screen.getByText("Max rows")).toBeInTheDocument();
   });
 
   it("shows the enabled backup cadence when the server has no next-run timestamp", async () => {
@@ -149,7 +185,7 @@ describe("Settings → Backup → schedule intervals", () => {
     expect(screen.getByTestId("backup-summary-upcoming")).not.toHaveTextContent("Not scheduled");
   });
 
-  it("shows measured manual progress, then removes the bar and confirms completion", async () => {
+  it("shows whole-run manual progress, then removes the bar and confirms completion", async () => {
     await renderBackupTab();
     fireEvent.click(screen.getAllByLabelText("OneDrive")[0]!);
     const manualButton = await screen.findByRole("button", { name: "Back up now" });
@@ -157,15 +193,15 @@ describe("Settings → Backup → schedule intervals", () => {
     fireEvent.click(manualButton);
 
     const bar = await screen.findByTestId("manual-backup-progress-bar");
-    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "50"));
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "51"));
     expect(bar.firstElementChild).toHaveClass("backup-progress-stripes");
-    expect(screen.getByText("50%")).toBeInTheDocument();
+    expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("51%");
 
     expect(await screen.findByText(/Backup complete\./)).toBeInTheDocument();
     expect(screen.queryByTestId("manual-backup-progress-bar")).not.toBeInTheDocument();
   });
 
-  it("keeps the manual progress bar indeterminate when a phase has no completed/total pair", async () => {
+  it("shows the whole-run milestone when the current phase has no measurable total", async () => {
     manualProgressPhase = "database dump";
     manualProgressMetrics = { dumpBytes: 2048 };
     await renderBackupTab();
@@ -175,12 +211,12 @@ describe("Settings → Backup → schedule intervals", () => {
     fireEvent.click(manualButton);
 
     const bar = await screen.findByTestId("manual-backup-progress-bar");
-    expect(bar).not.toHaveAttribute("aria-valuenow");
-    expect(screen.queryByText(/^\d+%$/)).not.toBeInTheDocument();
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "5"));
+    expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("5%");
     expect(await screen.findByText(/Backup complete\./)).toBeInTheDocument();
   });
 
-  it("shows a measured percentage while the complete archive is downloading", async () => {
+  it("shows whole-run progress while the complete archive is downloading", async () => {
     manualProgressPhase = "local download";
     manualProgressMetrics = { transferredBytes: 1250, transferTotalBytes: 5000 };
     await renderBackupTab();
@@ -190,8 +226,8 @@ describe("Settings → Backup → schedule intervals", () => {
     fireEvent.click(manualButton);
 
     const bar = await screen.findByTestId("manual-backup-progress-bar");
-    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "25"));
-    expect(screen.getByText("25%")).toBeInTheDocument();
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "83"));
+    expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("83%");
     expect(await screen.findByText(/Backup complete\./)).toBeInTheDocument();
   });
 
@@ -221,31 +257,90 @@ describe("Settings → Backup → schedule intervals", () => {
     expect(screen.getByTestId("scheduled-backup-live-metrics")).toHaveTextContent("1 of 2 media files");
   });
 
-  it("offers the requested four choices and defaults to an unsaved 15-minute schedule", async () => {
+  it("defaults production backups to fifteen minutes with no development scope selector", async () => {
+    await renderBackupTab();
+    const select = await screen.findByTestId("backup-schedule-interval") as HTMLSelectElement;
+    expect(select).toHaveValue("15_minutes");
+    expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent("first verify the last saved recovery point");
+    expect(screen.queryByRole("option", { name: /development/i })).not.toBeInTheDocument();
+  });
+  it("blocks manual backups and schedule changes on a development server", async () => {
+    schedule = { ...emptySchedule, sourceEnvironment: "development" };
+    await renderBackupTab();
+    expect(await screen.findByRole("button", { name: "Back up now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save schedule" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent("Production backups are unavailable"));
+    expect(savedSchedule).toBeNull();
+  });
+  it("keeps a saved legacy interval visible and warns before changing an active schedule", async () => {
+    schedule = { ...emptySchedule, interval: 2, unit: "hours", enabled: true };
+    await renderBackupTab();
+
+    const select = await screen.findByTestId("backup-schedule-interval") as HTMLSelectElement;
+    expect(select).toHaveValue("2_hours");
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "Current: every 2 hours (legacy)",
+      "Every 5 minutes", "Every 15 minutes", "Every 20 minutes", "Every 30 minutes", "Every hour", "Every 6 hours", "Every 24 hours",
+    ]);
+    expect(screen.getByTestId("backup-schedule-legacy-cadence")).toHaveTextContent(
+      "Select a cadence allowed for this database and save to update it",
+    );
+  });
+
+  it("offers all requested production intervals and all four destinations", async () => {
+    schedule = {
+      ...emptySchedule,
+      sourceEnvironment: "production",
+      allowedScheduleIntervalsMinutes: [5, 15, 20, 30, 60, 360, 1440],
+      interval: null,
+      unit: null,
+    };
     await renderBackupTab();
 
     const select = await screen.findByTestId("backup-schedule-interval") as HTMLSelectElement;
     expect(select).toHaveValue("15_minutes");
     expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
-      "Every 5 minutes",
-      "Every 10 minutes",
-      "Every 15 minutes",
-      "Every hour",
+      "Every 5 minutes", "Every 15 minutes", "Every 20 minutes", "Every 30 minutes", "Every hour", "Every 6 hours", "Every 24 hours",
+    ]);
+    expect(screen.getByTestId("backup-schedule-cadence-guidance")).toHaveTextContent(
+      "Choose the destination and interval for production backups",
+    );
+    const destination = screen.getByTestId("backup-schedule-destination") as HTMLSelectElement;
+    expect(Array.from(destination.options).map(option => [option.value, option.disabled])).toEqual([
+      ["local", false], ["network", false], ["onedrive", false], ["google-drive", false],
     ]);
   });
-
-  it("keeps a saved legacy interval visible without replacing it", async () => {
-    schedule = { ...emptySchedule, interval: 30, unit: "minutes", enabled: true };
+  it("saves the selected Google Drive production destination and twenty-minute cadence", async () => {
+    schedule = { ...emptySchedule, sourceEnvironment: "production", allowedScheduleIntervalsMinutes: [5, 15, 20, 30, 60, 360, 1440] };
     await renderBackupTab();
-
-    const select = await screen.findByTestId("backup-schedule-interval") as HTMLSelectElement;
-    expect(select).toHaveValue("30_minutes");
-    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
-      "Current: every 30 minutes (legacy)",
-      "Every 5 minutes",
-      "Every 10 minutes",
-      "Every 15 minutes",
-      "Every hour",
-    ]);
+    const destination = await screen.findByTestId("backup-schedule-destination");
+    fireEvent.change(destination, { target: { value: "google-drive" } });
+    fireEvent.change(screen.getByTestId("backup-schedule-interval"), { target: { value: "20_minutes" } });
+    fireEvent.click(screen.getByLabelText("Enable automatic backups"));
+    const save = screen.getByRole("button", { name: "Save schedule" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(savedSchedule).toMatchObject({ destination: "google-drive", interval: 20, unit: "minutes", enabled: true }));
+  });
+  it("reports verified readable media separately from missing-original complete recovery", async () => {
+    schedule = {
+      ...emptySchedule,
+      sourceEnvironment: "production",
+      offsite: {
+        enabled: true, stale: false,
+        databaseProtection: {
+          state: "partial", stage: "Records and readable media verified", coverage: "partial",
+          mediaFiles: 2, mediaBytes: 5000, missingFiles: 1,
+          lastVerifiedAt: "2026-10-25T12:00:00.000Z",
+          lastDestinationCheckAt: "2026-10-25T12:00:00.000Z",
+          dumpBytes: 1000, newChunks: 2, newBytes: 500, reusedChunks: 4, error: null,
+        },
+      },
+    };
+    await renderBackupTab();
+    expect(await screen.findByTestId("database-protection-status")).toHaveTextContent("partial");
+    expect(screen.getByTestId("database-protection-status")).toHaveTextContent("not complete recovery");
+    expect(screen.getByTestId("database-protection-status")).toHaveTextContent("missing originals: 1");
+    expect(screen.queryByTestId("backup-full-archive-interval")).not.toBeInTheDocument();
   });
 });

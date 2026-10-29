@@ -3,7 +3,8 @@ export interface RestorationUpdateInput {
   material?: string;
   restorationSubtype?: string;
   shade?: string;
-  restorationType?: "Crown" | "Pontic";
+  restorationType?: string;
+  arch?: "upper" | "lower" | null;
 }
 
 export function buildRestorationUpdateBody(
@@ -13,15 +14,17 @@ export function buildRestorationUpdateBody(
   material?: string;
   restorationSubtype?: string;
   shade?: string;
-  restorationType?: "Crown" | "Pontic";
+  restorationType?: string;
+  arch?: "upper" | "lower" | null;
 } {
   return {
     toothNumber: update.newToothNumber,
+    ...(update.arch !== undefined ? { arch: update.arch } : {}),
     ...(update.restorationType ? { restorationType: update.restorationType, quantity: 1 } : {}),
     ...(update.material ? { material: update.material } : {}),
     ...(update.restorationSubtype
       ? { restorationSubtype: update.restorationSubtype }
       : {}),
-    ...(update.shade ? { shade: update.shade } : {}),
+    ...(update.shade !== undefined ? { shade: update.shade } : {}),
   };
 }

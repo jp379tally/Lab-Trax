@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
+import { resetManualBackupProgress, saveManualBackupIdentity } from "@/lib/manual-backup-progress";
 
 const LAB_ONE = {
   id: "lab-one",
@@ -28,6 +29,11 @@ let memberships: Array<Record<string, unknown>>;
 let downloadStatus: number;
 let downloadError = "You do not have active owner or admin access to the selected lab.";
 let downloadCalls: string[];
+let adminBackupCalls: string[];
+let adminBackupReports: Array<Record<string, unknown>>;
+let manualBackupBody: Record<string, unknown> | null;
+let manualLiveStatus: Record<string, unknown>;
+let holdManualGeneration: boolean;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -37,6 +43,8 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
+  resetManualBackupProgress("", "");
   memberships = [
     {
       organizationId: LAB_ONE.id,
@@ -53,7 +61,12 @@ beforeEach(() => {
   ];
   downloadStatus = 200;
   downloadCalls = [];
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+  adminBackupCalls = [];
+  adminBackupReports = [];
+  manualBackupBody = null;
+  holdManualGeneration = false;
+  manualLiveStatus = { runId: "", state: "running", phase: "starting backup", elapsedMs: 0, metrics: {} };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/auth/me")) {
       return jsonResponse({ user: ADMIN_USER, memberships });
@@ -76,11 +89,74 @@ beforeEach(() => {
         },
       });
     }
+    if (url.includes("/admin/backup/run")) {
+      manualBackupBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      manualLiveStatus = holdManualGeneration
+        ? { runId: manualBackupBody.runId, state: "running", phase: "database dump", elapsedMs: 100, metrics: {} }
+        : {
+          runId: manualBackupBody.runId,
+          state: "awaiting_verification",
+          phase: "desktop verification",
+          elapsedMs: 100,
+          metrics: {},
+          archiveEvidence: {
+            archiveKind: "complete-production",
+            coverageVersion: 1,
+            mediaFileCount: 1,
+            attachmentRowCount: 1,
+          },
+          delivery: {
+            fileName: "labtrax-backup.zip.enc",
+            size: 76,
+            archiveKind: "complete-production",
+            sourceEnvironment: "production",
+          },
+        };
+      return jsonResponse({ ok: true, runId: manualBackupBody.runId, state: "running" }, 202);
+    }
+    if (url.includes("/admin/backup/status/")) {
+      return jsonResponse(manualLiveStatus);
+    }
+    if (url.includes("/admin/backup/cancel/")) {
+      manualLiveStatus = { ...manualLiveStatus, state: "cancelled", phase: "backup cancelled", error: "Backup cancelled." };
+      return jsonResponse({ ok: true, state: "cancelled" });
+    }
+    if (url.includes("/admin/backup/download/")) {
+      adminBackupCalls.push(url);
+      const archive = new Uint8Array(76);
+      archive.set(new TextEncoder().encode("LTR2"), 0);
+      archive.set(new TextEncoder().encode("LTF1"), 64);
+      new DataView(archive.buffer).setBigUint64(68, 64n, false);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(archive.subarray(0, 3));
+          controller.enqueue(archive.subarray(3, 70));
+          controller.enqueue(archive.subarray(70));
+          controller.close();
+        },
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": 'attachment; filename="labtrax-backup.zip.enc"',
+          "Content-Length": String(archive.byteLength),
+          "x-backup-archive-kind": "complete-production",
+          "x-backup-coverage-version": "1",
+          "x-backup-missing-file-count": "0",
+          "x-backup-media-file-count": "1",
+          "x-backup-attachment-row-count": "1",
+        },
+      });
+    }
+    if (url.includes("/admin/backup/desktop-run-report")) {
+      adminBackupReports.push(JSON.parse(String(init?.body ?? "{}")));
+      return jsonResponse({ ok: true, completedAt: "2026-10-20T18:00:00.000Z" });
+    }
     if (url.includes("/admin/backup/onedrive-status")) {
       return jsonResponse({ ok: true, connected: false, folder: "", manageUrl: null });
     }
     if (url.includes("/admin/backup/schedule")) {
-      return jsonResponse({ interval: null, destination: null, enabled: false });
+      return jsonResponse({ interval: null, destination: null, enabled: false, sourceEnvironment: "production" });
     }
     if (url.includes("/admin/backup/history")) {
       return jsonResponse({ ok: true, runs: [] });
@@ -91,6 +167,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetManualBackupProgress("", "");
   vi.unstubAllGlobals();
   delete (window as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker;
   window.history.replaceState(null, "", "/");
@@ -108,6 +185,86 @@ function renderBackupSettings(user = ADMIN_USER) {
 }
 
 describe("Settings → Backup → lab-scoped download", () => {
+  it("streams a full manual backup to a browser-selected USB file", async () => {
+    let savedBytes = 0;
+    const picker = vi.fn(async () => ({
+      name: "labtrax-backup.zip.enc",
+      createWritable: async () => new WritableStream<Uint8Array>({
+        write(chunk) { savedBytes += chunk.byteLength; },
+      }),
+    }));
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: picker,
+    });
+    renderBackupSettings();
+
+    const backupButton = await screen.findByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(backupButton).toBeEnabled());
+    fireEvent.click(backupButton);
+
+    expect(await screen.findByText(/saved to/)).toBeInTheDocument();
+    expect(picker).toHaveBeenCalledWith({ suggestedName: "labtrax-backup.zip.enc" });
+    expect(adminBackupCalls).toHaveLength(1);
+    expect(adminBackupCalls[0]).toContain("/admin/backup/download/");
+    expect(manualBackupBody).toMatchObject({ destination: "browser", archiveKind: "full" });
+    const startRequest = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/admin/backup/run"));
+    expect(new Headers(startRequest?.[1]?.headers).get("X-LabTrax-Backup-Source")).toBe("production");
+    expect(adminBackupReports).toEqual([expect.objectContaining({
+      status: "success",
+      source: "manual",
+      fileName: "labtrax-backup.zip.enc",
+      sizeBytes: 76,
+    })]);
+    expect(savedBytes).toBe(76);
+  });
+
+  it("cancels only the active manual run and displays cancellation rather than success", async () => {
+    holdManualGeneration = true;
+    renderBackupSettings();
+    const backupButton = await screen.findByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(backupButton).toBeEnabled());
+    fireEvent.click(backupButton);
+    await waitFor(() => expect(screen.getByTestId("cancel-manual-backup")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("cancel-manual-backup"));
+
+    expect(await screen.findByText(/Backup cancelled\. Incomplete output was discarded/)).toBeInTheDocument();
+    expect(adminBackupCalls).toHaveLength(0);
+    expect(adminBackupReports).toHaveLength(0);
+    expect(manualLiveStatus.state).toBe("cancelled");
+  });
+
+  it("reconnects after a page reload and redelivers the same staged archive without a new run", async () => {
+    const runId = "2cd9aedf-87cf-40f6-8d10-920db0a0aef7";
+    manualLiveStatus = {
+      runId,
+      state: "awaiting_verification",
+      phase: "desktop verification",
+      elapsedMs: 500,
+      metrics: {},
+      delivery: {
+        fileName: "labtrax-backup.zip.enc",
+        size: 76,
+        archiveKind: "complete-production",
+        sourceEnvironment: "production",
+      },
+    };
+    saveManualBackupIdentity("user-one", {
+      runId,
+      destination: "local",
+      archiveKind: "full",
+      path: "",
+      startedAt: Date.now() - 500,
+    });
+    renderBackupSettings();
+
+    fireEvent.click(await screen.findByTestId("resume-manual-backup-download"));
+    expect(await screen.findByText(/downloaded by your browser/)).toBeInTheDocument();
+    expect(adminBackupCalls).toHaveLength(1);
+    expect(manualBackupBody).toBeNull();
+    expect(adminBackupReports).toHaveLength(1);
+  });
+
   it("lets an owner/admin select an actively administered lab and streams the browser download", async () => {
     let downloadedBytes = 0;
     Object.defineProperty(window, "showSaveFilePicker", {

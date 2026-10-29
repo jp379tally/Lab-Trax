@@ -1,4 +1,4 @@
-import { finalizedInvoiceSql } from "../lib/recovery-billing-hold";
+import { finalizedInvoiceSql } from "../lib/historical-invoice-hold";
 /**
  * Read-only lab-scoped analytics endpoints for the desktop Stats dashboard
  * (Task: Admin stats & analytics).

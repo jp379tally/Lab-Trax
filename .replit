@@ -1,0 +1,292 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[deployment]
+router = "application"
+deploymentTarget = "vm"
+ignorePorts = false
+
+[deployment.postBuild]
+args = ["bash", "scripts/prepare-production-image.sh"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "knowledge-test"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/ai-knowledge run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "EAS iOS Build + Submit"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/eas-ios-build.sh"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "rel-typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'pnpm run typecheck'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-api-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'API_TEST_REQUIRE_DATABASE=1 LABTRAX_ISOLATED_TEST_CONFIG=vitest.config.ts bash scripts/run-isolated-backup-restore.sh'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-desktop-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'pnpm --filter @workspace/labtrax-desktop run lint && pnpm --filter @workspace/labtrax-desktop run test'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-mobile-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'pnpm --filter @workspace/scripts run check-test-harness && pnpm --filter @workspace/labtrax exec vitest run'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-scripts-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'pnpm --filter @workspace/scripts run test'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-backup-restore"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'bash scripts/run-isolated-backup-restore.sh'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-mobile-legacy-fence"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-mobile-legacy-paths"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-protected-tables"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-protected-tables"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-provider-account-creation"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-provider-account-creation"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-mobile-keyboard-dismiss"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-mobile-keyboard-dismiss"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-test-harness"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'pnpm --filter @workspace/scripts run check-test-harness:collect'"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "rel-sweep-scope"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/scripts run lint-maintenance-sweep-scope"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "artifacts/labtrax-desktop: web"
+author = "agent"
+mode = "sequential"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+artifactId = "artifacts/labtrax-desktop"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax-desktop run dev"
+cwd = "./artifacts/labtrax-desktop"
+waitForPort = 18803
+ensurePreviewReachable = "/"
+router = "path"
+
+[workflows.workflow.tasks.env]
+PORT = "18803"
+BASE_PATH = "/desktop/"
+
+[[workflows.workflow]]
+name = "artifacts/mockup-sandbox: Component Preview Server"
+author = "agent"
+mode = "sequential"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+artifactId = "XegfDyZt7HqfW2Bb8Ghoy"
+isCanvasWorkflow = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/mockup-sandbox run dev"
+cwd = "./artifacts/mockup-sandbox"
+waitForPort = 8081
+ensurePreviewReachable = "/"
+router = "path"
+
+[workflows.workflow.tasks.env]
+PORT = "8081"
+BASE_PATH = "/__mockup"
+
+[[workflows.workflow]]
+name = "artifacts/labtrax: expo"
+author = "agent"
+mode = "sequential"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+artifactId = "artifacts/labtrax"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax run dev"
+cwd = "./artifacts/labtrax"
+waitForPort = 19134
+ensurePreviewReachable = "/status"
+router = "expo-domain"
+
+[workflows.workflow.tasks.env]
+PORT = "19134"
+BASE_PATH = "/"
+
+[[workflows.workflow]]
+name = "artifacts/api-server: API Server"
+author = "agent"
+mode = "sequential"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+artifactId = "3B4_FFSkEVBkAeYMFRJ2e"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server run dev"
+cwd = "./artifacts/api-server"
+waitForPort = 8080
+ensurePreviewReachable = "/"
+router = "path"
+
+[workflows.workflow.tasks.env]
+PORT = "8080"
+
+[[workflows.workflow]]
+name = "Verify API and Desktop builds"
+mode = "sequential"
+author = 54507028
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/run-serialized-validation.sh 'bash scripts/run-record-repair-release-checks.sh --backup-schedule'"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+integrations = ["onedrive:1.0.0"]
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 600000
+
+[nix]
+channel = "stable-25_05"
+packages = ["freetype", "glibcLocales", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "poppler-utils", "tcl", "tk", "zlib"]
+
+[userenv]
+
+[userenv.development]
+EXPO_ASC_API_KEY_PATH = "/tmp/AuthKey_LV4253P6YW.p8"
+LABTRAX_ENABLE_DEMO_SEEDS = "false"
+PLAYWRIGHT_BASE_URL = "https://49e9745d-1b8c-4b30-b98c-dad823fe1b38-00-1ov0l96i66rbn-4hck8bpp.janeway.replit.dev"
+PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_AMOUNT = "1.00"
+PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_INVOICE_NUMBER = "STRIPE-RELEASE-CANCEL-2026"
+PLAYWRIGHT_STRIPE_CANCEL_FIXTURE_PROVIDER_NAME = "Stripe Release Check Practice"
+PLAYWRIGHT_STRIPE_LAB_ORGANIZATION_ID = "stripe_release_lab_2026"
+PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_AMOUNT = "1.00"
+PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_INVOICE_NUMBER = "STRIPE-RELEASE-SUCCESS-2026"
+PLAYWRIGHT_STRIPE_SUCCESS_FIXTURE_PROVIDER_NAME = "Stripe Release Check Practice"
+
+[userenv.shared]
+
+[objectStorage]
+defaultBucketID = "replit-objstore-922d1549-c6ac-4d22-ace0-911b15bc9fc8"

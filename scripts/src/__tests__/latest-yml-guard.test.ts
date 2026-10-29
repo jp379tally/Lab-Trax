@@ -2,8 +2,9 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtemp, writeFile, readFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   shouldUploadLatestYml,
   validateLatestYmlContent,
@@ -16,6 +17,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_SRC = resolve(__dirname, "..");
 const UPLOAD_INSTALLER_SCRIPT = resolve(SCRIPTS_SRC, "upload-desktop-installer.ts");
 const TSX_LOADER = import.meta.resolve("tsx");
+const STORAGE_MOCK_PRELOAD = pathToFileURL(
+  resolve(__dirname, "fixtures", "register-stub-storage.mjs"),
+).href;
+const REPO_ROOT = resolve(SCRIPTS_SRC, "../..");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,12 +44,72 @@ async function withTempDir(): Promise<string> {
   return dir;
 }
 
+function runUploaderWithMockStorage(
+  installerPath: string,
+  storageRoot: string,
+  extraEnv: Record<string, string | undefined> = {},
+) {
+  const revision = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  if (revision.status !== 0) {
+    throw new Error(`Unable to resolve checked-out source revision: ${revision.stderr}`);
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PRIVATE_OBJECT_DIR: "test-bucket/test-dir",
+    GIT_COMMIT_SHA: revision.stdout.trim(),
+    LABTRAX_DESKTOP_SIGNATURE_VERIFICATION: "verified-installer",
+    LABTRAX_LATEST_YML_PATH: join(storageRoot, "missing-latest.yml"),
+    DESKTOP_INSTALLER_VERSION: "9.8.7-test",
+    PUBLISH_API_BASE_URL: "",
+    PLATFORM_ADMIN_SECRET: "",
+    MOCK_STORAGE_ROOT: storageRoot,
+    ...extraEnv,
+  };
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value === undefined) delete env[key];
+  }
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      TSX_LOADER,
+      "--import",
+      STORAGE_MOCK_PRELOAD,
+      UPLOAD_INSTALLER_SCRIPT,
+      installerPath,
+    ],
+    {
+      env,
+      encoding: "utf8",
+      timeout: 120_000,
+    },
+  );
+  if (result.error) throw result.error;
+  return result;
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try {
     await access(p);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function expectNoReleaseObjects(storageRoot: string): Promise<void> {
+  const objectRoot = join(storageRoot, "test-bucket", "test-dir", "desktop-installer");
+  for (const objectName of [
+    "LabTrax-Setup.exe",
+    "LabTrax-Windows-Portable.zip",
+    "LabTrax.dmg",
+    "latest.yml",
+    "release-identity.json",
+  ]) {
+    expect(await fileExists(join(objectRoot, objectName))).toBe(false);
   }
 }
 
@@ -347,6 +412,11 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
           ...process.env,
           // Must be set to pass the first guard in main()
           PRIVATE_OBJECT_DIR: "test-bucket/test-dir",
+          GIT_COMMIT_SHA: spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: resolve(SCRIPTS_SRC, "../.."),
+            encoding: "utf8",
+          }).stdout.trim(),
+          LABTRAX_DESKTOP_SIGNATURE_VERIFICATION: "verified-installer",
           // Point latest.yml at the stale fixture — validation runs before GCS
           LABTRAX_LATEST_YML_PATH: staleLatestYml,
           // Suppress sidecar / GCS noise (validation fires before any upload)
@@ -361,5 +431,296 @@ describe("spawn: upload-desktop-installer exits 1 on stale ZIP latest.yml", () =
     // stderr must mention the ZIP so operators know what went wrong
     const combined = (result.stdout ?? "") + (result.stderr ?? "");
     expect(combined).toContain("LabTrax-Windows-Portable.zip");
+  }, 150_000);
+
+  it("uses GIT_COMMIT_SHA when it matches checkout, even if GITHUB_SHA differs", async () => {
+    const dir = await withTempDir();
+    const storageRoot = join(dir, "mock-storage");
+    const readbackLog = join(dir, "storage-readbacks.jsonl");
+    const installerBytes = Buffer.from([0x4d, 0x5a, 0x00, 0xff, 0x10, 0x20]);
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    await writeFile(fakeExe, installerBytes);
+
+    const checkedOutRevision = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    expect(checkedOutRevision.status).toBe(0);
+    const expectedRevision = checkedOutRevision.stdout.trim().toLowerCase();
+    const differentGithubSha =
+      `${expectedRevision[0] === "0" ? "1" : "0"}${expectedRevision.slice(1)}`;
+    expect(differentGithubSha).not.toBe(expectedRevision);
+
+    const result = runUploaderWithMockStorage(fakeExe, storageRoot, {
+      GIT_COMMIT_SHA: expectedRevision,
+      GITHUB_SHA: differentGithubSha,
+      MOCK_STORAGE_READBACK_LOG: readbackLog,
+    });
+    const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(result.status, combined).toBe(0);
+
+    const uploadedInstallerPath = join(
+      storageRoot,
+      "test-bucket",
+      "test-dir",
+      "desktop-installer",
+      "LabTrax-Setup.exe",
+    );
+    const sidecarPath = join(
+      storageRoot,
+      "test-bucket",
+      "test-dir",
+      "desktop-installer",
+      "release-identity.json",
+    );
+    expect(await readFile(uploadedInstallerPath)).toEqual(installerBytes);
+
+    const sidecarBytes = await readFile(sidecarPath);
+    const sidecar = JSON.parse(sidecarBytes.toString("utf8"));
+    expect(sidecar).toEqual({
+      schemaVersion: 1,
+      version: "9.8.7-test",
+      sourceRevision: expectedRevision,
+      signatureVerification: "verified-installer",
+      artifact: {
+        fileName: "LabTrax-Setup.exe",
+        size: installerBytes.length,
+        sha256: createHash("sha256").update(installerBytes).digest("hex"),
+      },
+    });
+    expect(sidecar.sourceRevision).toHaveLength(40);
+    expect(sidecar.artifact.size).toBe(installerBytes.length);
+    expect(sidecar.artifact.sha256).toBe(
+      createHash("sha256").update(installerBytes).digest("hex"),
+    );
+    const readbackRecords = (await readFile(readbackLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(readbackRecords).toHaveLength(1);
+    expect(readbackRecords[0].key).toBe(
+      "test-dir/desktop-installer/release-identity.json",
+    );
+    expect(Buffer.from(readbackRecords[0].bytesBase64, "base64")).toEqual(sidecarBytes);
+  }, 150_000);
+
+  it("uses GITHUB_SHA when GIT_COMMIT_SHA is unset", async () => {
+    const dir = await withTempDir();
+    const storageRoot = join(dir, "mock-storage");
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    await writeFile(fakeExe, Buffer.from([0x4d, 0x5a, 0x01]));
+
+    const checkedOutRevision = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    expect(checkedOutRevision.status).toBe(0);
+    const revision = checkedOutRevision.stdout.trim().toLowerCase();
+    expect(revision).toMatch(/^[a-f0-9]{40}$/);
+
+    const result = runUploaderWithMockStorage(fakeExe, storageRoot, {
+      GIT_COMMIT_SHA: undefined,
+      GITHUB_SHA: revision,
+    });
+    const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(result.status, combined).toBe(0);
+
+    const uploadedInstallerPath = join(
+      storageRoot,
+      "test-bucket",
+      "test-dir",
+      "desktop-installer",
+      "LabTrax-Setup.exe",
+    );
+    const sidecarPath = join(
+      storageRoot,
+      "test-bucket",
+      "test-dir",
+      "desktop-installer",
+      "release-identity.json",
+    );
+    expect(await readFile(uploadedInstallerPath)).toEqual(
+      Buffer.from([0x4d, 0x5a, 0x01]),
+    );
+    const sidecar = JSON.parse(await readFile(sidecarPath, "utf8"));
+    expect(sidecar.sourceRevision).toBe(revision);
+  }, 150_000);
+
+  it("rejects a valid but stale source revision before writing any storage objects", async () => {
+    const dir = await withTempDir();
+    const storageRoot = join(dir, "mock-storage");
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    const latestYml = join(dir, "latest.yml");
+    await writeFile(fakeExe, "MZ fake exe", "utf8");
+    await writeFile(
+      latestYml,
+      buildLatestYmlContent({
+        version: "9.8.7-test",
+        filename: "LabTrax-Setup.exe",
+        sha512: FAKE_SHA512,
+        size: 11,
+        releaseDate: "2026-06-24T12:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const checkedOutRevision = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    expect(checkedOutRevision.status).toBe(0);
+    const currentSha = checkedOutRevision.stdout.trim();
+    const staleSha = `${currentSha[0] === "0" ? "1" : "0"}${currentSha.slice(1)}`;
+    expect(staleSha).toMatch(/^[a-f0-9]{40}$/i);
+    expect(staleSha.toLowerCase()).not.toBe(currentSha.toLowerCase());
+
+    const result = runUploaderWithMockStorage(fakeExe, storageRoot, {
+      GIT_COMMIT_SHA: staleSha,
+      GITHUB_SHA: currentSha,
+      LABTRAX_LATEST_YML_PATH: latestYml,
+    });
+    const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(result.status, combined).toBe(2);
+    expect(combined).toContain(
+      "Unable to verify that installer source revision matches the checked-out source.",
+    );
+
+    const objectRoot = join(storageRoot, "test-bucket", "test-dir", "desktop-installer");
+    for (const objectName of [
+      "LabTrax-Setup.exe",
+      "latest.yml",
+      "release-identity.json",
+    ]) {
+      expect(await fileExists(join(objectRoot, objectName))).toBe(false);
+    }
+  }, 150_000);
+
+  it.each([
+    {
+      label: "missing",
+      revisionEnv: {
+        GIT_COMMIT_SHA: undefined,
+        GITHUB_SHA: undefined,
+      },
+    },
+    {
+      label: "short",
+      revisionEnv: {
+        GIT_COMMIT_SHA: undefined,
+        GITHUB_SHA: "a".repeat(39),
+      },
+    },
+    {
+      label: "overlong",
+      revisionEnv: {
+        GIT_COMMIT_SHA: undefined,
+        GITHUB_SHA: "a".repeat(41),
+      },
+    },
+    {
+      label: "malformed primary",
+      revisionEnv: {
+        GIT_COMMIT_SHA: "not-a-full-source-revision",
+        GITHUB_SHA: undefined,
+      },
+    },
+    {
+      label: "malformed fallback",
+      revisionEnv: {
+        GIT_COMMIT_SHA: undefined,
+        GITHUB_SHA: "not-a-full-source-revision",
+      },
+    },
+  ])(
+    "rejects a $label source revision before writing any storage objects",
+    async ({ revisionEnv }) => {
+      const dir = await withTempDir();
+      const storageRoot = join(dir, "mock-storage");
+      const fakeExe = join(dir, "LabTrax-Setup.exe");
+      const latestYml = join(dir, "latest.yml");
+      await writeFile(fakeExe, "MZ fake exe", "utf8");
+      await writeFile(
+        latestYml,
+        buildLatestYmlContent({
+          version: "9.8.7-test",
+          filename: "LabTrax-Setup.exe",
+          sha512: FAKE_SHA512,
+          size: 11,
+          releaseDate: "2026-06-24T12:00:00.000Z",
+        }),
+        "utf8",
+      );
+
+      const result = runUploaderWithMockStorage(fakeExe, storageRoot, {
+        ...revisionEnv,
+        LABTRAX_LATEST_YML_PATH: latestYml,
+      });
+      const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      expect(result.status, combined).toBe(2);
+      expect(combined).toContain(
+        "A full 40-character source revision is required for installer identity.",
+      );
+
+      await expectNoReleaseObjects(storageRoot);
+    },
+    150_000,
+  );
+
+  it("fails when the stored release identity sidecar reports the wrong size", async () => {
+    const dir = await withTempDir();
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    await writeFile(fakeExe, "MZ fake exe", "utf8");
+
+    const result = runUploaderWithMockStorage(fakeExe, join(dir, "mock-storage"), {
+      MOCK_STORAGE_METADATA_SIZE_MISMATCH_FOR:
+        "test-dir/desktop-installer/release-identity.json",
+    });
+    const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(result.status, combined).toBe(2);
+    expect(combined).toContain(
+      "Uploaded Desktop release identity sidecar has an unexpected size.",
+    );
+  }, 150_000);
+
+  it("fails when the release identity sidecar read-back bytes differ", async () => {
+    const dir = await withTempDir();
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    await writeFile(fakeExe, "MZ fake exe", "utf8");
+
+    const result = runUploaderWithMockStorage(fakeExe, join(dir, "mock-storage"), {
+      MOCK_STORAGE_READBACK_MISMATCH_FOR:
+        "test-dir/desktop-installer/release-identity.json",
+    });
+    const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    expect(result.status, combined).toBe(2);
+    expect(combined).toContain(
+      "Uploaded Desktop release identity sidecar failed its exact-byte read-back check.",
+    );
+  }, 150_000);
+
+  it("refuses unsigned installer uploads before contacting App Storage", async () => {
+    const dir = await withTempDir();
+    const fakeExe = join(dir, "LabTrax-Setup.exe");
+    await writeFile(fakeExe, "MZ fake exe", "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, UPLOAD_INSTALLER_SCRIPT, fakeExe],
+      {
+        env: {
+          ...process.env,
+          PRIVATE_OBJECT_DIR: "test-bucket/test-dir",
+          LABTRAX_DESKTOP_SIGNATURE_VERIFICATION: "unverified",
+        },
+        encoding: "utf8",
+        timeout: 120_000,
+      },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect((result.stdout ?? "") + (result.stderr ?? "")).toContain(
+      "without successful code-signature verification",
+    );
   }, 150_000);
 });

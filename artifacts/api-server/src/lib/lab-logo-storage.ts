@@ -1,3 +1,4 @@
+import { writeProductionObject, deleteProductionObject } from "./production-media-object-write";
 import { Storage, type File } from "@google-cloud/storage";
 import type { ExternalAccountClientOptions } from "google-auth-library";
 
@@ -117,7 +118,7 @@ export async function uploadLabLogo(
         try {
           const f = getLogoFile(orgId, other);
           const [exists] = await f.exists();
-          if (exists) await f.delete();
+          if (exists) await deleteProductionObject(f, `private-objects/lab-logos/${orgId}.${other}`, "lab-logo");
         } catch {
           /* best effort */
         }
@@ -125,7 +126,7 @@ export async function uploadLabLogo(
   );
 
   const file = getLogoFile(orgId, ext);
-  await file.save(buffer, {
+  await writeProductionObject(file, `private-objects/lab-logos/${orgId}.${ext}`, "lab-logo", buffer, {
     contentType: mimeType,
     resumable: false,
     metadata: { cacheControl: "public, max-age=300" },
@@ -223,7 +224,7 @@ export async function uploadInvoiceTemplateImage(
   const ext = logoExtForMime(mimeType);
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const file = getInvoiceImageFile(orgId, id, ext);
-  await file.save(buffer, {
+  await writeProductionObject(file, `private-objects/invoice-template-images/${orgId}/${id}.${ext}`, "invoice-template", buffer, {
     contentType: mimeType,
     resumable: false,
     metadata: { cacheControl: "public, max-age=300" },
@@ -278,7 +279,7 @@ export async function deleteInvoiceTemplateImage(
       try {
         const f = getInvoiceImageFile(orgId, id, ext);
         const [exists] = await f.exists();
-        if (exists) await f.delete();
+        if (exists) await deleteProductionObject(f, `private-objects/invoice-template-images/${orgId}/${id}.${ext}`, "invoice-template");
       } catch {
         /* best effort */
       }
@@ -314,7 +315,7 @@ export async function uploadCasePrintTemplateImage(
   const ext = logoExtForMime(mimeType);
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const file = getCasePrintImageFile(orgId, id, ext);
-  await file.save(buffer, {
+  await writeProductionObject(file, `private-objects/case-print-template-images/${orgId}/${id}.${ext}`, "case-print-template", buffer, {
     contentType: mimeType,
     resumable: false,
     metadata: { cacheControl: "public, max-age=300" },
@@ -367,7 +368,7 @@ export async function deleteCasePrintTemplateImage(
       try {
         const f = getCasePrintImageFile(orgId, id, ext);
         const [exists] = await f.exists();
-        if (exists) await f.delete();
+        if (exists) await deleteProductionObject(f, `private-objects/case-print-template-images/${orgId}/${id}.${ext}`, "case-print-template");
       } catch {
         /* best effort */
       }

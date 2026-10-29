@@ -47,8 +47,8 @@ const DEFAULT_VITA_SHADES = [
 ];
 
 export type ToothActionPayload =
-  | { kind: "change_role"; toothId: string; restorationId: string; role: "Crown" | "Pontic" }
-  | { kind: "copy_assignment"; role: "Crown" | "Pontic"; material: string; restorationSubtype?: string; shade?: string; toothNumbers: string[] }
+  | { kind: "change_role"; toothId: string; restorationId: string; role: "Crown" | "Pontic" | "Veneer" }
+  | { kind: "copy_assignment"; role: "Crown" | "Pontic" | "Veneer"; material: string; restorationSubtype?: string; shade?: string; toothNumbers: string[] }
   | {
       kind: "add_crown";
       toothId: string;
@@ -164,7 +164,7 @@ export function ToothActionSheet({
   const [step, setStep] = useState<Step>("choose_kind");
   const [material, setMaterial] = useState("");
   const [restorationType, setRestorationType] = useState("Crown");
-  const [selectedRole, setSelectedRole] = useState<"crown" | "pontic">("crown");
+  const [selectedRole, setSelectedRole] = useState<"crown" | "pontic" | "veneer">("crown");
   const [shade, setShade] = useState("");
   const [customShade, setCustomShade] = useState("");
   const [isCustomShade, setIsCustomShade] = useState(false);
@@ -181,10 +181,10 @@ export function ToothActionSheet({
   const [addingShadePending, setAddingShadePending] = useState(false);
   const [addShadeError, setAddShadeError] = useState<string | null>(null);
   const [copyTargets, setCopyTargets] = useState("");
-  const [pendingRole, setPendingRole] = useState<"Crown" | "Pontic" | null>(null);
+  const [pendingRole, setPendingRole] = useState<"Crown" | "Pontic" | "Veneer" | null>(null);
   const [draftUndo, setDraftUndo] = useState<{
-    step: Step; role: "crown" | "pontic"; material: string; shade: string;
-    copyTargets: string; pendingRole: "Crown" | "Pontic" | null;
+    step: Step; role: "crown" | "pontic" | "veneer"; material: string; shade: string;
+    copyTargets: string; pendingRole: "Crown" | "Pontic" | "Veneer" | null;
   } | null>(null);
   function captureDraftUndo() {
     setDraftUndo({ step, role: selectedRole, material, shade, copyTargets, pendingRole });
@@ -265,12 +265,12 @@ export function ToothActionSheet({
     return shade || undefined;
   }
 
-  function handleKind(kind: "crown" | "pontic" | "missing") {
+  function handleKind(kind: "crown" | "pontic" | "veneer" | "missing") {
     captureDraftUndo();
     if (!toothId) return;
-    if (kind === "crown" || kind === "pontic") {
+    if (kind === "crown" || kind === "pontic" || kind === "veneer") {
       setSelectedRole(kind);
-      setRestorationType("Crown");
+      setRestorationType(kind === "veneer" ? "Veneer" : "Crown");
       setStep("choose_material");
     } else {
       onConfirm({ kind: "mark_missing", toothId });
@@ -310,7 +310,7 @@ export function ToothActionSheet({
     if (selectedRole === "pontic") {
       onConfirm({ kind: "add_pontic", ...details });
     } else {
-      onConfirm({ kind: "add_crown", ...details, restorationType });
+      onConfirm({ kind: "add_crown", ...details, restorationType: selectedRole === "veneer" ? "Veneer" : restorationType });
     }
   }
 
@@ -519,12 +519,12 @@ export function ToothActionSheet({
                   {existingAssignment?.material || "Material needs review"} · Shade: {existingAssignment?.shade || "Not specified"}
                 </Text>
                 <View style={{ flexDirection: "row", gap: 8 }}>
-                  {(["Crown", "Pontic"] as const).map((role) => (
+                  {(["Crown", "Pontic", "Veneer"] as const).map((role) => (
                     <Pressable key={role} accessibilityRole="button"
                       accessibilityState={{ selected: pendingRole === role }}
                       onPress={() => { captureDraftUndo(); setPendingRole(role); }}
                       style={{ minHeight: 44, padding: 12, borderWidth: 1, borderColor: pendingRole === role ? colors.tint : colors.border, borderRadius: 8 }}>
-                      <Text style={{ color: colors.text }}>{role === "Crown" ? "Prepared crown" : "Pontic"}</Text>
+                      <Text style={{ color: colors.text }}>{role === "Crown" ? "Prepared crown" : role === "Pontic" ? "Pontic" : "Veneer"}</Text>
                     </Pressable>
                   ))}
                 </View>
@@ -542,10 +542,11 @@ export function ToothActionSheet({
                   onPress={() => {
                     const teeth = expandToothAssignmentIdentifiers(copyTargets).filter((target) => target !== toothId);
                     const role = /^crown$/i.test(existingAssignment?.restorationType ?? "") ? "Crown"
-                      : /^pontic$/i.test(existingAssignment?.restorationType ?? "") ? "Pontic" : null;
+                      : /^pontic$/i.test(existingAssignment?.restorationType ?? "") ? "Pontic"
+                      : /^veneer$/i.test(existingAssignment?.restorationType ?? "") ? "Veneer" : null;
                     if (!role || !existingAssignment?.material?.trim() || !teeth.length ||
                         teeth.some((tooth) => !/^\d+$/.test(tooth) || (Number(tooth) <= 16) !== (Number(teeth[0]) <= 16))) {
-                      Alert.alert("Review copy", "Choose an explicit assigned crown or pontic with a material, and target teeth from one arch.");
+                      Alert.alert("Review copy", "Choose an explicit assigned crown, pontic or veneer with a material, and target teeth from one arch.");
                       return;
                     }
                     onConfirm({
@@ -632,8 +633,9 @@ export function ToothActionSheet({
                 </Text>
                 <View style={styles.kindGrid}>
                   {([
-                    { kind: "crown" as const, icon: "👑", label: "Crown / Restoration", desc: "Adds a billed line item" },
-                    { kind: "pontic" as const, icon: "🔗", label: "Pontic", desc: "Bridge unit" },
+                    { kind: "crown" as const, icon: "C", label: "Anatomical crown", desc: "Prepared tooth" },
+                    { kind: "pontic" as const, icon: "P", label: "Pontic", desc: "Bridge unit" },
+                    { kind: "veneer" as const, icon: "V", label: "Veneer", desc: "Facial restoration" },
                     { kind: "missing" as const, icon: "✕", label: "Missing", desc: "Visual only, no invoice" },
                   ]).filter((opt) => allowMarkMissing || opt.kind !== "missing").map((opt) => (
                     <Pressable
@@ -655,7 +657,7 @@ export function ToothActionSheet({
             {/* choose_material — add new crown path */}
             {step === "choose_material" && (
               <>
-                <Text style={styles.prompt}>Select a material for the {selectedRole === "pontic" ? "pontic" : "crown"} on tooth {toothId}:</Text>
+                <Text style={styles.prompt}>Select a material for the {selectedRole} on tooth {toothId}:</Text>
                 {catalogTypes.length > 0 ? (
                   <View style={styles.optionWrap}>
                     {[

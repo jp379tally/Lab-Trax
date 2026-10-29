@@ -115,6 +115,10 @@ export default defineConfig({
       },
     },
   },
+  worker: {
+    // PDF.js consumes its worker as an ES module.
+    format: "es",
+  },
   server: {
     port,
     strictPort: true,

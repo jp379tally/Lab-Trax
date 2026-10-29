@@ -9,6 +9,8 @@
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
     "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
     "upload-desktop-installer": "tsx ./src/upload-desktop-installer.ts",
+    "prepare-desktop-release-identity": "tsx ./src/desktop-recovery-release.ts prepare",
+    "verify-desktop-recovery-release": "tsx ./src/desktop-recovery-release.ts verify",
     "diagnose-desktop-installer": "tsx ./src/diagnose-desktop-installer.ts",
     "test-publish-failure-alert": "tsx ./src/test-publish-failure-alert.ts",
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
@@ -61,19 +63,21 @@
     "@replit/revenuecat-sdk": "^4.2.0",
     "@workspace/db": "workspace:*",
     "drizzle-orm": "catalog:",
+    "express": "5.2.1",
     "isomorphic-git": "^1.38.5",
     "pg": "^8.20.0",
     "semver": "^7.8.1",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/express": "5.0.6",
     "@types/node": "catalog:",
     "@types/pg": "^8.18.0",
     "@types/semver": "^7.7.1",
     "@workspace/api-client-react": "workspace:*",
     "google-auth-library": "^10.6.2",
     "tsx": "catalog:",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "yaml": "^2.8.4"
   }
 }

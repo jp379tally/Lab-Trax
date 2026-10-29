@@ -131,6 +131,11 @@ const organizationListColumns = {
   city: organizations.city,
   state: organizations.state,
   zip: organizations.zip,
+  billingAddressLine1: organizations.billingAddressLine1,
+  billingAddressLine2: organizations.billingAddressLine2,
+  billingCity: organizations.billingCity,
+  billingState: organizations.billingState,
+  billingZip: organizations.billingZip,
   isActive: organizations.isActive,
   defaultBankAccountId: organizations.defaultBankAccountId,
   logoUrl: organizations.logoUrl,
@@ -3909,7 +3914,7 @@ router.get(
 const additionalEmailSchema = z.object({
   email: z.string().email("Must be a valid email address."),
   type: z.enum(["billing", "correspondence"], {
-    errorMap: () => ({ message: 'Type must be "billing" or "correspondence".' }),
+    error: 'Type must be "billing" or "correspondence".',
   }),
 });
 
@@ -3949,6 +3954,88 @@ router.delete(
       );
     return ok(res, { deleted: true });
   })
+);
+
+const intakePracticeContactSchema = z.object({
+  addressLine1: z.string().max(500).nullable().optional(),
+  addressLine2: z.string().max(500).nullable().optional(),
+  city: z.string().max(200).nullable().optional(),
+  state: z.string().max(100).nullable().optional(),
+  zip: z.string().max(30).nullable().optional(),
+  billingAddressLine1: z.string().max(500).nullable().optional(),
+  billingAddressLine2: z.string().max(500).nullable().optional(),
+  billingCity: z.string().max(200).nullable().optional(),
+  billingState: z.string().max(100).nullable().optional(),
+  billingZip: z.string().max(30).nullable().optional(),
+  phone: z.string().max(100).nullable().optional(),
+  primaryEmail: z.string().email().nullable().optional(),
+  billingEmail: z.string().email().nullable().optional(),
+});
+
+// The AI intake confirmation is an explicit, user-approved operation. Keep it
+// behind the parent lab's admin/owner gate and scoped to contact fields only;
+// ordinary provider-account edits continue to use the counterpart approval flow.
+router.patch(
+  "/:organizationId/intake-contact",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) throw new HttpError(404, "Practice not found.");
+    if (practice.type !== "provider" || !practice.parentLabOrganizationId) {
+      throw new HttpError(400, "A lab-linked provider practice is required.");
+    }
+    await requireAnyRole(
+      (req as any).auth.userId,
+      practice.parentLabOrganizationId,
+      ADMIN_ROLES,
+    );
+    const input = intakePracticeContactSchema.parse(req.body);
+    const {
+      primaryEmail,
+      ...organizationChanges
+    } = Object.fromEntries(
+      Object.entries(input).filter(([, value]) => value !== undefined),
+    ) as z.infer<typeof intakePracticeContactSchema>;
+    const result = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(organizations)
+        .set({ ...organizationChanges, updatedAt: new Date() })
+        .where(and(
+          eq(organizations.id, organizationId),
+          eq(organizations.parentLabOrganizationId, practice.parentLabOrganizationId!),
+          eq(organizations.type, "provider"),
+          isNull(organizations.deletedAt),
+        ))
+        .returning();
+      if (!updated) throw new HttpError(409, "Practice changed; reload before saving contact details.");
+      if (primaryEmail !== undefined) {
+        const current = await tx.query.organizationAdditionalEmails.findFirst({
+          where: and(
+            eq(organizationAdditionalEmails.organizationId, organizationId),
+            eq(organizationAdditionalEmails.type, "correspondence"),
+          ),
+        });
+        if (primaryEmail === null || !primaryEmail.trim()) {
+          if (current) {
+            await tx.delete(organizationAdditionalEmails).where(eq(organizationAdditionalEmails.id, current.id));
+          }
+        } else if (current) {
+          await tx.update(organizationAdditionalEmails)
+            .set({ email: primaryEmail.trim() })
+            .where(eq(organizationAdditionalEmails.id, current.id));
+        } else {
+          await tx.insert(organizationAdditionalEmails)
+            .values({ organizationId, email: primaryEmail.trim(), type: "correspondence" });
+        }
+      }
+      const additionalEmails = await tx.select().from(organizationAdditionalEmails)
+        .where(eq(organizationAdditionalEmails.organizationId, organizationId));
+      return { ...updated, additionalEmails };
+    });
+    return ok(res, result);
+  }),
 );
 
 router.patch(

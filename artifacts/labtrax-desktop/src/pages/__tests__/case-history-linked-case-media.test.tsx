@@ -169,7 +169,7 @@ async function renderHistoryTab() {
       {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
     </Wrapper>,
   );
-  const historyTab = await screen.findByRole("button", { name: /History/i });
+  const historyTab = await screen.findByRole("tab", { name: /History/i });
   fireEvent.click(historyTab);
   // All three timeline photos have started loading.
   await waitFor(() => expect(fileUrls().length).toBe(3));

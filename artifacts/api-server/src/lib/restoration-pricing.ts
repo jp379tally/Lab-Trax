@@ -116,6 +116,17 @@ export async function resolveRestorationPriceKey(args: {
 
       const taxonomyKey = getPricingKey(hierarchy);
       if (taxonomyKey) return taxonomyKey;
+
+      // Diagnostic Wax Up is a material-free service subtype. Its explicit
+      // catalog override (checked above) is the only configured price source;
+      // do not let legacy matching reinterpret a tooth-level material or
+      // restoration role as a crown fee.
+      if (
+        hierarchy.caseType === "restorative" &&
+        hierarchy.subtype === "diagnostic_wax_up"
+      ) {
+        return null;
+      }
     }
   }
 

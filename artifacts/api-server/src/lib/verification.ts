@@ -41,7 +41,7 @@ export async function createVerificationCode(opts: {
   target: string;
   code: string;
   userId?: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const now = new Date();
   await db
     .update(verificationCodes)
@@ -54,13 +54,30 @@ export async function createVerificationCode(opts: {
       )
     );
 
-  await db.insert(verificationCodes).values({
+  const [inserted] = await db.insert(verificationCodes).values({
     userId: opts.userId ?? null,
     channel: opts.channel,
     target: opts.target,
     codeHash: sha256(opts.code),
     expiresAt: new Date(now.getTime() + CODE_TTL_MS),
-  });
+  }).returning({ id: verificationCodes.id });
+  if (!inserted) {
+    throw new Error("Verification code could not be persisted.");
+  }
+  return inserted.id;
+}
+
+/** Invalidate a code that was persisted but could not be delivered. */
+export async function invalidateVerificationCode(codeId: string): Promise<void> {
+  await db
+    .update(verificationCodes)
+    .set({ consumedAt: new Date() })
+    .where(
+      and(
+        eq(verificationCodes.id, codeId),
+        isNull(verificationCodes.consumedAt),
+      ),
+    );
 }
 
 export type VerifyResult = {

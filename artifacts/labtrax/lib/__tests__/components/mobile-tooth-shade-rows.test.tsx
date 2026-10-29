@@ -1,4 +1,5 @@
 import React from "react";
+import { StyleSheet } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react-native/pure";
 
@@ -113,8 +114,8 @@ describe("MobileToothShadeRows", () => {
     const utils = await render(
       <MobileToothShadeRows
         restorations={[
-          row({ id: "upper", toothNumber: "", arch: "upper", shade: "A1" }),
-          row({ id: "lower", toothNumber: "", arch: "lower", shade: "B1" }),
+          row({ id: "upper", restorationType: "Full Denture", toothNumber: "", arch: "upper", shade: "A1" }),
+          row({ id: "lower", restorationType: "Full Denture", toothNumber: "", arch: "lower", shade: "B1" }),
         ]}
         caseId="case-arches"
         labOrganizationId="lab-arches"
@@ -135,8 +136,47 @@ describe("MobileToothShadeRows", () => {
       restorationId: "upper",
       data: { shade: "A2", syncLinkedArch: false },
     });
-    expect(utils.getByTestId("tooth-shade-select-lower").props.children).toBeDefined();
+    expect(utils.getByTestId("tooth-shade-value-lower").props.children).toBe("B1");
     expect(mockUpdateRestoration).toHaveBeenCalledTimes(1);
+    await openShade(utils.getByTestId, "upper");
+    await fireEvent.press(utils.getByTestId("tooth-shade-option-clear-upper"));
+    expect(mockUpdateRestoration).toHaveBeenLastCalledWith({
+      caseId: "case-arches", restorationId: "upper", data: { shade: "", syncLinkedArch: false },
+    });
+    expect(utils.getByTestId("tooth-shade-value-upper").props.children).toContain("No shade");
+    expect(utils.getByTestId("tooth-shade-value-lower").props.children).toBe("B1");
+    await utils.rerender(<MobileToothShadeRows caseId="case-arches" labOrganizationId="lab-arches" canEdit restorations={[
+      row({ id: "upper", restorationType: "Full Denture", toothNumber: "", arch: "upper", shade: "" }),
+      row({ id: "lower", restorationType: "Full Denture", toothNumber: "", arch: "lower", shade: "B1" }),
+    ]} />);
+    expect(utils.getByTestId("tooth-shade-value-upper").props.children).toContain("No shade");
+    expect(utils.getByTestId("tooth-shade-value-lower").props.children).toBe("B1");
+    await openShade(utils.getByTestId, "lower");
+    await fireEvent.press(utils.getByTestId("tooth-shade-option-lower-A2"));
+    expect(mockUpdateRestoration).toHaveBeenLastCalledWith({
+      caseId: "case-arches", restorationId: "lower", data: { shade: "A2", syncLinkedArch: false },
+    });
+    expect(utils.getByTestId("tooth-shade-value-upper").props.children).toContain("No shade");
+    expect(utils.getByTestId("tooth-shade-value-lower").props.children).toBe("A2");
+  });
+
+  it("stacks unrestricted labels above full-width accessible controls, and never saves on open or dismiss", async () => {
+    const utils = await render(<MobileToothShadeRows caseId="case-layout" labOrganizationId="lab-arches" canEdit restorations={[
+      row({ id: "upper", restorationType: "Full Denture", toothNumber: "", arch: "upper", shade: "Custom long multilayer A2 incisal blend" }),
+    ]} />);
+    const control = utils.getByTestId("tooth-shade-select-upper");
+    expect(StyleSheet.flatten(control.props.style)).toMatchObject({ width: "100%", minWidth: 0, minHeight: 48 });
+    expect(control.props.accessibilityLabel).toBe("Shade for Upper arch: Custom long multilayer A2 incisal blend");
+    expect(control.props.accessibilityState).toMatchObject({ expanded: false, disabled: false });
+    expect(control.props["aria-expanded"]).toBe(false);
+    expect(utils.getByTestId("tooth-shade-value-upper").props.numberOfLines).toBeUndefined();
+    expect(StyleSheet.flatten(utils.getByTestId("tooth-shade-label-upper").props.style)).toMatchObject({ fontSize: 16, fontWeight: "700" });
+    await openShade(utils.getByTestId, "upper");
+    expect(utils.getByTestId("tooth-shade-select-upper").props.accessibilityState.expanded).toBe(true);
+    expect(utils.getByTestId("tooth-shade-select-upper").props["aria-expanded"]).toBe(true);
+    await openShade(utils.getByTestId, "upper");
+    expect(utils.queryByTestId("tooth-shade-option-clear-upper")).toBeNull();
+    expect(mockUpdateRestoration).not.toHaveBeenCalled();
   });
 
   it("uses desktop-compatible free-text arch detection after explicit arch", async () => {

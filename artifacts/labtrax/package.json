@@ -12,6 +12,7 @@
     "test:build-web-export": "node --test scripts/build-web-export.test.js",
     "test:web-bundle": "pnpm run test:build-web-export && node scripts/web-bundle-smoke.js",
     "test:case-header-browser": "LABTRAX_WEB_SMOKE_CASE_HEADER_ONLY=1 node scripts/web-bundle-smoke.js",
+    "test:restoration-fields-browser": "LABTRAX_WEB_SMOKE_RESTORATION_ONLY=1 node scripts/web-bundle-smoke.js",
     "test": "vitest run",
     "test:ios-depth": "swift test --package-path modules/labtrax-depth",
     "eas-build-post-install": "bash scripts/eas-build-post-install.sh"
@@ -34,6 +35,7 @@
     "@workspace/api-client-react": "workspace:*",
     "@workspace/account-number": "workspace:*",
     "@workspace/calendar-date": "workspace:*",
+    "@workspace/dashboard-labels": "workspace:*",
     "@workspace/item-name-match": "workspace:*",
     "@workspace/legacy-case-media-contract": "workspace:*",
     "@workspace/provider-case-format": "workspace:*",
@@ -82,9 +84,9 @@
     "react-native-worklets": "0.5.1",
     "test-renderer": "1.1.0",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "zod": "catalog:",
-    "zod-validation-error": "^3.4.0"
+    "zod-validation-error": "5.0.0"
   },
   "dependencies": {
     "@stripe/stripe-react-native": "0.50.3",

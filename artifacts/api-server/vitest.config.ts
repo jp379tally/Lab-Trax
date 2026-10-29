@@ -25,14 +25,24 @@ export default defineConfig({
     // step 6), which invokes them explicitly and IS wrapped in with-db-lock.
     // See REGRESSION_GUARDRAILS.md → "DB Serialization Rule (with-db-lock)".
     exclude: [
+      "src/lib/postgres-record-delta-postgres.test.ts",
+      "src/lib/database-protection-postgres.test.ts",
+      "src/lib/record-change-capture-feasibility-postgres.test.ts",
+      // These guarded suites are mandatory in vitest.restore.config.ts and
+      // must never be loaded against the ordinary API runner's shared DB.
+      "src/lib/database-protection-catchup-postgres.test.ts",
+      "src/lib/production-media-mutation-postgres.test.ts",
       "**/node_modules/**",
       "src/routes/organization-audit-recovery-rehearsal.test.ts",
+      // Real DB-wide recovery is mandatory in the ordered isolated restore
+      // gate, not the ordinary API fixture database populated by other files.
+      "src/routes/offsite-job.test.ts",
       "src/routes/backup-restore.test.ts",
+      "src/routes/backup-now-synthetic.test.ts",
       "src/routes/case-organization-repair.test.ts",
       "src/routes/restore-session.test.ts",
-      // Off-site restore suites can restore a real archive into whatever
-      // DATABASE_URL points at, so they run ONLY inside the isolated gate
-      // (scripts/run-isolated-backup-restore.sh), never in the ordinary API run.
+      // OneDrive and Google Drive restore suites restore real archives into the
+      // configured DATABASE_URL, so run them only in the isolated restore gate.
       "src/routes/onedrive-restore-integrity.test.ts",
       "src/routes/onedrive-offsite-restore.test.ts",
       "src/routes/google-drive-offsite-restore.test.ts",

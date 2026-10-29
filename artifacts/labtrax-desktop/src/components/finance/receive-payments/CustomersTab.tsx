@@ -7,8 +7,10 @@ import {
   isSelected,
   paysByStatement,
   plural,
+  practiceDoctorSelectionState,
   scopeFor,
   selectCustomers,
+  togglePracticeDoctorSelection,
   type PayableCustomer,
   type SortKey,
   type SortState,
@@ -37,6 +39,7 @@ export function statementDiffers(customer: PayableCustomer): boolean {
 
 export function CustomersTab({
   rows,
+  allCustomers,
   selection,
   sort,
   onSort,
@@ -44,14 +47,42 @@ export function CustomersTab({
   onViewInvoices,
 }: {
   rows: readonly PayableCustomer[];
+  allCustomers: readonly PayableCustomer[];
   selection: Selection;
   sort: SortState;
   onSort: (key: SortKey) => void;
   onSelectionChange: (next: Selection) => void;
   onViewInvoices: (customer: PayableCustomer) => void;
 }) {
-  const selectedShown = rows.filter((customer) => isSelected(selection, customer.id)).length;
-  const allShown = rows.length > 0 && selectedShown === rows.length;
+  const doctorsByPractice = new Map<string, PayableCustomer[]>();
+  for (const customer of allCustomers) {
+    if (!customer.isDoctorAccount) continue;
+    const key = customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+    const doctors = doctorsByPractice.get(key) ?? [];
+    doctors.push(customer);
+    doctorsByPractice.set(key, doctors);
+  }
+  const grouped = new Map<string, PayableCustomer[]>();
+  for (const customer of rows) {
+    const key = customer.practiceOrganizationId ?? customer.account.providerOrganizationId;
+    const group = grouped.get(key) ?? [];
+    group.push(customer);
+    grouped.set(key, group);
+  }
+  const orderedRows = [...grouped.values()].flatMap((group) => {
+    const practice = group.find((customer) => !customer.isDoctorAccount);
+    return [
+      ...(practice ? [practice] : []),
+      ...group.filter((customer) => customer.isDoctorAccount),
+    ];
+  });
+  const selectableRows = orderedRows.filter(
+    (customer) =>
+      customer.isDoctorAccount ||
+      (doctorsByPractice.get(customer.practiceOrganizationId ?? customer.account.providerOrganizationId)?.length ?? 0) < 2,
+  );
+  const selectedShown = selectableRows.filter((customer) => isSelected(selection, customer.id)).length;
+  const allShown = selectableRows.length > 0 && selectedShown === selectableRows.length;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -62,12 +93,12 @@ export function CustomersTab({
                 aria-label="Select all shown customers"
                 checked={allShown}
                 indeterminate={selectedShown > 0 && !allShown}
-                disabled={!rows.length}
+                disabled={!selectableRows.length}
                 onChange={(e) =>
                   onSelectionChange(
                     e.target.checked
-                      ? selectCustomers(selection, rows)
-                      : deselectCustomers(selection, rows.map((customer) => customer.id)),
+                      ? selectCustomers(selection, selectableRows)
+                      : deselectCustomers(selection, selectableRows.map((customer) => customer.id)),
                   )
                 }
               />
@@ -90,12 +121,22 @@ export function CustomersTab({
           </tr>
         </thead>
         <tbody>
-          {rows.map((customer) => {
-            const selected = isSelected(selection, customer.id);
+          {orderedRows.map((customer) => {
+            const practiceDoctors = customer.isDoctorAccount
+              ? []
+              : doctorsByPractice.get(customer.practiceOrganizationId ?? customer.account.providerOrganizationId) ?? [];
+            const isPracticeParent = practiceDoctors.length > 1;
+            const doctorState = isPracticeParent
+              ? practiceDoctorSelectionState(selection, practiceDoctors)
+              : null;
+            const selected = isPracticeParent ? doctorState!.checked : isSelected(selection, customer.id);
             const byStatement = paysByStatement(selection, customer);
             const note = scopeNote(selection, customer);
             const oldest = customer.oldest;
             const days = oldest?.daysPastDue ?? null;
+            const displayName = customer.isDoctorAccount
+              ? `${customer.doctorDisplayName ?? customer.name}${customer.doctorLabelQualifier ? ` (${customer.doctorLabelQualifier})` : ""}`
+              : customer.name;
             return (
               <tr
                 key={customer.id}
@@ -104,27 +145,49 @@ export function CustomersTab({
               >
                 <td className="py-2 pl-3 pr-1">
                   <Checkbox
-                    aria-label={`Select ${customer.name}`}
+                    aria-label={
+                      isPracticeParent
+                        ? `Select all doctors at ${customer.name}`
+                        : customer.isDoctorAccount
+                        ? `Select ${customer.doctorDisplayName} at ${customer.practiceName}${
+                            customer.doctorLabelQualifier ? ` (${customer.doctorLabelQualifier})` : ""
+                          }`
+                        : `Select ${customer.name}`
+                    }
                     checked={selected}
+                    indeterminate={doctorState?.indeterminate}
                     onChange={(e) =>
                       onSelectionChange(
-                        e.target.checked
-                          ? selectCustomers(selection, [customer])
-                          : deselectCustomers(selection, [customer.id]),
+                        isPracticeParent
+                          ? togglePracticeDoctorSelection(selection, customer, practiceDoctors)
+                          : e.target.checked
+                            ? selectCustomers(selection, [customer])
+                            : deselectCustomers(selection, [customer.id]),
                       )
                     }
                   />
                 </td>
                 <td className="w-full max-w-0 px-1.5 py-2">
-                  <div className="flex min-w-0 items-center gap-2">
+                  <div className={`flex min-w-0 items-center gap-2 ${customer.isDoctorAccount ? "pl-5" : ""}`}>
                     <span className="hidden @min-[36rem]:inline-flex">
                       <CustomerAvatar id={customer.id} initials={customer.initials} />
                     </span>
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate font-medium" title={customer.name}>
-                          {customer.name}
+                        <span
+                          className="truncate font-medium"
+                          title={customer.isDoctorAccount ? `${displayName} at ${customer.practiceName}` : customer.name}
+                        >
+                          {displayName}
                         </span>
+                        {customer.isDoctorAccount && (
+                          <span
+                            className="shrink-0 whitespace-nowrap text-xs font-semibold tabular-nums"
+                            aria-label={`Balance due ${formatMoney(customer.totalBalance)}`}
+                          >
+                            {formatMoney(customer.totalBalance)}
+                          </span>
+                        )}
                         {byStatement && (
                           <Badge title={`Pays by statement${customer.statement?.periodEnd ? ` ending ${formatDate(customer.statement.periodEnd)}` : ""}`}>
                             {/* Icon-only in a narrow panel; the label stays available to screen readers. */}
@@ -134,7 +197,9 @@ export function CustomersTab({
                         )}
                       </div>
                       <div className="truncate text-[11px] text-muted-foreground">
-                        {customer.accountNumber ?? ""}
+                        <span>{customer.accountLabel}</span>
+                        {customer.accountNumber && customer.accountLabel ? " · " : ""}
+                        <span>{customer.accountNumber ?? ""}</span>
                         <span className="@min-[34rem]:hidden">
                           {customer.accountNumber ? " · " : ""}
                           {customer.unpaidCount} unpaid
@@ -153,11 +218,15 @@ export function CustomersTab({
                   {plural(customer.unpaidCount, "invoice")}
                 </td>
                 <td className="whitespace-nowrap px-1.5 py-2 text-right">
-                  <div className="font-semibold tabular-nums">{formatMoney(customer.totalBalance)}</div>
-                  {byStatement && statementDiffers(customer) && (
-                    <div className="whitespace-normal text-[11px] leading-tight text-muted-foreground tabular-nums @min-[34rem]:whitespace-nowrap @min-[34rem]:leading-normal">
-                      Statement {customer.statement?.balance === null ? "unavailable" : formatMoney(customer.statement?.balance)}
-                    </div>
+                  {!isPracticeParent && !customer.isDoctorAccount && (
+                    <>
+                      <div className="font-semibold tabular-nums">{formatMoney(customer.totalBalance)}</div>
+                      {byStatement && statementDiffers(customer) && (
+                        <div className="whitespace-normal text-[11px] leading-tight text-muted-foreground tabular-nums @min-[34rem]:whitespace-nowrap @min-[34rem]:leading-normal">
+                          Statement {customer.statement?.balance === null ? "unavailable" : formatMoney(customer.statement?.balance)}
+                        </div>
+                      )}
+                    </>
                   )}
                 </td>
                 <td className="whitespace-nowrap px-1.5 py-2 text-xs tabular-nums">
@@ -175,7 +244,10 @@ export function CustomersTab({
                     "—"
                   )}
                 </td>
-                <td className="whitespace-nowrap px-1.5 py-2 text-xs tabular-nums">
+                <td
+                  className="whitespace-nowrap px-1.5 py-2 text-xs tabular-nums"
+                  aria-label={`Last payment for ${customer.isDoctorAccount ? customer.doctorDisplayName : customer.name}`}
+                >
                   {customer.lastPaymentAt ? (
                     <>
                       <div>{formatDate(customer.lastPaymentAt)}</div>

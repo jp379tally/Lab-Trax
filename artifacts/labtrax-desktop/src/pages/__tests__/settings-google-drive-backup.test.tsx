@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
+import { getManualBackupProgress, resetManualBackupProgress } from "@/lib/manual-backup-progress";
 
 const MANAGE_URL = "https://replit.com/@test-owner/test-slug";
+const ORIGINAL_INNER_WIDTH = window.innerWidth;
 const ADMIN_USER = {
   id: "u1",
   username: "labadmin",
@@ -21,6 +23,10 @@ let googleStatus: Record<string, unknown>;
 let schedule: Record<string, unknown>;
 let savedSchedule: Record<string, unknown> | null;
 let manualRunBody: Record<string, unknown> | null;
+let manualRunCount: number;
+let asyncManualRun: boolean;
+let manualLiveStatus: Record<string, unknown>;
+let historyRuns: Array<Record<string, unknown>>;
 let scheduledTestCalled = false;
 
 function jsonResponse(body: unknown): Response {
@@ -32,6 +38,7 @@ function jsonResponse(body: unknown): Response {
 
 function makeSchedule(enabled = false) {
   return {
+    sourceEnvironment: "production",
     interval: 24,
     unit: "hours",
     destination: null,
@@ -45,6 +52,7 @@ function makeSchedule(enabled = false) {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   googleStatus = {
     ok: true,
     connected: false,
@@ -57,6 +65,25 @@ beforeEach(() => {
   schedule = makeSchedule();
   savedSchedule = null;
   manualRunBody = null;
+  manualRunCount = 0;
+  asyncManualRun = false;
+  historyRuns = [];
+  manualLiveStatus = {
+    runId: "",
+    state: "completed",
+    phase: "backup complete",
+    overallProgress: 100,
+    elapsedMs: 1,
+    metrics: {},
+    result: {
+      runId: "",
+      size: 2_500_000,
+      completedAt: new Date().toISOString(),
+      fileName: "labtrax-test.zip.enc",
+      archiveKind: "complete-non-production",
+    },
+  };
+  resetManualBackupProgress("", "");
   scheduledTestCalled = false;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -80,23 +107,26 @@ beforeEach(() => {
       return jsonResponse(schedule);
     }
     if (url.includes("/admin/backup/run")) {
+      manualRunCount += 1;
       manualRunBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (asyncManualRun) {
+        manualLiveStatus = { ...manualLiveStatus, runId: manualRunBody.runId, state: "running" };
+        return jsonResponse({ ok: true, runId: manualRunBody.runId, state: "running" });
+      }
       return jsonResponse({
         ok: true,
+        archiveKind: manualRunBody.archiveKind ?? "complete-non-production",
         size: 2_500_000,
         completedAt: new Date().toISOString(),
         fileName: "labtrax-test.zip.enc",
       });
     }
     if (url.includes("/admin/backup/status/")) {
-      return jsonResponse({
-        state: "completed",
-        phase: "backup complete",
-        elapsedMs: 0,
-        metrics: {},
-      });
+      return jsonResponse(manualLiveStatus);
     }
-    if (url.includes("/admin/backup/history")) return jsonResponse({ ok: true, runs: [] });
+    if (url.includes("/admin/backup/history") && !url.includes("history-retention")) {
+      return jsonResponse({ ok: true, runs: historyRuns });
+    }
     return jsonResponse({ ok: true, items: [], data: [], runs: [] });
   }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {};
@@ -105,6 +135,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: ORIGINAL_INNER_WIDTH });
   window.history.replaceState(null, "", "/");
 });
 
@@ -120,6 +151,28 @@ async function renderBackupSettings() {
 }
 
 describe("Settings → Backup → Google Drive", () => {
+  it("always sends production records plus originals, without a scope selector", async () => {
+    googleStatus = { ...googleStatus, connected: true, error: null };
+    schedule.sourceEnvironment = "production";
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Google Drive" }));
+    expect(screen.queryByRole("combobox", { name: "Backup contents" })).not.toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Back up now" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(manualRunBody).toMatchObject({ destination: "google-drive" }));
+    expect(manualRunBody).not.toHaveProperty("archiveKind");
+    const request = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/admin/backup/run"));
+    expect(new Headers(request?.[1]?.headers).get("X-LabTrax-Backup-Source")).toBe("production");
+  });
+  it.each(["development", "production"] as const)("labels the connected %s database source", async (source) => {
+    schedule.sourceEnvironment = source;
+    await renderBackupSettings();
+    await waitFor(() => expect(screen.getByTestId("backup-source-label").textContent).toContain(
+      source === "production" ? "Production" : "Development",
+    ));
+  });
+
   it("shows actionable disconnected guidance and offers workspace linking", async () => {
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     await renderBackupSettings();
@@ -132,6 +185,54 @@ describe("Settings → Backup → Google Drive", () => {
 
     fireEvent.click(screen.getByTestId("google-drive-connect-button"));
     expect(openSpy).toHaveBeenCalledWith(MANAGE_URL, "_blank", "noopener,noreferrer");
+  });
+
+  it("keeps destinations, long paths, and path controls usable at a narrow width", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 440 });
+    const longFolderPath = `LabTrax Backups/non-production/${"deeply-nested-folder/".repeat(8)}2026`;
+    googleStatus = {
+      ...googleStatus,
+      connected: true,
+      accountName: "Backup Account",
+      folder: longFolderPath,
+      error: null,
+    };
+    historyRuns = [{
+      id: 99,
+      triggeredBy: "manual",
+      destination: "local",
+      path: longFolderPath,
+      fileName: "backup.zip.enc",
+      sizeBytes: 2500,
+      status: "success",
+      error: null,
+      completedAt: new Date().toISOString(),
+      mediaFileCount: 1,
+      attachmentRowCount: 1,
+      partialFailure: false,
+      warnings: null,
+      archiveKind: "complete-non-production",
+    }];
+
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Google Drive" }));
+
+    const destinations = screen.getByTestId("backup-destination-choices");
+    const googleNotice = await screen.findByTestId("google-drive-status-connected");
+    const localChoice = screen.getByRole("radio", { name: "Local folder / USB" });
+    expect(screen.getByTestId("settings-layout")).toHaveClass("flex-col", "md:flex-row");
+    expect(screen.getByTestId("settings-layout").querySelector("nav")).toHaveClass("w-full", "md:w-48");
+    expect(destinations).toHaveClass("min-w-0");
+    expect(googleNotice).toHaveClass("break-words");
+    expect(googleNotice).toHaveTextContent(longFolderPath);
+    expect(screen.getByTitle(longFolderPath)).toHaveClass("break-words");
+    expect(screen.getByTitle(longFolderPath)).not.toHaveClass("truncate");
+    expect(localChoice.closest("label")).toHaveClass("min-w-0");
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Network server" }));
+    expect(screen.getByPlaceholderText(/server/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
   });
 
   it("sends manual backups to Google Drive without asking for a local path", async () => {
@@ -151,14 +252,144 @@ describe("Settings → Backup → Google Drive", () => {
     expect(manualRunBody).not.toHaveProperty("path");
   });
 
+  it("reconnects to the same active run after Settings unmounts without starting a duplicate", async () => {
+    googleStatus = { ...googleStatus, connected: true, error: null };
+    asyncManualRun = true;
+    manualLiveStatus = {
+      runId: "",
+      state: "running",
+      phase: "Google Drive transfer",
+      overallProgress: 43,
+      elapsedMs: 1000,
+      metrics: { uploadedBytes: 43, uploadTotalBytes: 100 },
+    };
+    const first = await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Google Drive" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back up now" }));
+    await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("43%"));
+    expect(manualRunCount).toBe(1);
+    const runId = String(manualRunBody?.runId);
+    expect(runId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    first.unmount();
+    manualLiveStatus = {
+      ...manualLiveStatus,
+      overallProgress: 65,
+      elapsedMs: 2500,
+      metrics: { uploadedBytes: 65, uploadTotalBytes: 100 },
+    };
+    await renderBackupSettings();
+    await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("65%"));
+    expect(screen.getByRole("button", { name: "Backing up…" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Google Drive" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Local folder / USB" })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "Local folder / USB" })).toBeDisabled();
+    expect(manualRunCount).toBe(1);
+
+    manualLiveStatus = {
+      runId,
+      state: "completed",
+      phase: "backup complete",
+      overallProgress: 100,
+      elapsedMs: 3000,
+      metrics: {},
+      result: {
+        runId,
+        size: 2_500_000,
+        completedAt: new Date().toISOString(),
+        fileName: "labtrax-test.zip.enc",
+        archiveKind: "complete-non-production",
+      },
+    };
+    await waitFor(() => expect(getManualBackupProgress().state).toBe("completed"), { timeout: 7000 });
+    expect(getManualBackupProgress().result).toMatchObject({
+      size: 2_500_000, fileName: "labtrax-test.zip.enc",
+    });
+    await waitFor(
+      () => expect(screen.getByText(/Backup complete\./)).toBeInTheDocument(),
+      { timeout: 7000 },
+    );
+    expect(manualRunCount).toBe(1);
+  });
+
+  it("keeps the Desktop-owned local transfer running and reconnectable after Settings unmounts", async () => {
+    const runId = "2cd9aedf-87cf-40f6-8d10-920db0a0aef7";
+    manualLiveStatus = {
+      runId,
+      state: "running",
+      phase: "local download",
+      overallProgress: 42,
+      elapsedMs: 1000,
+      metrics: { transferredBytes: 42, transferTotalBytes: 100 },
+      delivery: {
+        fileName: "labtrax-test.zip.enc",
+        size: 2_500_000,
+        archiveKind: "complete-non-production",
+        sourceEnvironment: "non-production",
+      },
+    };
+    let finishDownload!: (result: Record<string, unknown>) => void;
+    const downloadBackupToFolder = vi.fn(() => new Promise<Record<string, unknown>>((resolve) => {
+      finishDownload = resolve;
+    }));
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      downloadBackupToFolder,
+      onBackupRunId: (listener: (id: string) => void) => {
+        listener(runId);
+        return () => {};
+      },
+    };
+
+    const first = await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Local folder / USB" }));
+    const folder = await screen.findByPlaceholderText("C:\\Backups\\LabTrax");
+    fireEvent.change(folder, { target: { value: "/synthetic-usb" } });
+    fireEvent.click(screen.getByRole("button", { name: "Back up now" }));
+    await waitFor(() => expect(downloadBackupToFolder).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("42%"));
+
+    first.unmount();
+    manualLiveStatus = {
+      ...manualLiveStatus,
+      overallProgress: 65,
+      elapsedMs: 2500,
+      metrics: { transferredBytes: 65, transferTotalBytes: 100 },
+    };
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("radio", { name: "Local folder / USB" }));
+    await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("65%"));
+    expect(downloadBackupToFolder).toHaveBeenCalledOnce();
+
+    finishDownload({
+      ok: true,
+      fileName: "labtrax-test.zip.enc",
+      path: "/synthetic-usb/labtrax-test.zip.enc",
+      sizeBytes: 2_500_000,
+      downloadRunId: runId,
+      archiveKind: "complete-non-production",
+      partialFailure: false,
+    });
+    await waitFor(() => expect(screen.getByText(/Backup complete\./)).toBeInTheDocument());
+    expect(getManualBackupProgress().result).toMatchObject({
+      savedTo: "/synthetic-usb/labtrax-test.zip.enc",
+      fileName: "labtrax-test.zip.enc",
+    });
+    expect(downloadBackupToFolder).toHaveBeenCalledOnce();
+    expect(manualRunCount).toBe(1);
+    expect(manualRunBody).toMatchObject({ destination: "browser" });
+    expect(manualRunBody?.runId).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it("saves a Google Drive schedule without a path and offers Run now", async () => {
     googleStatus = { ...googleStatus, connected: true, error: null };
     await renderBackupSettings();
-    const selects = await screen.findAllByRole("combobox");
-    const destination = selects.find((element) =>
-      Array.from((element as HTMLSelectElement).options)
-        .some((option) => option.value === "google-drive"),
-    );
+    const destination = await waitFor(() => {
+      const match = screen.getAllByRole("combobox").find((element) =>
+        Array.from((element as HTMLSelectElement).options)
+          .some((option) => option.value === "google-drive"));
+      expect(match).toBeDefined();
+      return match;
+    });
     expect(destination).toBeDefined();
     fireEvent.change(destination!, { target: { value: "google-drive" } });
     await screen.findByTestId("google-drive-status-connected");
@@ -177,3 +408,90 @@ describe("Settings → Backup → Google Drive", () => {
   });
 });
 
+
+describe("recovering a saved manual backup after republishing", () => {
+  const runId = "2cd9aedf-87cf-40f6-8d10-920db0a0aef7";
+  function installOldRun(options: { reconnect?: string; cancel?: string; denied?: boolean } = {}) {
+    window.localStorage.setItem("labtrax:manual-backup:u1", JSON.stringify({
+      runId, destination: "onedrive", archiveKind: "full", path: "", startedAt: Date.now() - 11_462_000,
+    }));
+    const originalFetch = globalThis.fetch;
+    let attached = false;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/admin/backup/onedrive-status")) return jsonResponse({
+        ok: true, connected: true, accountName: "Synthetic Backup", folder: "Synthetic Backups", error: null,
+      });
+      if (url.includes("/admin/backup/reconnect/")) {
+        calls.push("reconnect:" + init?.method);
+        if (options.denied) return new Response(JSON.stringify({ error: "Not available to this administrator." }), { status: 404 });
+        attached = true;
+        return jsonResponse({ ok: true, runId, state: options.reconnect ?? "unavailable" });
+      }
+      if (url.includes("/admin/backup/cancel/")) {
+        calls.push("cancel:" + init?.method);
+        if (options.cancel === "failed") return jsonResponse({ ok: true, runId, state: "failed", status: {
+          runId, state: "failed", phase: "backup failed", elapsedMs: 1000, metrics: {}, error: "Previous worker stopped; no backup was saved.",
+        } });
+        return jsonResponse({ ok: true, runId, state: options.cancel ?? "unavailable" });
+      }
+      if (url.includes("/admin/backup/status/")) {
+        if (attached && options.reconnect === "running") return jsonResponse({ runId, state: "running", phase: "OneDrive transfer", overallProgress: 45, elapsedMs: 1000, metrics: {} });
+        return new Response(JSON.stringify({ error: "Backup progress is no longer available." }), { status: 404 });
+      }
+      return originalFetch(input, init);
+    }));
+    return calls;
+  }
+  it("Retry clears an unavailable old run and enables a new backup without starting one", async () => {
+    const calls = installOldRun();
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
+    await waitFor(() => expect(getManualBackupProgress().state).toBe("idle"));
+    expect(calls).toEqual(["reconnect:POST"]);
+    expect(window.localStorage.getItem("labtrax:manual-backup:u1")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+    expect(screen.getByText(/no completed backup is confirmed/)).toBeInTheDocument();
+    expect(manualRunCount).toBe(0);
+  });
+  it("Cancel clears an already unavailable run instead of leaving Backing up stuck", async () => {
+    const calls = installOldRun();
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel backup" }));
+    await waitFor(() => expect(getManualBackupProgress().state).toBe("idle"));
+    expect(calls).toContain("cancel:POST");
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+    expect(window.localStorage.getItem("labtrax:manual-backup:u1")).toBeNull();
+    expect(manualRunCount).toBe(0);
+  });
+  it("reconnects to the same active job without submitting another backup", async () => {
+    const calls = installOldRun({ reconnect: "running" });
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
+    await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("45%"));
+    expect(calls).toEqual(["reconnect:POST"]);
+    expect(getManualBackupProgress().runId).toBe(runId);
+    expect(manualRunCount).toBe(0);
+  });
+  it("keeps the marker and blocks duplicates when reconnection is denied", async () => {
+    installOldRun({ denied: true });
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
+    await screen.findByText(/Could not reconnect to this backup/);
+    expect(getManualBackupProgress().state).toBe("running");
+    expect(window.localStorage.getItem("labtrax:manual-backup:u1")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Backing up…" })).toBeDisabled();
+    expect(manualRunCount).toBe(0);
+  });
+  it("shows an already failed run truthfully when Cancel is clicked", async () => {
+    installOldRun({ cancel: "failed" });
+    await renderBackupSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel backup" }));
+    await waitFor(() => expect(getManualBackupProgress().state).toBe("failed"));
+    expect(screen.getByText("Previous worker stopped; no backup was saved.")).toBeInTheDocument();
+    expect(window.localStorage.getItem("labtrax:manual-backup:u1")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
+    expect(manualRunCount).toBe(0);
+  });
+});

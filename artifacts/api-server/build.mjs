@@ -20,6 +20,7 @@ async function buildAll() {
       // Scheduled job that must be runnable as its own process: a watchdog
       // hosted by the API server cannot report the API server being dead.
       path.resolve(artifactDir, "src/jobs/check-backup-freshness.ts"),
+      path.resolve(artifactDir, "src/jobs/restore-database-point.ts"),
     ],
     platform: "node",
     bundle: true,

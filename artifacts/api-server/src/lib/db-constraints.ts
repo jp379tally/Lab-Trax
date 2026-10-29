@@ -5,8 +5,9 @@
  * Drizzle schema declarations (e.g. cross-row CHECK constraints require
  * triggers in PostgreSQL).
  *
- * Every statement uses CREATE OR REPLACE so it is safe to run on every boot
- * and in any environment where DATABASE_URL is set.
+ * Trigger functions are refreshed on boot, but healthy triggers are left in
+ * place. Replacing a trigger takes an ACCESS EXCLUSIVE table lock; doing that
+ * on every restart made startup fail under normal production traffic.
  *
  * Current constraints
  * ───────────────────
@@ -127,22 +128,62 @@ BEGIN
         RAISE EXCEPTION 'provider auto-pay authorizations are immutable';
       END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorizations_immutable ON provider_autopay_authorizations';
-    EXECUTE 'CREATE TRIGGER provider_autopay_authorizations_immutable BEFORE UPDATE ON provider_autopay_authorizations FOR EACH ROW EXECUTE FUNCTION prevent_provider_autopay_authorization_update()';
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'provider_autopay_authorizations'::regclass
+        AND tgname = 'provider_autopay_authorizations_immutable'
+        AND tgfoid = 'prevent_provider_autopay_authorization_update()'::regprocedure
+        AND tgtype = 19
+        AND tgenabled IN ('O', 'A')
+        AND tgqual IS NULL
+        AND tgnargs = 0
+        AND cardinality(tgattr) = 0
+        AND NOT tgisinternal
+    ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorizations_immutable ON provider_autopay_authorizations';
+      EXECUTE 'CREATE TRIGGER provider_autopay_authorizations_immutable BEFORE UPDATE ON provider_autopay_authorizations FOR EACH ROW EXECUTE FUNCTION prevent_provider_autopay_authorization_update()';
+    END IF;
     EXECUTE $fn$
       CREATE OR REPLACE FUNCTION deny_provider_autopay_authorization_delete()
       RETURNS trigger LANGUAGE plpgsql AS $body$
       BEGIN RAISE EXCEPTION 'provider auto-pay authorizations cannot be deleted'; END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorizations_no_delete ON provider_autopay_authorizations';
-    EXECUTE 'CREATE TRIGGER provider_autopay_authorizations_no_delete BEFORE DELETE ON provider_autopay_authorizations FOR EACH ROW EXECUTE FUNCTION deny_provider_autopay_authorization_delete()';
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'provider_autopay_authorizations'::regclass
+        AND tgname = 'provider_autopay_authorizations_no_delete'
+        AND tgfoid = 'deny_provider_autopay_authorization_delete()'::regprocedure
+        AND tgtype = 11
+        AND tgenabled IN ('O', 'A')
+        AND tgqual IS NULL
+        AND tgnargs = 0
+        AND cardinality(tgattr) = 0
+        AND NOT tgisinternal
+    ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorizations_no_delete ON provider_autopay_authorizations';
+      EXECUTE 'CREATE TRIGGER provider_autopay_authorizations_no_delete BEFORE DELETE ON provider_autopay_authorizations FOR EACH ROW EXECUTE FUNCTION deny_provider_autopay_authorization_delete()';
+    END IF;
     EXECUTE $fn$
       CREATE OR REPLACE FUNCTION deny_provider_autopay_authorization_lab_mutation()
       RETURNS trigger LANGUAGE plpgsql AS $body$
       BEGIN RAISE EXCEPTION 'provider auto-pay authorization lab relationships are immutable'; END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorization_labs_immutable ON provider_autopay_authorization_labs';
-    EXECUTE 'CREATE TRIGGER provider_autopay_authorization_labs_immutable BEFORE UPDATE OR DELETE ON provider_autopay_authorization_labs FOR EACH ROW EXECUTE FUNCTION deny_provider_autopay_authorization_lab_mutation()';
+    IF to_regclass('provider_autopay_authorization_labs') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_trigger
+         WHERE tgrelid = 'provider_autopay_authorization_labs'::regclass
+           AND tgname = 'provider_autopay_authorization_labs_immutable'
+           AND tgfoid = 'deny_provider_autopay_authorization_lab_mutation()'::regprocedure
+           AND tgtype = 27
+           AND tgenabled IN ('O', 'A')
+           AND tgqual IS NULL
+           AND tgnargs = 0
+            AND cardinality(tgattr) = 0
+           AND NOT tgisinternal
+       ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS provider_autopay_authorization_labs_immutable ON provider_autopay_authorization_labs';
+      EXECUTE 'CREATE TRIGGER provider_autopay_authorization_labs_immutable BEFORE UPDATE OR DELETE ON provider_autopay_authorization_labs FOR EACH ROW EXECUTE FUNCTION deny_provider_autopay_authorization_lab_mutation()';
+    END IF;
   END IF;
 END
 $setup$;
@@ -155,8 +196,21 @@ BEGIN
       RETURNS trigger LANGUAGE plpgsql AS $body$
       BEGIN RAISE EXCEPTION 'completed lab authorizations are immutable'; END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS lab_authorizations_immutable ON lab_authorizations';
-    EXECUTE 'CREATE TRIGGER lab_authorizations_immutable BEFORE UPDATE OR DELETE ON lab_authorizations FOR EACH ROW EXECUTE FUNCTION deny_completed_lab_authorization_mutation()';
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'lab_authorizations'::regclass
+        AND tgname = 'lab_authorizations_immutable'
+        AND tgfoid = 'deny_completed_lab_authorization_mutation()'::regprocedure
+        AND tgtype = 27
+        AND tgenabled IN ('O', 'A')
+        AND tgqual IS NULL
+        AND tgnargs = 0
+        AND cardinality(tgattr) = 0
+        AND NOT tgisinternal
+    ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS lab_authorizations_immutable ON lab_authorizations';
+      EXECUTE 'CREATE TRIGGER lab_authorizations_immutable BEFORE UPDATE OR DELETE ON lab_authorizations FOR EACH ROW EXECUTE FUNCTION deny_completed_lab_authorization_mutation()';
+    END IF;
   END IF;
   IF to_regclass('lab_authorization_audit_events') IS NOT NULL THEN
     EXECUTE $fn$
@@ -164,8 +218,21 @@ BEGIN
       RETURNS trigger LANGUAGE plpgsql AS $body$
       BEGIN RAISE EXCEPTION 'authorization audit events are append-only'; END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS lab_authorization_audit_append_only ON lab_authorization_audit_events';
-    EXECUTE 'CREATE TRIGGER lab_authorization_audit_append_only BEFORE UPDATE OR DELETE ON lab_authorization_audit_events FOR EACH ROW EXECUTE FUNCTION deny_lab_authorization_audit_mutation()';
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'lab_authorization_audit_events'::regclass
+        AND tgname = 'lab_authorization_audit_append_only'
+        AND tgfoid = 'deny_lab_authorization_audit_mutation()'::regprocedure
+        AND tgtype = 27
+        AND tgenabled IN ('O', 'A')
+        AND tgqual IS NULL
+        AND tgnargs = 0
+        AND cardinality(tgattr) = 0
+        AND NOT tgisinternal
+    ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS lab_authorization_audit_append_only ON lab_authorization_audit_events';
+      EXECUTE 'CREATE TRIGGER lab_authorization_audit_append_only BEFORE UPDATE OR DELETE ON lab_authorization_audit_events FOR EACH ROW EXECUTE FUNCTION deny_lab_authorization_audit_mutation()';
+    END IF;
   END IF;
   IF to_regclass('practice_authorization_documents') IS NOT NULL THEN
     EXECUTE $fn$
@@ -173,8 +240,21 @@ BEGIN
       RETURNS trigger LANGUAGE plpgsql AS $body$
       BEGIN RAISE EXCEPTION 'practice authorization documents are immutable'; END $body$;
     $fn$;
-    EXECUTE 'DROP TRIGGER IF EXISTS practice_authorization_documents_immutable ON practice_authorization_documents';
-    EXECUTE 'CREATE TRIGGER practice_authorization_documents_immutable BEFORE UPDATE OR DELETE ON practice_authorization_documents FOR EACH ROW EXECUTE FUNCTION deny_practice_authorization_document_mutation()';
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'practice_authorization_documents'::regclass
+        AND tgname = 'practice_authorization_documents_immutable'
+        AND tgfoid = 'deny_practice_authorization_document_mutation()'::regprocedure
+        AND tgtype = 27
+        AND tgenabled IN ('O', 'A')
+        AND tgqual IS NULL
+        AND tgnargs = 0
+        AND cardinality(tgattr) = 0
+        AND NOT tgisinternal
+    ) THEN
+      EXECUTE 'DROP TRIGGER IF EXISTS practice_authorization_documents_immutable ON practice_authorization_documents';
+      EXECUTE 'CREATE TRIGGER practice_authorization_documents_immutable BEFORE UPDATE OR DELETE ON practice_authorization_documents FOR EACH ROW EXECUTE FUNCTION deny_practice_authorization_document_mutation()';
+    END IF;
   END IF;
 END
 $setup$;
@@ -201,12 +281,28 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS invoice_line_items_invoice_id_match_trigger
-  ON invoice_line_items;
-
-CREATE TRIGGER invoice_line_items_invoice_id_match_trigger
-  BEFORE INSERT OR UPDATE ON invoice_line_items
-  FOR EACH ROW EXECUTE FUNCTION invoice_line_items_invoice_id_match();
+DO $setup$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'invoice_line_items'::regclass
+      AND tgname = 'invoice_line_items_invoice_id_match_trigger'
+      AND tgfoid = 'invoice_line_items_invoice_id_match()'::regprocedure
+      AND tgtype = 23
+      AND tgenabled IN ('O', 'A')
+      AND tgqual IS NULL
+      AND tgnargs = 0
+      AND cardinality(tgattr) = 0
+      AND NOT tgisinternal
+  ) THEN
+    DROP TRIGGER IF EXISTS invoice_line_items_invoice_id_match_trigger
+      ON invoice_line_items;
+    CREATE TRIGGER invoice_line_items_invoice_id_match_trigger
+      BEFORE INSERT OR UPDATE ON invoice_line_items
+      FOR EACH ROW EXECUTE FUNCTION invoice_line_items_invoice_id_match();
+  END IF;
+END
+$setup$;
 
 -- Immutable accounting history for invoices.
 --
@@ -314,8 +410,21 @@ BEGIN
     $body$;
   $fn$;
 
-  EXECUTE 'DROP TRIGGER IF EXISTS invoices_record_accounting_event ON invoices';
-  EXECUTE 'CREATE TRIGGER invoices_record_accounting_event AFTER INSERT OR UPDATE ON invoices FOR EACH ROW EXECUTE FUNCTION record_invoice_accounting_event()';
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'invoices'::regclass
+      AND tgname = 'invoices_record_accounting_event'
+      AND tgfoid = 'record_invoice_accounting_event()'::regprocedure
+      AND tgtype = 21
+      AND tgenabled IN ('O', 'A')
+      AND tgqual IS NULL
+      AND tgnargs = 0
+      AND cardinality(tgattr) = 0
+      AND NOT tgisinternal
+  ) THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS invoices_record_accounting_event ON invoices';
+    EXECUTE 'CREATE TRIGGER invoices_record_accounting_event AFTER INSERT OR UPDATE ON invoices FOR EACH ROW EXECUTE FUNCTION record_invoice_accounting_event()';
+  END IF;
 END
 $setup$;
 
@@ -323,7 +432,7 @@ ${buildOwningOrganizationGuardSql()}
 `;
 
 /**
- * Installs (or re-installs) all application-level DB constraints.
+ * Installs or verifies all application-level DB constraints.
  * Must be awaited before the HTTP server starts accepting traffic.
  * Failures are logged and re-thrown so the process exits rather than
  * running without the safety net.
@@ -354,6 +463,13 @@ function logStartupSync(msg: string): void {
 }
 
 const CONNECT_TIMEOUT_MS = 10_000;
+
+let startupConstraints: Promise<void> | undefined;
+
+/** Share bootstrap with backup services: their dump locks must not race DDL. */
+export function ensureStartupDbConstraints(): Promise<void> {
+  return startupConstraints ??= ensureDbConstraints();
+}
 
 export async function ensureDbConstraints(): Promise<void> {
   const target = describeDbTarget();

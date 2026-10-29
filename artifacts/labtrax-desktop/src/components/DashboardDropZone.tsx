@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -20,11 +21,18 @@ import JSZip from "jszip";
 import {
   readExplicitAiToothAssignments, withPonticConnectorSuggestions, serializeConnectorState,
   updateConnectorChoices, validateToothConnectors, toothAssignmentSummary, catalogToothMaterialOptions,
+  incompatibleToothConnectorPairs,
 } from "@workspace/case-taxonomy";
+import {
+  addCalendarDays,
+  isValidCalendarDate,
+  resolveAiIntakePrescriptionDueDate,
+} from "@workspace/calendar-date";
 import { ToothActionDialog, type ToothActionPayload } from "./ToothActionDialog";
 import { apiFetch, ApiError } from "@/lib/api";
 import { runPrescriptionAnalysis, validatePrescriptionPageCount } from "@/lib/prescription-analysis";
 import { prescriptionSourceIdentity } from "@/lib/prescription-source-identity";
+import { prescriptionReviewContext } from "@/lib/prescription-review-context";
 import type {
   PreCreateInvoiceItemsResultData,
   PreviewDraftInvoiceInput,
@@ -68,7 +76,17 @@ interface ExtractedRx {
   toothIndices?: string | null;
   shade?: string | null;
   material?: string | null;
+  restorationSubtype?: string | null;
   dueDate?: string | null;
+  removableSubtype?: "partial" | "denture" | "flipper" | "repair_partial" | "repair_denture" | "repair" | null;
+  /** Explicit date extracted from the scan or source platform. */
+  scanDate?: string | null;
+  /** Reviewed lab schedule date, optionally prefilled from the lab turnaround. */
+  labDueDate?: string | null;
+  /** Whether a staff member explicitly edited the lab schedule date. */
+  labDueDateEdited?: boolean;
+  /** Source platform identifier (never the Case Pan barcode). */
+  platformCaseIdentifier?: string | null;
   /** Calendar date on which this Rx was received (editable during review). */
   receivedAt?: string | null;
   isRush?: boolean | null;
@@ -77,11 +95,19 @@ interface ExtractedRx {
   practiceAddress?: string | null;
   practicePhone?: string | null;
   arch?: "upper" | "lower" | "both" | null;
-  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  assignmentRoles?: Record<string, "Crown" | "Pontic" | "Veneer">;
   assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
   assignmentOverridesManual?: boolean;
   bridgeConnectors?: string;
   toothAssignments?: unknown;
+}
+
+const DIAGNOSTIC_WAX_UP_LABEL = "Diagnostic Wax Up";
+const DIAGNOSTIC_WAX_UP_SUBTYPE = "restorative/diagnostic_wax_up";
+
+function isDiagnosticWaxUp(value: string | null | undefined): boolean {
+  return (value ?? "").trim().toLocaleLowerCase() ===
+    DIAGNOSTIC_WAX_UP_LABEL.toLocaleLowerCase();
 }
 
 function localCalendarDate(date = new Date()): string {
@@ -107,6 +133,16 @@ function normalizeDueDateForInput(raw: string | null | undefined): string {
     return `${fullYr}-${mo.padStart(2, "0")}-${dy.padStart(2, "0")}`;
   }
   return "";
+}
+
+function reviewedPrescriptionDueDate(
+  raw: string | null | undefined,
+  receivedAt: string | null | undefined,
+  turnaroundDays: number | null,
+): string {
+  const dueDate = normalizeDueDateForInput(raw);
+  if (!dueDate || !isValidCalendarDate(dueDate)) return "";
+  return resolveAiIntakePrescriptionDueDate(dueDate, receivedAt, turnaroundDays) ?? "";
 }
 
 interface DoctorDirectoryEntry {
@@ -271,6 +307,21 @@ interface OrgLite {
   name?: string;
   displayName?: string | null;
   type?: string;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingZip?: string | null;
+  phone?: string | null;
+  billingEmail?: string | null;
+  primaryEmail?: string | null;
+  additionalEmails?: Array<{ email: string; type: "billing" | "correspondence" }>;
+  defaultCaseDueDays?: number | null;
 }
 
 /**
@@ -448,8 +499,12 @@ async function getPdfjs() {
   if (!pdfjsReady) {
     pdfjsReady = (async () => {
       const pdfjs = await import("pdfjs-dist");
-      const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url"))
-        .default;
+      // Vite must serve the worker through its worker pipeline in development;
+      // a plain ?url import points at the raw @fs asset and can fail in previews.
+      const workerModule = import.meta.env.DEV
+        ? await import("pdfjs-dist/build/pdf.worker.min.mjs?worker&url")
+        : await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+      const worker = workerModule.default;
       pdfjs.GlobalWorkerOptions.workerSrc = worker;
       return pdfjs;
     })();
@@ -1163,17 +1218,112 @@ export function DashboardDropZone() {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [rxDraft, setRxDraft] = useState<ExtractedRx>({});
   const rxClinicalOverrides = useRef<Partial<ExtractedRx>>({});
+  const rxAnalysisInFlight = useRef(false);
   const rxOverrideSource = useRef<string | null>(null);
   const [rxReanalysisDraft, setRxReanalysisDraft] = useState<ExtractedRx | null>(null);
   const [rxAssignmentError, setRxAssignmentError] = useState<string | null>(null);
+  const [rxMatchWarning, setRxMatchWarning] = useState(false);
   const [rxActiveTooth, setRxActiveTooth] = useState<string | null>(null);
   const [rxAssignmentUndo, setRxAssignmentUndo] = useState<Partial<ExtractedRx> | null>(null);
+  const [rxCopyTemplate, setRxCopyTemplate] = useState<{
+    toothNumber: string;
+    restorationType: "Crown" | "Pontic" | "Veneer";
+    material: string;
+    shade?: string;
+    restorationSubtype?: string;
+  } | null>(null);
+  const [rxCopyAnchor, setRxCopyAnchor] = useState<string | null>(null);
+  const [rxPendingCopy, setRxPendingCopy] = useState<{
+    targets: string[];
+    template: NonNullable<typeof rxCopyTemplate>;
+  } | null>(null);
+  const [rxMultiApplyMode, setRxMultiApplyMode] = useState(false);
+  const [rxMultiApplyTargets, setRxMultiApplyTargets] = useState<string[]>([]);
   const rxAssignmentUnits = buildPrescriptionRestorations(rxDraft);
   const rxConnectorState = withPonticConnectorSuggestions(rxDraft.bridgeConnectors, rxAssignmentUnits);
   const rxConnectorText = serializeConnectorState(rxConnectorState);
   const rxToothSummary = toothAssignmentSummary(rxAssignmentUnits, rxConnectorText);
   const rxConnectorValidation = validateToothConnectors(rxConnectorText, rxAssignmentUnits);
   const rxConnectorsReady = rxConnectorValidation.valid && rxToothSummary.unresolvedPontics.length === 0;
+  function applyRxCopy(targets: string[], template: NonNullable<typeof rxCopyTemplate>) {
+    if (!targets.length) return;
+    const roles = { ...rxDraft.assignmentRoles };
+    const values = { ...rxDraft.assignmentValues };
+    const teeth = new Set(expandToothAssignmentIdentifiers(rxDraft.toothIndices));
+    for (const tooth of targets) {
+      roles[tooth] = template.restorationType;
+      values[tooth] = {
+        material: template.material,
+        shade: template.shade,
+        restorationSubtype: template.restorationSubtype,
+      };
+      teeth.add(tooth);
+    }
+    editRxClinical({ assignmentRoles: roles, assignmentValues: values, toothIndices: [...teeth].join(", ") });
+    setRxPendingCopy(null);
+    setRxCopyAnchor(template.toothNumber);
+    toast.success(`Copied assignment to ${targets.map((tooth) => `#${tooth}`).join(", ")}.`);
+  }
+  function requestRxCopy(targets: string[]) {
+    if (!rxCopyTemplate || !targets.length) return;
+    const uniqueTargets = [...new Set(targets)];
+    const invalidTarget = uniqueTargets.some((tooth) => {
+      const number = Number(tooth);
+      return !Number.isInteger(number) || number < 1 || number > 32;
+    });
+    if (invalidTarget) {
+      setRxAssignmentError("Quick copy can only target adult teeth numbered 1 through 32.");
+      return;
+    }
+    const validTargets = uniqueTargets.filter((tooth) => tooth !== rxCopyTemplate.toothNumber);
+    if (!validTargets.length) return;
+    const conflicts = validTargets.some((tooth) =>
+      rxAssignmentUnits.some((unit) => unit.toothNumber === tooth),
+    );
+    if (conflicts) {
+      setRxPendingCopy({ targets: validTargets, template: rxCopyTemplate });
+      return;
+    }
+    applyRxCopy(validTargets, rxCopyTemplate);
+  }
+  function handleRxToothClick(tooth: string, modifiers?: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (rxMultiApplyMode) {
+      setRxMultiApplyTargets((current) =>
+        current.includes(tooth) ? current.filter((item) => item !== tooth) : [...current, tooth],
+      );
+      return;
+    }
+    if (modifiers?.ctrlKey || modifiers?.metaKey) {
+      if (rxCopyTemplate) requestRxCopy([tooth]);
+      else toast.info("Assign a tooth first to create copy settings.");
+      return;
+    }
+    if (modifiers?.shiftKey && rxCopyTemplate && rxCopyAnchor) {
+      const source = Number(rxCopyAnchor);
+      const target = Number(tooth);
+      if (!Number.isInteger(source) || !Number.isInteger(target) || (source <= 16) !== (target <= 16)) {
+        setRxAssignmentError("Shift-copy ranges must stay within one arch.");
+        return;
+      }
+      const low = Math.min(source, target);
+      const high = Math.max(source, target);
+      requestRxCopy(Array.from({ length: high - low + 1 }, (_, index) => String(low + index)));
+      return;
+    }
+    const existing = rxAssignmentUnits.find((unit) => unit.toothNumber === tooth &&
+      (unit.restorationType === "Crown" || unit.restorationType === "Pontic") && unit.material);
+    if (existing) {
+      setRxCopyTemplate({
+        toothNumber: tooth,
+        restorationType: existing.restorationType as "Crown" | "Pontic" | "Veneer",
+        material: existing.material ?? "",
+        shade: existing.shade ?? undefined,
+        restorationSubtype: existing.restorationSubtype ?? undefined,
+      });
+      setRxCopyAnchor(tooth);
+    }
+    setRxActiveTooth(tooth);
+  }
   function captureRxAssignmentUndo() {
     setRxAssignmentUndo({
       assignmentRoles: rxDraft.assignmentRoles, assignmentValues: rxDraft.assignmentValues,
@@ -1186,21 +1336,43 @@ export function DashboardDropZone() {
     const roles = { ...rxDraft.assignmentRoles };
     const values = { ...rxDraft.assignmentValues };
     const teeth = new Set(expandToothAssignmentIdentifiers(rxDraft.toothIndices));
+    let bridgeConnectors: string | undefined;
     if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
-      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : "Crown";
+      const role = payload.kind === "add_pontic" ? "Pontic" : payload.restorationType === "Veneer" ? "Veneer" : "Crown";
+      roles[payload.toothId] = role;
       values[payload.toothId] = { material: payload.material, shade: payload.shade ?? "", restorationSubtype: payload.restorationSubtype };
       teeth.add(payload.toothId);
+      setRxCopyTemplate({
+        toothNumber: payload.toothId,
+        restorationType: role,
+        material: payload.material,
+        shade: payload.shade,
+        restorationSubtype: payload.restorationSubtype,
+      });
+      setRxCopyAnchor(payload.toothId);
     } else if (payload.kind === "change_role") roles[payload.toothId] = payload.role;
     else if (payload.kind === "copy_assignment") {
       const source = rxAssignmentUnits.find((unit) => unit.toothNumber === payload.restorationId);
-      if (!source || !/^(Crown|Pontic)$/.test(source.restorationType)) return;
+      if (!source || !/^(Crown|Pontic|Veneer)$/.test(source.restorationType)) return;
+      setRxCopyTemplate({
+        toothNumber: source.toothNumber,
+        restorationType: source.restorationType as "Crown" | "Pontic" | "Veneer",
+        material: source.material ?? "",
+        shade: source.shade ?? undefined,
+        restorationSubtype: source.restorationSubtype ?? undefined,
+      });
+      setRxCopyAnchor(source.toothNumber);
       for (const tooth of payload.toothNumbers) {
-        roles[tooth] = source.restorationType as "Crown" | "Pontic";
+        roles[tooth] = source.restorationType as "Crown" | "Pontic" | "Veneer";
         values[tooth] = { material: source.material ?? undefined, shade: source.shade ?? undefined, restorationSubtype: source.restorationSubtype ?? undefined };
         teeth.add(tooth);
       }
     } else if (payload.kind === "remove_restoration" || payload.kind === "mark_missing") {
-      delete roles[payload.toothId]; delete values[payload.toothId]; teeth.delete(payload.toothId);
+      delete roles[payload.toothId]; delete values[payload.toothId];
+      bridgeConnectors = updateConnectorChoices(
+        rxConnectorState,
+        new Set([...rxConnectorState.active].filter((pair) => !pair.split("-").includes(payload.toothId))),
+      );
     } else if (payload.kind === "replace_tooth") {
       if (expandToothAssignmentIdentifiers(payload.newToothNumber).length !== 1) {
         setRxAssignmentError("Choose one Universal tooth number or primary tooth letter."); return;
@@ -1222,7 +1394,12 @@ export function DashboardDropZone() {
         editRxClinical({ bridgeConnectors: updateConnectorChoices(rxConnectorState, new Set([...rxConnectorState.active].filter((pair) => !pair.split("-").includes(payload.oldToothId)))) });
       }
     }
-    editRxClinical({ assignmentRoles: roles, assignmentValues: values, toothIndices: [...teeth].join(", ") });
+    editRxClinical({
+      assignmentRoles: roles,
+      assignmentValues: values,
+      toothIndices: [...teeth].join(", "),
+      ...(bridgeConnectors !== undefined ? { bridgeConnectors } : {}),
+    });
     setRxActiveTooth(null);
   }
   function editRxClinical(patch: Partial<ExtractedRx>) {
@@ -1231,16 +1408,97 @@ export function DashboardDropZone() {
       const values = { ...rxDraft.assignmentValues };
       for (const unit of rxAssignmentUnits) values[unit.toothNumber] = {
         ...values[unit.toothNumber],
-        restorationSubtype: values[unit.toothNumber]?.restorationSubtype ?? unit.restorationSubtype ?? undefined,
+        restorationSubtype: rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE
+          ? DIAGNOSTIC_WAX_UP_SUBTYPE
+          : values[unit.toothNumber]?.restorationSubtype ?? unit.restorationSubtype ?? undefined,
         material: values[unit.toothNumber]?.material ?? unit.material ?? undefined,
         shade: values[unit.toothNumber]?.shade ?? unit.shade ?? undefined,
       };
-      patch.assignmentValues = applyToothAssignmentDefaults(values, { material: patch.material ?? undefined, shade: patch.shade ?? undefined });
+      if (rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+        patch.assignmentValues = Object.fromEntries(Object.entries(values).map(([tooth, value]) => [
+          tooth,
+          {
+            ...value,
+            restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+            ...(patch.material !== undefined ? { material: patch.material ?? "" } : {}),
+            ...(patch.shade !== undefined ? { shade: patch.shade ?? "" } : {}),
+          },
+        ]));
+      } else {
+        patch.assignmentValues = applyToothAssignmentDefaults(values, {
+          material: patch.material ?? undefined,
+          shade: patch.shade ?? undefined,
+        });
+      }
     }
     if (patch.assignmentRoles || patch.assignmentValues) patch.assignmentOverridesManual = true;
     rxClinicalOverrides.current = { ...rxClinicalOverrides.current, ...patch };
     setRxDraft((current) => ({ ...current, ...patch }));
     setRxAssignmentError(null);
+  }
+  function selectDiagnosticWaxUp() {
+    captureRxAssignmentUndo();
+    const assignmentValues = { ...rxDraft.assignmentValues };
+    for (const [tooth, role] of Object.entries(rxDraft.assignmentRoles ?? {})) {
+      if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+      assignmentValues[tooth] = {
+        ...assignmentValues[tooth],
+        material: DIAGNOSTIC_WAX_UP_LABEL,
+        shade: DIAGNOSTIC_WAX_UP_LABEL,
+        restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      };
+    }
+    const patch: Partial<ExtractedRx> = {
+      caseType: DIAGNOSTIC_WAX_UP_LABEL,
+      material: DIAGNOSTIC_WAX_UP_LABEL,
+      shade: DIAGNOSTIC_WAX_UP_LABEL,
+      restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      assignmentValues,
+      assignmentOverridesManual: true,
+    };
+    rxClinicalOverrides.current = { ...rxClinicalOverrides.current, ...patch };
+    setRxDraft((current) => ({ ...current, ...patch }));
+    setRxAssignmentError(null);
+  }
+  function selectRxRestorationType(value: string) {
+    if (isDiagnosticWaxUp(value)) {
+      selectDiagnosticWaxUp();
+      return;
+    }
+    const patch: Partial<ExtractedRx> = { caseType: value };
+    if (rxDraft.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      patch.restorationSubtype = undefined;
+      patch.assignmentValues = Object.fromEntries(
+        Object.entries(rxDraft.assignmentValues ?? {}).map(([tooth, assignment]) => [
+          tooth,
+          assignment?.restorationSubtype === DIAGNOSTIC_WAX_UP_SUBTYPE
+            ? { ...assignment, restorationSubtype: undefined }
+            : assignment,
+        ]),
+      );
+    }
+    editRxClinical(patch);
+  }
+  function selectRxRestorationSubtype(value: string) {
+    if (value === DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      selectDiagnosticWaxUp();
+      return;
+    }
+    if (rxDraft.restorationSubtype !== DIAGNOSTIC_WAX_UP_SUBTYPE) {
+      // Preserve existing behavior for every other restoration subtype.
+      setRxDraft({ ...rxDraft, restorationSubtype: value });
+      return;
+    }
+
+    const assignmentValues = { ...rxDraft.assignmentValues };
+    for (const [tooth, role] of Object.entries(rxDraft.assignmentRoles ?? {})) {
+      if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+      assignmentValues[tooth] = { ...assignmentValues[tooth], restorationSubtype: value || undefined };
+    }
+    editRxClinical({
+      restorationSubtype: value || undefined,
+      ...(Object.keys(assignmentValues).length ? { assignmentValues } : {}),
+    });
   }
   const [zipSource, setZipSource] = useState<{
     originalZip: File;
@@ -1253,6 +1511,32 @@ export function DashboardDropZone() {
   // Selected lab + practice when creating a modern /api/cases case from
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
+  const selectedRxLab = labOrgs.find((o) => o.id === rxLabOrgId) ?? null;
+  const rxTurnaroundDays =
+    selectedRxLab?.defaultCaseDueDays != null &&
+    Number.isInteger(selectedRxLab.defaultCaseDueDays) &&
+    selectedRxLab.defaultCaseDueDays > 0
+      ? selectedRxLab.defaultCaseDueDays
+      : null;
+  const eligibleRxDueDate = reviewedPrescriptionDueDate(
+    rxDraft.dueDate,
+    rxDraft.receivedAt,
+    rxTurnaroundDays,
+  );
+  useEffect(() => {
+    if (rxDraft.labDueDateEdited) return;
+    const nextLabDueDate = !rxDraft.receivedAt || rxTurnaroundDays == null
+      ? ""
+      : addCalendarDays(rxDraft.receivedAt, rxTurnaroundDays) ?? "";
+    setRxDraft((current) => {
+      if (current.labDueDateEdited || current.receivedAt !== rxDraft.receivedAt) {
+        return current;
+      }
+      return current.labDueDate === nextLabDueDate
+        ? current
+        : { ...current, labDueDate: nextLabDueDate };
+    });
+  }, [rxDraft.receivedAt, rxDraft.labDueDateEdited, rxTurnaroundDays]);
   const rxCatalog = useGetCatalogTree({ labOrganizationId: rxLabOrgId }, {
     query: { queryKey: getGetCatalogTreeQueryKey({ labOrganizationId: rxLabOrgId }), enabled: !!rxLabOrgId },
   });
@@ -1261,10 +1545,118 @@ export function DashboardDropZone() {
       key: option.restorationSubtype, label: option.label, parentLabel: option.parentLabel,
     }))
     : getCatalogMaterialsForRestoration(undefined, { restorationType: "Crown" });
+  const rxRestorationSubtypeOptions = [
+    ...rxCatalogMaterials,
+    ...((rxCatalog.data?.data?.caseTypes ?? [])
+      .filter((caseType) => caseType.key === "restorative")
+      .flatMap((caseType) => caseType.subtypes
+        .filter((subtype) => subtype.materials.length === 0)
+        .map((subtype) => ({
+          key: `restorative/${subtype.key}`,
+          label: subtype.label,
+          parentLabel: caseType.label,
+        })))),
+  ];
+  if (!rxRestorationSubtypeOptions.some((option) => option.key === DIAGNOSTIC_WAX_UP_SUBTYPE)) {
+    rxRestorationSubtypeOptions.push({
+      key: DIAGNOSTIC_WAX_UP_SUBTYPE,
+      label: DIAGNOSTIC_WAX_UP_LABEL,
+    });
+  }
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
   const [earlyDuplicate, setEarlyDuplicate] = useState<DuplicateHit | null>(null);
   const duplicateLookupSequenceRef = useRef(0);
   const [rxBarcode, setRxBarcode] = useState<string>("");
+  const [invoiceNotes, setInvoiceNotes] = useState("");
+  const [contactPromptOpen, setContactPromptOpen] = useState(false);
+  const [practiceContact, setPracticeContact] = useState({
+    addressLine1: "",
+    addressLine2: "",
+    city: "",
+    state: "",
+    zip: "",
+    phone: "",
+    primaryEmail: "",
+    billingEmail: "",
+    billingAddressLine1: "",
+    billingAddressLine2: "",
+    billingCity: "",
+    billingState: "",
+    billingZip: "",
+  });
+  const selectedPractice = providerOrgs.find((org) => org.id === rxProviderOrgId);
+  const providerContactQuery = useQuery({
+    queryKey: ["organization-intake-contact", rxProviderOrgId],
+    queryFn: () => apiFetch<OrgLite>(`/organizations/${encodeURIComponent(rxProviderOrgId)}`),
+    enabled: !!rxProviderOrgId,
+    staleTime: 60_000,
+  });
+  const selectedPracticeDetails = providerContactQuery.data ?? selectedPractice;
+  const contactChoiceMadeRef = useRef(false);
+  const applySharedContactRef = useRef(false);
+  useEffect(() => {
+    if (!selectedPracticeDetails) {
+      setPracticeContact({
+        addressLine1: "", addressLine2: "", city: "", state: "", zip: "",
+        phone: "", primaryEmail: "", billingEmail: "",
+        billingAddressLine1: "", billingAddressLine2: "", billingCity: "",
+        billingState: "", billingZip: "",
+      });
+      return;
+    }
+    setPracticeContact({
+      addressLine1: selectedPracticeDetails.addressLine1 ?? "",
+      addressLine2: selectedPracticeDetails.addressLine2 ?? "",
+      city: selectedPracticeDetails.city ?? "",
+      state: selectedPracticeDetails.state ?? "",
+      zip: selectedPracticeDetails.zip ?? "",
+      phone: selectedPracticeDetails.phone ?? "",
+      primaryEmail: selectedPracticeDetails.additionalEmails?.find((item) => item.type === "correspondence")?.email ?? selectedPracticeDetails.primaryEmail ?? "",
+      billingEmail: selectedPracticeDetails.billingEmail ?? selectedPracticeDetails.additionalEmails?.find((item) => item.type === "billing")?.email ?? "",
+      billingAddressLine1: selectedPracticeDetails.billingAddressLine1 ?? "",
+      billingAddressLine2: selectedPracticeDetails.billingAddressLine2 ?? "",
+      billingCity: selectedPracticeDetails.billingCity ?? "",
+      billingState: selectedPracticeDetails.billingState ?? "",
+      billingZip: selectedPracticeDetails.billingZip ?? "",
+    });
+  }, [rxProviderOrgId, selectedPracticeDetails]);
+  const providerContactSnapshot = {
+    doctorName: rxDraft.doctorName?.trim() || "",
+    providerOrganizationId: rxProviderOrgId || null,
+    practiceName: selectedPractice?.displayName || selectedPractice?.name || "",
+    primaryAddress: [practiceContact.addressLine1, practiceContact.addressLine2, practiceContact.city, practiceContact.state, practiceContact.zip].filter(Boolean).join(", "),
+    billingAddress: [practiceContact.billingAddressLine1, practiceContact.billingAddressLine2, practiceContact.billingCity, practiceContact.billingState, practiceContact.billingZip].filter(Boolean).join(", "),
+    phone: practiceContact.phone.trim(),
+    primaryEmail: practiceContact.primaryEmail.trim(),
+    billingEmail: practiceContact.billingEmail.trim(),
+  };
+  const practiceContactChanges = useMemo(() => {
+    if (!selectedPracticeDetails) return [];
+    const details = selectedPracticeDetails;
+    const baselinePrimaryEmail = details.additionalEmails?.find((item) => item.type === "correspondence")?.email ?? details.primaryEmail ?? "";
+    const comparisons: Array<[string, string, string]> = [
+      ["Practice address line 1", details.addressLine1 ?? "", practiceContact.addressLine1],
+      ["Practice address line 2", details.addressLine2 ?? "", practiceContact.addressLine2],
+      ["Practice city", details.city ?? "", practiceContact.city],
+      ["Practice state", details.state ?? "", practiceContact.state],
+      ["Practice ZIP", details.zip ?? "", practiceContact.zip],
+      ["Billing address line 1", details.billingAddressLine1 ?? "", practiceContact.billingAddressLine1],
+      ["Billing address line 2", details.billingAddressLine2 ?? "", practiceContact.billingAddressLine2],
+      ["Billing city", details.billingCity ?? "", practiceContact.billingCity],
+      ["Billing state", details.billingState ?? "", practiceContact.billingState],
+      ["Billing ZIP", details.billingZip ?? "", practiceContact.billingZip],
+      ["Phone", details.phone ?? "", practiceContact.phone],
+      ["Primary email", baselinePrimaryEmail, practiceContact.primaryEmail],
+      ["Billing email", details.billingEmail ?? "", practiceContact.billingEmail],
+    ];
+    return comparisons.filter(([, before, after]) => before.trim().toLowerCase() !== after.trim().toLowerCase()).map(([label]) => label);
+  }, [selectedPracticeDetails, practiceContact]);
+  function editPracticeContact(field: keyof typeof practiceContact, value: string) {
+    contactChoiceMadeRef.current = false;
+    applySharedContactRef.current = false;
+    setContactPromptOpen(false);
+    setPracticeContact((current) => ({ ...current, [field]: value }));
+  }
   const [rxPracticeError, setRxPracticeError] = useState(false);
   // Required "doctor not on file" step — populated when the scanned doctor name
   // does NOT strictly match an existing doctor in the selected lab+practice.
@@ -1313,7 +1705,7 @@ export function DashboardDropZone() {
   useEffect(() => {
     setPriceOverrides({});
     setAlloyAcknowledged(false);
-  }, [rxDraft.toothIndices, rxDraft.caseType, rxDraft.material, rxDraft.shade, rxDraft.arch]);
+  }, [rxDraft.toothIndices, rxDraft.caseType, rxDraft.material, rxDraft.shade, rxDraft.arch, rxDraft.restorationSubtype]);
 
   // Alloy pre-create warning: require the user to acknowledge that PFM/FCM
   // alloy sub-items will be created at $0 and must be manually priced after
@@ -1449,6 +1841,7 @@ export function DashboardDropZone() {
     rxDraft.material,
     rxDraft.shade,
     rxDraft.arch,
+    rxDraft.restorationSubtype,
   ]);
 
   // Whenever the invoice preview changes (new pricing data from the server),
@@ -1681,6 +2074,7 @@ export function DashboardDropZone() {
       caseType: rxCaseType,
       material: rxMaterial,
       shade: rxShade,
+      restorationSubtype: rxDraft.restorationSubtype,
       arch: rxArch || null,
       assignmentRoles: rxDraft.assignmentRoles,
       assignmentValues: rxDraft.assignmentValues,
@@ -1726,6 +2120,7 @@ export function DashboardDropZone() {
     rxCaseType,
     rxMaterial,
     rxShade,
+    rxDraft.restorationSubtype,
     rxArch,
     rxDoctorName,
     rxDraft.assignmentRoles,
@@ -2070,11 +2465,16 @@ export function DashboardDropZone() {
 
   const runRxAnalyze = useCallback(
     async (file: File) => {
+      // The analysis helper guards its model request, but matching continues
+      // afterward. Guard the entire transition to review, not just AI time.
+      if (rxAnalysisInFlight.current) return;
+      rxAnalysisInFlight.current = true;
       // Capture this before any PDF/AI work: a drop that crosses midnight
       // still belongs to the calendar day on which the user dropped it.
       const droppedOn = localCalendarDate();
       const analysisStartedAt = performance.now();
       setRxAssignmentError(null);
+      setRxMatchWarning(false);
       setRxReanalysisDraft(null);
       setRxProviderOrgId("");
       setRxDraft({});
@@ -2139,8 +2539,14 @@ export function DashboardDropZone() {
           toothIndices: rx.toothIndices ?? "",
           shade: rx.shade ?? "",
           material: rx.material ?? "",
+          restorationSubtype: rx.restorationSubtype ?? undefined,
           arch: rx.arch ?? null,
+          removableSubtype: rx.removableSubtype ?? null,
           dueDate: normalizeDueDateForInput(rx.dueDate),
+          scanDate: normalizeDueDateForInput(rx.scanDate),
+          platformCaseIdentifier: rx.platformCaseIdentifier ?? "",
+          labDueDate: "",
+          labDueDateEdited: false,
           // The received date is a workflow field, not an AI extraction. Keep
           // it on the draft so it survives duplicate/remake/doctor continuations.
           receivedAt: droppedOn,
@@ -2149,12 +2555,17 @@ export function DashboardDropZone() {
           practiceName: rx.practiceName ?? "",
           practiceAddress: rx.practiceAddress ?? "",
           practicePhone: rx.practicePhone ?? "",
+          bridgeConnectors: rx.bridgeConnectors ?? "",
           assignmentRoles: Object.fromEntries(readExplicitAiToothAssignments(rx.toothAssignments).map((unit) => [unit.toothNumber, unit.restorationType as "Crown" | "Pontic"])),
           assignmentValues: Object.fromEntries(readExplicitAiToothAssignments(rx.toothAssignments).map((unit) => [unit.toothNumber, {
             material: unit.material ?? undefined, shade: unit.shade ?? undefined,
           }])),
           toothAssignments: rx.toothAssignments,
         };
+        contactChoiceMadeRef.current = false;
+        applySharedContactRef.current = false;
+        setContactPromptOpen(false);
+        setInvoiceNotes("");
         if (rxClinicalOverrides.current.assignmentRoles === undefined) {
           rxClinicalOverrides.current = { ...rxClinicalOverrides.current,
             assignmentRoles: analyzedDraft.assignmentRoles,
@@ -2191,20 +2602,44 @@ export function DashboardDropZone() {
         setConfirmedDoctorName(null);
 
         const scannedDoctorName = (rx.doctorName ?? "").trim();
-
-        // 1. Per-doctor practice memory (highest priority).
-        let rememberedOrgId: string | null = null;
-        if (scannedDoctorName && effectiveLabOrgId) {
-          try {
-            const memResp = await apiFetch<PracticeLookupPayload>(
+        setPhase({
+          kind: "analyzing", fileName: file.name,
+          message: "Prescription read. Matching the doctor and practice for review…",
+        });
+        const matchingStartedAt = performance.now();
+        const context = await prescriptionReviewContext(
+          (signal) => scannedDoctorName && effectiveLabOrgId
+            ? apiFetch<PracticeLookupPayload>(
               `/rx-doctor-practice-memory?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&doctorName=${encodeURIComponent(scannedDoctorName)}`,
-            );
-            rememberedOrgId = lookedUpOrgId(memResp);
-          } catch {
-            /* non-blocking — fall through to the alias / fuzzy paths */
-          }
+              { signal },
+            ) : Promise.resolve(null),
+          (signal) => rx.practiceName?.trim() && effectiveLabOrgId
+            ? apiFetch<PracticeLookupPayload>(
+              `/rx-practice-aliases?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&rxName=${encodeURIComponent(rx.practiceName.trim().toLowerCase())}`,
+              { signal },
+            ) : Promise.resolve(null),
+          (signal) => scannedDoctorName && effectiveLabOrgId
+            ? apiFetch<{ exactMatch: string | null; similarMatches: DoctorMatchCandidate[]; canAddNew: boolean }>(
+              `/doctors/resolve-name?${new URLSearchParams({ labOrganizationId: effectiveLabOrgId, doctorName: scannedDoctorName })}`,
+              { signal },
+            ) : Promise.resolve(null),
+        );
+        if (import.meta.env.DEV) console.debug("AI Reader stage", {
+          stage: "practiceMatching", durationMs: Math.round(performance.now() - matchingStartedAt),
+          totalDurationMs: Math.round(performance.now() - analysisStartedAt),
+        });
+        const rememberedOrgId = lookedUpOrgId(context.remembered.value);
+        // A speculative alias lookup cannot invalidate an already-confirmed
+        // doctor memory or a practice the operator explicitly selected.
+        const matchingUnavailable = context.remembered.unavailable ||
+          context.resolvedDoctor.unavailable ||
+          (!rememberedOrgId && !rxProviderOrgId && !!rx.practiceName?.trim() && context.aliased.unavailable);
+        setRxMatchWarning(matchingUnavailable);
+        if (matchingUnavailable) {
+          toast.warning("Prescription read; some doctor/practice matching was unavailable. Confirm the doctor, practice and pricing in review before saving.");
         }
 
+        // 1. Per-doctor practice memory (highest priority).
         if (rememberedOrgId) {
           setRxProviderOrgId(rememberedOrgId);
           setDoctorMemoryOrgId(rememberedOrgId);
@@ -2212,19 +2647,11 @@ export function DashboardDropZone() {
           // A remembered doctor suppresses the Rx-name save prompt entirely:
           // we already know this doctor's practice, so there is nothing to ask.
           setAliasExistedForRxName(null);
-        } else if (!rxProviderOrgId && rx.practiceName && effectiveLabOrgId) {
+        } else if (!rxProviderOrgId && rx.practiceName?.trim() && effectiveLabOrgId) {
           const needle = rx.practiceName.trim().toLowerCase();
 
           // 2. Check the saved Rx-name alias.
-          let aliasOrgId: string | null = null;
-          try {
-            const aliasResp = await apiFetch<PracticeLookupPayload>(
-              `/rx-practice-aliases?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&rxName=${encodeURIComponent(needle)}`,
-            );
-            aliasOrgId = lookedUpOrgId(aliasResp);
-          } catch {
-            /* non-blocking — fall through to fuzzy match */
-          }
+          const aliasOrgId = lookedUpOrgId(context.aliased.value);
 
           if (aliasOrgId) {
             setRxProviderOrgId(aliasOrgId);
@@ -2239,7 +2666,7 @@ export function DashboardDropZone() {
             if (match) setRxProviderOrgId(match.id);
             else setRxProviderSearch(rx.practiceName);
           }
-        } else if (!rx.practiceName) {
+        } else if (!rx.practiceName?.trim()) {
           // No AI name to alias — mark as n/a.
           setAliasExistedForRxName(null);
         }
@@ -2253,16 +2680,7 @@ export function DashboardDropZone() {
         // Deliberately lab-wide (no providerOrganizationId): at this point we
         // may not know the practice yet, and the whole point is to discover it.
         if (scannedDoctorName && effectiveLabOrgId) {
-          try {
-            const qs = new URLSearchParams({
-              labOrganizationId: effectiveLabOrgId,
-              doctorName: scannedDoctorName,
-            });
-            const resolved = await apiFetch<{
-              exactMatch: string | null;
-              similarMatches: DoctorMatchCandidate[];
-              canAddNew: boolean;
-            }>(`/doctors/resolve-name?${qs.toString()}`);
+            const resolved = context.resolvedDoctor.value;
             const candidates = Array.isArray(resolved?.similarMatches)
               ? resolved.similarMatches
               : [];
@@ -2272,9 +2690,6 @@ export function DashboardDropZone() {
                 candidates,
               });
             }
-          } catch {
-            /* non-blocking — the create-time gate remains the backstop */
-          }
         }
 
         setPhase({ kind: "rxConfirm", file, caseNumber });
@@ -2284,6 +2699,8 @@ export function DashboardDropZone() {
           message: e?.message || "AI analysis failed.",
         });
         scheduleIdleReset(6000);
+      } finally {
+        rxAnalysisInFlight.current = false;
       }
     },
     [
@@ -2297,6 +2714,7 @@ export function DashboardDropZone() {
 
   const runZipAnalyze = useCallback(
     async (zipFile: File) => {
+      setRxMatchWarning(false);
       setPhase({ kind: "analyzing", fileName: zipFile.name });
       setZipSource(null);
       try {
@@ -2725,6 +3143,10 @@ export function DashboardDropZone() {
       setRxPracticeError(true);
       return;
     }
+    if (practiceContactChanges.length && !contactChoiceMadeRef.current) {
+      setContactPromptOpen(true);
+      return;
+    }
     if (
       (isRemovableRestorationType(r.caseType) ||
         /ortho|night guard|retainer|aligner/i.test(r.caseType ?? "")) &&
@@ -2843,6 +3265,36 @@ export function DashboardDropZone() {
     // name in place of the scanned one.
     const effectiveDoctorName =
       (doctorNameOverride ?? r.doctorName ?? "").trim() || "Unknown Provider";
+    if (applySharedContactRef.current) {
+      try {
+        await apiFetch(`/organizations/${encodeURIComponent(rxProviderOrgId)}/intake-contact`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            addressLine1: practiceContact.addressLine1 || null,
+            addressLine2: practiceContact.addressLine2 || null,
+            city: practiceContact.city || null,
+            state: practiceContact.state || null,
+            zip: practiceContact.zip || null,
+            billingAddressLine1: practiceContact.billingAddressLine1 || null,
+            billingAddressLine2: practiceContact.billingAddressLine2 || null,
+            billingCity: practiceContact.billingCity || null,
+            billingState: practiceContact.billingState || null,
+            billingZip: practiceContact.billingZip || null,
+            phone: practiceContact.phone || null,
+            primaryEmail: practiceContact.primaryEmail || null,
+            billingEmail: practiceContact.billingEmail || null,
+          }),
+        });
+        applySharedContactRef.current = false;
+      } catch (error) {
+        setPhase({
+          kind: "error",
+          message: `Shared practice details were not updated, and no case was created. ${error instanceof Error ? error.message : "Retry the update before creating the case."}`,
+        });
+        scheduleIdleReset(8000);
+        return;
+      }
+    }
 
     // Backstop for the auto-filled paths: when the practice came from fuzzy
     // matching or the Rx-name alias, the user never touches the picker and no
@@ -2926,29 +3378,48 @@ export function DashboardDropZone() {
           if (confirmNewDoctor) fd.append("confirmNewDoctor", "true");
           if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
           if (last?.trim()) fd.append("patientLastNameHint", last.trim());
-          if (rxBarcode.trim()) fd.append("casePanBarcodeHint", rxBarcode.trim());
+          fd.append("casePanBarcodeHint", rxBarcode.trim());
           if (r.receivedAt?.trim()) fd.append("receivedAt", r.receivedAt.trim());
           // Pass all AI-extracted clinical data as hints. The server will merge
           // these into the extracted fields when its own AI extraction fails
           // (e.g. Replit AI proxy does not support openai.files.create() for PDFs).
           // This ensures the case is fully populated from the data the user
           // already reviewed in the form.
-          if (r.dueDate?.trim()) fd.append("dueDateHint", r.dueDate.trim());
-          if (r.shade?.trim()) fd.append("shadeHint", r.shade.trim());
-          if (r.toothIndices?.trim()) fd.append("toothIndicesHint", r.toothIndices.trim());
-          if (r.arch) fd.append("archHint", r.arch);
-          if (r.material?.trim()) fd.append("materialHint", r.material.trim());
-          if (r.caseType?.trim()) fd.append("caseTypeHint", r.caseType.trim());
+          fd.append("rxDueDateHint", eligibleRxDueDate);
+          fd.append("labDueDateHint", r.labDueDate?.trim() ?? "");
+          fd.append("scanDateHint", r.scanDate?.trim() ?? "");
+          fd.append("externalPatientIdHint", r.platformCaseIdentifier?.trim() || iteroOrderId);
+          fd.append("providerContactSnapshot", JSON.stringify(providerContactSnapshot));
+          fd.append("invoiceNotesHint", invoiceNotes.trim());
+          fd.append("shadeHint", r.shade?.trim() ?? "");
+          fd.append("toothIndicesHint", r.toothIndices?.trim() ?? "");
+          fd.append("archHint", r.arch ?? "");
+          fd.append("removableSubtypeHint", r.removableSubtype ?? "");
+          fd.append("materialHint", r.material?.trim() ?? "");
+          fd.append("caseTypeHint", r.caseType?.trim() ?? "");
+          fd.append("notesHint", r.notes?.trim() ?? "");
+          fd.append("isRushHint", String(!!r.isRush));
           const assignedUnits = buildPrescriptionRestorations(r);
+          if (assignedUnits.length) {
+            fd.append("reviewedRestorationsHint", JSON.stringify(assignedUnits.map((unit) => ({
+              toothNumber: unit.toothNumber,
+              restorationType: unit.restorationType,
+              restorationSubtype: unit.restorationSubtype ?? null,
+              arch: unit.arch ?? null,
+              material: unit.material ?? null,
+              shade: unit.shade ?? null,
+              quantity: unit.quantity,
+            }))));
+          }
           const validAssignedUnits = assignedUnits.filter((unit) =>
-            /^(Crown|Pontic)$/.test(unit.restorationType) && !!unit.material?.trim()
+            /^(Crown|Pontic|Veneer)$/.test(unit.restorationType) && !!unit.material?.trim()
           );
           if (rxConnectorsReady && validAssignedUnits.length) {
             fd.append("toothAssignments", JSON.stringify(applyPriceOverrides(validAssignedUnits.map((unit) => ({ ...unit, unitPrice: 0 })))));
+          }
+          if (rxConnectorsReady && assignedUnits.some((unit) => /^(Crown|Pontic)$/.test(unit.restorationType))) {
             fd.append("bridgeConnectors", rxConnectorText);
           }
-          if (r.notes?.trim()) fd.append("notesHint", r.notes.trim());
-          if (r.isRush) fd.append("isRushHint", "true");
           if (isAdminUser && editedLines) {
             fd.append(
               "invoiceOverrideLines",
@@ -3065,8 +3536,14 @@ export function DashboardDropZone() {
             doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
-            ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+            aiIntakeReviewedDates: true,
+            dueDate: r.labDueDate || null,
+            ...(eligibleRxDueDate ? { prescriptionDueDate: eligibleRxDueDate } : {}),
+            ...(r.scanDate ? { scanDate: r.scanDate } : {}),
+            ...(r.platformCaseIdentifier ? { externalPatientId: r.platformCaseIdentifier.trim() } : {}),
             ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
+            providerContactSnapshot,
+            ...(invoiceNotes.trim() ? { invoiceNotes: invoiceNotes.trim() } : {}),
             ...(restorations.length > 0
               ? {
                   restorations: applyPriceOverrides(restorations),
@@ -3225,8 +3702,14 @@ export function DashboardDropZone() {
             doctorName: effectiveDoctorName,
             priority: r.isRush ? "rush" : "normal",
             ...(confirmNewDoctor ? { confirmNewDoctor: true } : {}),
-            ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+            aiIntakeReviewedDates: true,
+            dueDate: r.labDueDate || null,
+            ...(eligibleRxDueDate ? { prescriptionDueDate: eligibleRxDueDate } : {}),
+            ...(r.scanDate ? { scanDate: r.scanDate } : {}),
+            ...(r.platformCaseIdentifier ? { externalPatientId: r.platformCaseIdentifier.trim() } : {}),
             ...(r.receivedAt ? { receivedAt: r.receivedAt } : {}),
+            providerContactSnapshot,
+            ...(invoiceNotes.trim() ? { invoiceNotes: invoiceNotes.trim() } : {}),
             ...(restorations.length > 0
               ? {
                   restorations: applyPriceOverrides(restorations),
@@ -3394,9 +3877,14 @@ export function DashboardDropZone() {
       !!doctorMemoryKey &&
       normalizeDoctorMemoryKey(r.doctorName) === doctorMemoryKey;
     return (
-      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+      <div className="rx-confirm-panel rounded-xl border border-border bg-card p-4 space-y-3" data-testid="rx-review-container">
+        {rxMatchWarning && (
+          <p role="alert" className="rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+            Prescription data was read, but doctor or practice matching did not finish. Confirm the doctor, practice and office pricing before saving.
+          </p>
+        )}
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Sparkles size={14} className="text-primary" />
             <p className="text-sm font-medium">AI read this prescription</p>
             {queueProgress && (
@@ -3415,7 +3903,7 @@ export function DashboardDropZone() {
             <X size={15} />
           </button>
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="min-w-0 break-words text-xs text-muted-foreground">
           Review or edit, then create the case. The Rx will be attached and a
           draft invoice will be generated automatically.
         </p>
@@ -3462,6 +3950,9 @@ export function DashboardDropZone() {
             </select>
           </label>
         )}
+        <div className="col-span-2 border-b border-border pb-1">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-foreground">Provider</h3>
+        </div>
         {/* "Which doctor is this?" — asked BEFORE the practice question,
             because confirming the doctor settles the practice too. */}
         {doctorIdentify && (
@@ -3778,7 +4269,7 @@ export function DashboardDropZone() {
                 </p>
               )
             )}
-            <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2">
               <div>
                 <input
                   className={
@@ -4019,7 +4510,7 @@ export function DashboardDropZone() {
             </div>
           </div>
         )}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="rx-review-form-grid grid grid-cols-2 gap-2">
           <DoctorNamePicker
             value={r.doctorName || ""}
             onChange={(name) => {
@@ -4041,6 +4532,37 @@ export function DashboardDropZone() {
             placeholder="Doctor"
             size="sm"
           />
+          <div className="col-span-2 rounded-lg border border-border p-3 space-y-2" data-testid="provider-contact-review">
+            <p className="text-xs font-medium text-foreground">
+              {selectedPractice?.displayName || selectedPractice?.name || "Selected practice"} contact details
+            </p>
+            {!rxProviderOrgId ? (
+              <p className="text-xs text-muted-foreground">Choose a practice to review its contact details.</p>
+            ) : (
+              <div className="rx-provider-contact-grid grid gap-2">
+                <input aria-label="Practice address line 1" className={inputCls} placeholder="Practice address" value={practiceContact.addressLine1} onChange={(e) => editPracticeContact("addressLine1", e.target.value)} />
+                <input aria-label="Practice address line 2" className={inputCls} placeholder="Address line 2" value={practiceContact.addressLine2} onChange={(e) => editPracticeContact("addressLine2", e.target.value)} />
+                <input aria-label="Practice city" className={inputCls} placeholder="City" value={practiceContact.city} onChange={(e) => editPracticeContact("city", e.target.value)} />
+                <div className="grid grid-cols-2 gap-2">
+                  <input aria-label="Practice state" className={inputCls} placeholder="State" value={practiceContact.state} onChange={(e) => editPracticeContact("state", e.target.value)} />
+                  <input aria-label="Practice ZIP" className={inputCls} placeholder="ZIP" value={practiceContact.zip} onChange={(e) => editPracticeContact("zip", e.target.value)} />
+                </div>
+                <input aria-label="Billing address line 1" className={inputCls} placeholder="Billing address (if different)" value={practiceContact.billingAddressLine1} onChange={(e) => editPracticeContact("billingAddressLine1", e.target.value)} />
+                <input aria-label="Billing address line 2" className={inputCls} placeholder="Billing address line 2" value={practiceContact.billingAddressLine2} onChange={(e) => editPracticeContact("billingAddressLine2", e.target.value)} />
+                <input aria-label="Billing city" className={inputCls} placeholder="Billing city" value={practiceContact.billingCity} onChange={(e) => editPracticeContact("billingCity", e.target.value)} />
+                <div className="grid grid-cols-2 gap-2">
+                  <input aria-label="Billing state" className={inputCls} placeholder="Billing state" value={practiceContact.billingState} onChange={(e) => editPracticeContact("billingState", e.target.value)} />
+                  <input aria-label="Billing ZIP" className={inputCls} placeholder="Billing ZIP" value={practiceContact.billingZip} onChange={(e) => editPracticeContact("billingZip", e.target.value)} />
+                </div>
+                <input aria-label="Practice phone" className={inputCls} placeholder="Phone" value={practiceContact.phone} onChange={(e) => editPracticeContact("phone", e.target.value)} />
+                <input aria-label="Primary practice email" type="email" className={inputCls} placeholder="Primary email" value={practiceContact.primaryEmail} onChange={(e) => editPracticeContact("primaryEmail", e.target.value)} />
+                <input aria-label="Billing email" type="email" className={inputCls} placeholder="Billing email" value={practiceContact.billingEmail} onChange={(e) => editPracticeContact("billingEmail", e.target.value)} />
+              </div>
+            )}
+          </div>
+          <div className="col-span-2 border-b border-border pb-1 pt-1">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-foreground">Patient Information</h3>
+          </div>
           <input
             className={inputCls}
             placeholder="Patient"
@@ -4066,6 +4588,13 @@ export function DashboardDropZone() {
               onChange={(e) => setRxBarcode(e.target.value)}
             />
           </label>
+          <label className="col-span-2 flex flex-col gap-1 rounded-md border border-border bg-secondary/20 px-2.5 py-2">
+            <span className="text-xs font-medium text-foreground">Source platform case/order ID <span className="font-normal text-muted-foreground">(separate from Case Pan barcode)</span></span>
+            <input aria-label="Source platform case/order ID" className={inputCls + " w-full font-mono"} placeholder="iTero / 3Shape identifier" value={r.platformCaseIdentifier || ""} onChange={(e) => setRxDraft({ ...r, platformCaseIdentifier: e.target.value })} />
+          </label>
+          <div className="col-span-2 border-b border-border pb-1 pt-1">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-foreground">Restoration Details</h3>
+          </div>
           {!isRemovableRestorationType(r.caseType) && (
             <input
               className={inputCls}
@@ -4076,23 +4605,22 @@ export function DashboardDropZone() {
               }
             />
           )}
-          <FieldCombobox
-            value={r.caseType || ""}
-            suggestions={dropZoneRestorationTypeSuggestions}
-            onChange={(t) =>
-              editRxClinical({
-                caseType: t,
-                ...(isRemovableRestorationType(t) ? { toothIndices: "" } : {}),
-              })
-            }
-            onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
-            placeholder="Restoration type"
-            addNewLabel="Add restoration type"
-            size="sm"
-          />
-          {!isRemovableRestorationType(r.caseType) &&
-            !/ortho|night guard|retainer|aligner/i.test(r.caseType ?? "") && (
-              <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
+          <label htmlFor="rx-clinical-case-type" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Case Type</span>
+            <FieldCombobox
+              inputId="rx-clinical-case-type"
+              value={r.caseType || ""}
+              suggestions={dropZoneRestorationTypeSuggestions}
+              onChange={selectRxRestorationType}
+              onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
+              placeholder="Restoration type"
+              addNewLabel="Add restoration type"
+              size="sm"
+            />
+          </label>
+          {!/ortho|night guard|retainer|aligner/i.test(r.caseType ?? "") && (
+              <div className="col-span-2 order-last space-y-2 rounded-lg border border-border p-3" data-testid="rx-chart-section">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground">Tooth Chart</h4>
                 <p className="text-xs text-muted-foreground">
                   Optional: use the chart to correct extracted tooth roles or product details. Unassigned teeth keep the prescription values.
                 </p>
@@ -4110,22 +4638,94 @@ export function DashboardDropZone() {
                     }}>Accept replacement values and review roles again</button>
                   </div>
                 )}
-                <ToothChart
-                  value={r.toothIndices ?? ""}
-                  onChange={(value) => editRxClinical({ toothIndices: value })}
-                  crownTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Crown").map(([tooth]) => tooth))}
-                  ponticTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Pontic").map(([tooth]) => tooth))}
-                  connectedPairs={rxConnectorState.active}
-                  connectorSuggestions={rxConnectorState.suggested}
-                  summaryText={`${rxToothSummary.units} units · ${rxToothSummary.crowns} prepared crowns · ${rxToothSummary.pontics} pontics · ${rxToothSummary.groups.length} connected groups · Unsaved draft`}
-                  onConnectedPairsChange={(pairs) => editRxClinical({ bridgeConnectors: updateConnectorChoices(rxConnectorState, pairs) })}
-                  onToothClick={setRxActiveTooth}
-                />
+                <div className="rx-review-assignment-grid grid min-w-0 items-start gap-3">
+                  <div className="rx-review-chart-region min-w-0">
+                    <h3 className="mb-2 text-sm font-semibold">Tooth &amp; Restoration Assignment</h3>
+                    <ToothChart
+                      value={[r.toothIndices ?? "", ...rxMultiApplyTargets].filter(Boolean).join(", ")}
+                      onChange={(value) => editRxClinical({ toothIndices: value })}
+                      crownTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Crown").map(([tooth]) => tooth))}
+                      ponticTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Pontic").map(([tooth]) => tooth))}
+                      veneerTeeth={new Set(Object.entries(r.assignmentRoles ?? {}).filter(([, role]) => role === "Veneer").map(([tooth]) => tooth))}
+                      connectedPairs={rxConnectorState.active}
+                      connectorSuggestions={rxConnectorState.suggested}
+                      blockedConnectorPairs={incompatibleToothConnectorPairs(rxAssignmentUnits)}
+                      assignments={rxAssignmentUnits}
+                      summaryText={`${rxToothSummary.units} units · ${rxToothSummary.crowns} prepared crowns · ${rxToothSummary.pontics} pontics · ${rxToothSummary.groups.length} connected groups · Unsaved draft`}
+                      onConnectedPairsChange={(pairs) => editRxClinical({ bridgeConnectors: updateConnectorChoices(rxConnectorState, pairs) })}
+                      onToothClick={handleRxToothClick}
+                    />
+                    {rxPendingCopy && (
+                      <div className="mt-3 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950" role="alert">
+                        <p>These teeth already contain prescription or assignment data: {rxPendingCopy.targets.map((tooth) => `#${tooth}`).join(", ")}. Replace their current chart assignments with the copied values?</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" className="min-h-9 rounded-md border border-amber-700/30 px-3" onClick={() => setRxPendingCopy(null)}>Keep current values</button>
+                          <button type="button" className="min-h-9 rounded-md bg-amber-800 px-3 font-medium text-white" onClick={() => applyRxCopy(rxPendingCopy.targets, rxPendingCopy.template)}>Replace selected</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <aside className="rx-assignment-summary min-w-0 rounded-lg border border-border bg-background p-3 space-y-3" aria-label="AI tooth assignment summary">
+                    <div>
+                      <h4 className="text-xs font-semibold">Assignment summary</h4>
+                      <p className="mt-1 text-xs text-muted-foreground">{rxToothSummary.units} units · {rxToothSummary.crowns} prepared crowns · {rxToothSummary.pontics} pontics</p>
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-semibold">Assigned restorations</h4>
+                      {rxAssignmentUnits.filter((unit) => /^(Crown|Pontic|Veneer)$/.test(unit.restorationType)).length === 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">No confirmed roles. Extracted prescription details remain the baseline.</p>
+                      ) : (
+                        <ul className="mt-1 max-h-48 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain text-xs">
+                          {rxAssignmentUnits.filter((unit) => /^(Crown|Pontic|Veneer)$/.test(unit.restorationType)).map((unit) => (
+                            <li key={unit.toothNumber} className="rounded-md bg-secondary/50 px-2 py-1.5">
+                              <span className="font-semibold">#{unit.toothNumber}</span> · {unit.restorationType}
+                              <span className="block pl-5 text-muted-foreground">{[unit.material, unit.shade].filter(Boolean).join(" · ") || "Product and shade need review"}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-semibold">Bridge membership</h4>
+                      {rxToothSummary.groups.length === 0 ? <p className="mt-1 text-xs text-muted-foreground">No connected units.</p> :
+                        <ul className="mt-1 space-y-1 text-xs">{rxToothSummary.groups.map((group) => <li key={group.join("-")} className="rounded-md bg-emerald-50 px-2 py-1.5 text-emerald-900">{group.map((tooth) => `#${tooth}`).join(" – ")}</li>)}</ul>}
+                    </div>
+                    {(!rxConnectorValidation.valid || rxToothSummary.unresolvedPontics.length > 0) && (
+                      <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950" role="alert">
+                        {!rxConnectorValidation.valid && rxConnectorValidation.errors.map((message) => <p key={message}>{message}</p>)}
+                        {rxToothSummary.unresolvedPontics.length > 0 && <p>Review isolated pontics {rxToothSummary.unresolvedPontics.map((tooth) => `#${tooth}`).join(", ")}.</p>}
+                      </div>
+                    )}
+                    <div className="space-y-2 border-t border-border pt-2">
+                      <h4 className="text-xs font-semibold">Copy settings</h4>
+                      {rxCopyTemplate ? (
+                        <>
+                          <p className="rounded-md bg-primary/5 px-2 py-1.5 text-xs text-primary" role="status">
+                            Copy: {rxCopyTemplate.restorationType} · {rxCopyTemplate.material || "Material needed"} · {rxCopyTemplate.shade || "Case shade"}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">Ctrl/Cmd-click copies; Shift-click applies a same-arch range.</p>
+                          <button type="button" className="min-h-9 w-full rounded-md border border-border px-2 text-xs" aria-pressed={rxMultiApplyMode}
+                            onClick={() => { setRxMultiApplyMode((active) => !active); setRxMultiApplyTargets([]); }}>
+                            {rxMultiApplyMode ? "Cancel multi-tooth selection" : "Apply to multiple teeth"}
+                          </button>
+                          {rxMultiApplyMode && <button type="button" disabled={!rxMultiApplyTargets.length}
+                            className="min-h-9 w-full rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground disabled:opacity-40"
+                            onClick={() => requestRxCopy(rxMultiApplyTargets)}>
+                            Apply to {rxMultiApplyTargets.length} selected {rxMultiApplyTargets.length === 1 ? "tooth" : "teeth"}
+                          </button>}
+                          <button type="button" className="text-xs text-muted-foreground underline" onClick={() => { setRxCopyTemplate(null); setRxCopyAnchor(null); setRxMultiApplyTargets([]); }}>Clear copy settings</button>
+                        </>
+                      ) : <p className="text-xs text-muted-foreground">Assign or select a confirmed crown or pontic to create copy settings.</p>}
+                    </div>
+                  </aside>
+                </div>
                 {rxAssignmentUndo && <button type="button" className="text-xs underline" onClick={() => {
-                  editRxClinical(rxAssignmentUndo); setRxAssignmentUndo(null);
-                }}>Undo last unsaved assignment change</button>}
+                  editRxClinical(rxAssignmentUndo); setRxAssignmentUndo(null); toast.success("Last assignment and bridge changes restored.");
+                }}>Undo last assignment and connector changes</button>}
                 {rxActiveTooth && <ToothActionDialog allowMarkMissing={false}
+                  key={rxActiveTooth}
                   toothId={rxActiveTooth}
+                  caseShade={r.shade}
                   restorations={rxAssignmentUnits.map((unit) => ({ ...unit, id: unit.toothNumber, caseId: "", unitPrice: 0, quantity: 1 }))}
                   groupTeeth={rxActiveTooth ? rxToothSummary.groups.find((group) => group.includes(rxActiveTooth)) : undefined}
                   materialOptions={rxCatalogMaterials}
@@ -4143,7 +4743,7 @@ export function DashboardDropZone() {
                         className="h-9 rounded-md border border-border bg-background px-2"
                         onChange={(e) => {
                           const roles = { ...(r.assignmentRoles ?? {}) };
-                          if (e.target.value) roles[tooth] = e.target.value as "Crown" | "Pontic";
+                          if (e.target.value) roles[tooth] = e.target.value as "Crown" | "Pontic" | "Veneer";
                           else delete roles[tooth];
                           editRxClinical({ assignmentRoles: roles });
                         }}
@@ -4151,6 +4751,7 @@ export function DashboardDropZone() {
                         <option value="">Needs review</option>
                         <option value="Crown">Prepared crown</option>
                         <option value="Pontic">Pontic</option>
+                        <option value="Veneer">Veneer</option>
                       </select>
                     </label>
                   ))}
@@ -4182,44 +4783,117 @@ export function DashboardDropZone() {
               </select>
             </label>
           )}
-          <FieldCombobox
-            value={r.material || ""}
-            suggestions={dropZoneMaterialSuggestions}
-            onChange={(m) => editRxClinical({ material: m })}
-            onCreate={(v) => dropZoneCreateVocabItem("material", v)}
-            placeholder="Material"
-            addNewLabel="Add material"
-            size="sm"
-          />
-          <FieldCombobox
-            value={r.shade || ""}
-            suggestions={dropZoneShadeSuggestions}
-            onChange={(s) => editRxClinical({ shade: s })}
-            onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
-            placeholder="Shade"
-            addNewLabel="Add shade"
-            size="sm"
-          />
-          <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
-            <span className="text-xs text-muted-foreground px-0.5">
-              Due date
-            </span>
-            <div className="relative">
-              <input
-                id="rx-due-date"
-                type="date"
-                className={`${inputCls} w-full${!r.dueDate ? " [color:transparent]" : ""}`}
-                value={r.dueDate || ""}
-                onChange={(e) =>
-                  setRxDraft({ ...r, dueDate: e.target.value })
-                }
-              />
-              {!r.dueDate && (
-                <span className="pointer-events-none absolute inset-0 flex items-center px-2.5 text-sm text-muted-foreground">
-                  No date set
+          <label htmlFor="rx-clinical-material" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Case Material</span>
+            <FieldCombobox
+              inputId="rx-clinical-material"
+              value={r.material || ""}
+              suggestions={isRemovableRestorationType(r.caseType)
+                ? [...new Set([...dropZoneMaterialSuggestions, ...rxCatalogMaterials.map((option) => option.label)])]
+                : dropZoneMaterialSuggestions}
+              onChange={(m) => editRxClinical({ material: m })}
+              onCreate={(v) => dropZoneCreateVocabItem("material", v)}
+              placeholder="Material"
+              addNewLabel="Add material"
+              size="sm"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground px-0.5">Restoration subtype</span>
+            {isRemovableRestorationType(r.caseType) ? (
+              <select
+                aria-label="Restoration subtype"
+                className={inputCls}
+                value={r.removableSubtype || ""}
+                onChange={(e) => setRxDraft({ ...r, removableSubtype: (e.target.value || null) as ExtractedRx["removableSubtype"] })}
+              >
+                <option value="">Select removable subtype…</option>
+                <option value="denture">Full denture</option>
+                <option value="partial">Partial denture</option>
+                <option value="flipper">Flipper</option>
+                <option value="repair_denture">Denture repair</option>
+                <option value="repair_partial">Partial repair</option>
+                <option value="repair">Other repair</option>
+              </select>
+            ) : (
+              <select
+                aria-label="Restoration subtype"
+                className={inputCls}
+                value={r.restorationSubtype || ""}
+                onChange={(e) => selectRxRestorationSubtype(e.target.value)}
+              >
+                <option value="">Select subtype…</option>
+                {rxRestorationSubtypeOptions.map((option) => (
+                  <option key={option.key} value={option.key}>{option.label}</option>
+                ))}
+                {r.restorationSubtype && !rxRestorationSubtypeOptions.some((option) => option.key === r.restorationSubtype) && (
+                  <option value={r.restorationSubtype}>{r.restorationSubtype}</option>
+                )}
+              </select>
+            )}
+          </label>
+          <label htmlFor="rx-clinical-shade" className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold text-foreground">Shade</span>
+            <FieldCombobox
+              inputId="rx-clinical-shade"
+              value={r.shade || ""}
+              suggestions={dropZoneShadeSuggestions}
+              onChange={(s) => editRxClinical({ shade: s })}
+              onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
+              placeholder="Shade"
+              addNewLabel="Add shade"
+              size="sm"
+            />
+          </label>
+          {(!rxTurnaroundDays || !r.dueDate || eligibleRxDueDate) && (
+            <>
+              <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground px-0.5">
+                  Rx due date (from prescription)
                 </span>
+                <div className="relative">
+                  <input
+                    id="rx-due-date"
+                    type="date"
+                    className={`${inputCls} w-full${!r.dueDate ? " [color:transparent]" : ""}`}
+                    value={r.dueDate || ""}
+                    onChange={(e) =>
+                      setRxDraft({ ...r, dueDate: e.target.value })
+                    }
+                  />
+                  {!r.dueDate && (
+                    <span className="pointer-events-none absolute inset-0 flex items-center px-2.5 text-sm text-muted-foreground">
+                      No date set
+                    </span>
+                  )}
+                </div>
+              </label>
+              {rxTurnaroundDays != null && eligibleRxDueDate && (
+                <div
+                  role="note"
+                  className="col-span-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200"
+                >
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    The prescription requests {eligibleRxDueDate}. This falls within the lab&apos;s{" "}
+                    {rxTurnaroundDays}-day turnaround; the Lab due date remains the lab schedule and is not replaced.
+                  </span>
+                </div>
               )}
-            </div>
+            </>
+          )}
+          <label htmlFor="rx-scan-date" className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground px-0.5">Scan date</span>
+            <input id="rx-scan-date" type="date" className={inputCls + " w-full"} value={r.scanDate || ""} onChange={(e) => setRxDraft({ ...r, scanDate: e.target.value })} />
+          </label>
+          <label htmlFor="rx-lab-due-date" className="flex flex-col gap-0.5 rounded-md border border-primary/40 bg-primary/5 p-2">
+            <span className="text-xs font-semibold text-primary px-0.5">Lab due date</span>
+            <input id="rx-lab-due-date" type="date" className={inputCls + " w-full"} value={r.labDueDate || ""} onChange={(e) => setRxDraft({ ...r, labDueDate: e.target.value, labDueDateEdited: true })} />
+            <span className="text-[10px] text-muted-foreground">
+              {rxTurnaroundDays != null
+                ? `Prefilled ${rxTurnaroundDays} calendar days after receipt. Your edit stays in effect.`
+                : "No turnaround is configured; enter a date if one is needed."}
+            </span>
           </label>
           <label htmlFor="rx-received-date" className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground px-0.5">
@@ -4235,12 +4909,16 @@ export function DashboardDropZone() {
               }
             />
           </label>
-          <textarea
-            className={inputCls + " col-span-2 h-16 resize-none py-1.5"}
-            placeholder="Notes"
-            value={r.notes || ""}
-            onChange={(e) => setRxDraft({ ...r, notes: e.target.value })}
-          />
+          <div className="col-span-2 rounded-md border border-border bg-secondary/20 p-2 space-y-1">
+            <label htmlFor="rx-prescription-notes" className="text-xs font-medium text-foreground">Prescription notes</label>
+            <textarea
+              id="rx-prescription-notes"
+              className={inputCls + " w-full h-16 resize-none py-1.5"}
+              placeholder="Notes from the prescription"
+              value={r.notes || ""}
+              onChange={(e) => setRxDraft({ ...r, notes: e.target.value })}
+            />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-muted-foreground flex-1">
@@ -4451,7 +5129,8 @@ export function DashboardDropZone() {
           <div className="rounded-md border border-border bg-secondary/30 p-3">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground mb-2">
               <FileText size={13} />
-              Invoice preview
+              Invoice Details
+              <span className="sr-only">Invoice preview</span>
               <span className="font-normal text-muted-foreground">
                 (estimated — created with the case)
               </span>
@@ -4776,6 +5455,17 @@ export function DashboardDropZone() {
             )}
           </div>
         )}
+        <section className="rounded-md border border-border p-3 space-y-1.5" data-testid="invoice-notes-section">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-foreground">Invoice Notes</h3>
+          <textarea
+            aria-label="Invoice Notes"
+            className={inputCls + " w-full min-h-16 resize-y"}
+            placeholder="Notes to include on the draft invoice"
+            value={invoiceNotes}
+            onChange={(e) => setInvoiceNotes(e.target.value)}
+            maxLength={10_000}
+          />
+        </section>
         <button
           type="button"
           onClick={async () => {
@@ -4831,6 +5521,49 @@ export function DashboardDropZone() {
                 I understand
               </button>
             )}
+          </div>
+        )}
+        {contactPromptOpen && practiceContactChanges.length > 0 && (
+          <div className="rounded-lg border border-amber-400 bg-amber-50 p-3 space-y-2" role="alertdialog" aria-labelledby="practice-contact-confirm-title" data-testid="practice-contact-confirm">
+            <h3 id="practice-contact-confirm-title" className="text-sm font-semibold text-amber-950">
+              Practice contact details changed
+            </h3>
+            <p className="text-xs text-amber-900">
+              Changed fields: {practiceContactChanges.join(", ")}. The reviewed details will be saved with this case either way.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="h-8 rounded-md border border-amber-700/30 bg-white px-3 text-xs font-medium"
+                onClick={() => {
+                  contactChoiceMadeRef.current = true;
+                  applySharedContactRef.current = false;
+                  setContactPromptOpen(false);
+                  void createCaseFromRx();
+                }}
+              >
+                Save for this case only
+              </button>
+              <button
+                type="button"
+                className="h-8 rounded-md bg-amber-700 px-3 text-xs font-medium text-white"
+                onClick={() => {
+                  contactChoiceMadeRef.current = true;
+                  applySharedContactRef.current = true;
+                  setContactPromptOpen(false);
+                  void createCaseFromRx();
+                }}
+              >
+                Update practice account too
+              </button>
+              <button
+                type="button"
+                className="h-8 rounded-md px-3 text-xs text-amber-900 underline"
+                onClick={() => setContactPromptOpen(false)}
+              >
+                Keep reviewing
+              </button>
+            </div>
           </div>
         )}
         <div className="flex flex-wrap gap-2 pt-1">

@@ -8,6 +8,10 @@ export type CustomerLastPayment = {
   amount: string;
 };
 
+export type CustomerDoctorLastPayment = CustomerLastPayment & {
+  doctorIdentity: string;
+};
+
 /**
  * The most recent payment a lab received from each customer, across every
  * way a payment can be recorded:
@@ -112,6 +116,66 @@ export async function loadCustomerLastPayments(
       paidAt: paidAt.toISOString(),
       amount: Number(row.amount).toFixed(2),
     });
+  }
+  return result;
+}
+
+/**
+ * The most recent non-reversed payment session attributed to each doctor at
+ * each customer. Sessions without a doctor identity are deliberately omitted:
+ * a practice-wide or legacy payment cannot be assigned to a doctor here.
+ */
+export async function loadCustomerDoctorLastPayments(
+  labOrganizationId: string,
+  providerOrganizationIds: string[],
+): Promise<Map<string, CustomerDoctorLastPayment[]>> {
+  const ids = Array.from(new Set(providerOrganizationIds.filter(Boolean)));
+  const result = new Map<string, CustomerDoctorLastPayment[]>();
+  if (!ids.length) return result;
+  const providerList = sql.join(ids.map((id) => sql`${id}`), sql`, `);
+
+  const rows = await db.execute(sql`
+    SELECT DISTINCT ON (s.provider_organization_id, s.doctor_identity)
+      s.provider_organization_id AS provider_id,
+      s.doctor_identity,
+      s.payment_date AS paid_at,
+      s.received_amount::numeric AS amount
+    FROM statement_payment_sessions s
+    WHERE s.lab_organization_id = ${labOrganizationId}
+      AND s.provider_organization_id IN (${providerList})
+      AND s.doctor_identity IS NOT NULL
+      AND btrim(s.doctor_identity) <> ''
+      AND s.cancelled_at IS NULL
+      AND s.status <> 'cancelled'
+      AND s.received_amount > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM statement_payment_reversals r
+        WHERE r.payment_session_id = s.id
+          AND r.status <> 'failed'
+      )
+    ORDER BY
+      s.provider_organization_id,
+      s.doctor_identity,
+      s.payment_date DESC,
+      s.created_at DESC,
+      s.id DESC
+  `);
+
+  for (const row of rows.rows as Array<{
+    provider_id: string;
+    doctor_identity: string;
+    paid_at: Date | string;
+    amount: string;
+  }>) {
+    const paidAt = new Date(row.paid_at);
+    if (Number.isNaN(paidAt.getTime())) continue;
+    const doctorPayments = result.get(row.provider_id) ?? [];
+    doctorPayments.push({
+      doctorIdentity: row.doctor_identity,
+      paidAt: paidAt.toISOString(),
+      amount: Number(row.amount).toFixed(2),
+    });
+    result.set(row.provider_id, doctorPayments);
   }
   return result;
 }

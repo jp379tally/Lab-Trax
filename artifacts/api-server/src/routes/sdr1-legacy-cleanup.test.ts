@@ -31,20 +31,16 @@ import { SDR1_CLEANUP_CONFIRM } from "../lib/sdr1-legacy-cleanup.js";
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("../lib/recovery-billing-scope.js", () => ({
-  RECOVERY_DATA_UNAVAILABLE_MESSAGE: "Synthetic recovery data unavailable.",
-  RECOVERY_LAB_ID: "00000000-0000-4000-8000-000000000123",
-  RECOVERY_SAFEGUARD_VERSION: "synthetic-safeguard",
-  RECOVERY_TAG: "recovery-test-fixture",
-  RECOVERY_TIMEZONE: "UTC",
+vi.mock("../lib/sdr1-legacy-cleanup-config.js", () => ({
+  legacyCleanupConfigurationAvailable: true,
+  legacyCleanupUnavailableMessage: "Synthetic legacy cleanup data unavailable.",
   legacyCleanupConfiguration: {
+    labOrganizationId: "00000000-0000-4000-8000-000000000123",
     confirmationPhrase: "CONFIRM_SYNTHETIC_LEGACY_CLEANUP",
     eraStartMs: Date.parse("2026-05-01T00:00:00.000Z"),
     eraEndMs: Date.parse("2026-07-01T00:00:00.000Z"),
     targetPatients: ["Synthetic Patient Alpha", "Synthetic Patient Beta"],
   },
-  recoveryDataAvailable: true,
-  assertRecoveryDataAvailable: () => undefined,
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));

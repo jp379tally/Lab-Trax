@@ -563,6 +563,26 @@ export default function InvoicesScreen() {
           <Card style={styles.row} onPress={() => router.push(`/invoice-editor/${i.id}` as never)} testID={`invoice-${i.id}`}>
             <View style={styles.main}>
               <Text style={styles.name} numberOfLines={1}>{i.invoiceNumber || "Invoice"}</Text>
+              {i.aiGenerated ? (
+                <View
+                  style={[
+                    styles.aiReviewBadge,
+                    i.aiReviewedAt
+                      ? { backgroundColor: colors.successLight }
+                      : { backgroundColor: colors.warningLight },
+                  ]}
+                  testID={`invoice-ai-review-status-${i.id}`}
+                >
+                  <Text
+                    style={[
+                      styles.aiReviewText,
+                      { color: i.aiReviewedAt ? colors.success : colors.warning },
+                    ]}
+                  >
+                    {i.aiReviewedAt ? "AI reviewed" : "AI review needed"}
+                  </Text>
+                </View>
+              ) : null}
               {customerNameOf(i) ? <Text style={styles.customer} numberOfLines={1}>{customerNameOf(i)}</Text> : null}
                <Text style={styles.meta} numberOfLines={1}>Issued {formatInvoiceIssueDate(i.issuedAt ?? i.createdAt)} · Due {formatDate(i.dueAt)}</Text>
             </View>
@@ -812,6 +832,8 @@ function makeStyles(c: ThemeColors) {
     row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },
+    aiReviewBadge: { alignSelf: "flex-start", paddingHorizontal: Spacing.xs, paddingVertical: 2, borderRadius: Radius.full },
+    aiReviewText: { ...Typography.caption, fontSize: 11, fontFamily: "Inter_600SemiBold" },
     customer: { ...Typography.caption, color: c.textSecondary },
     meta: { ...Typography.caption, color: c.textSecondary },
     right: { alignItems: "flex-end", gap: Spacing.xs },

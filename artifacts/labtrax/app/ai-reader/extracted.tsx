@@ -37,6 +37,11 @@ import {
   type PreviewDraftInvoiceInput,
   type PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
+import {
+  addCalendarDays,
+  getLocalCalendarDateParts,
+  resolveAiIntakePrescriptionDueDate,
+} from "@workspace/calendar-date";
 import { resilientFetch } from "@/lib/query-client";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
 import { buildCaseCardHtml, generatePdf, type CaseCardRestoration } from "@/lib/case-pdf";
@@ -82,6 +87,12 @@ function parseDueDateMDY(raw: string | null | undefined): string {
   const [, mo, dy, yr] = m;
   const fullYr = yr.length === 2 ? `20${yr}` : yr;
   return `${fullYr}-${mo.padStart(2, "0")}-${dy.padStart(2, "0")}`;
+}
+
+function todayCalendarDate(): string {
+  const parts = getLocalCalendarDateParts(new Date());
+  if (!parts) return "";
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
 function expandToothIdentifiers(raw: string | null | undefined): string[] {
@@ -227,6 +238,13 @@ const MOBILE_SHADE_KEYS = new Set<string>(
 const MOBILE_MATERIAL_KEYS = new Set<string>(
   REMAKE_REASONS.filter((reason) => remakeReasonUsesField(reason.key, "material")).map((reason) => reason.key),
 );
+const DIAGNOSTIC_WAX_UP_LABEL = "Diagnostic Wax Up";
+const DIAGNOSTIC_WAX_UP_SUBTYPE = "restorative/diagnostic_wax_up";
+
+function isDiagnosticWaxUp(value: string | null | undefined): boolean {
+  return (value ?? "").trim().toLocaleLowerCase() ===
+    DIAGNOSTIC_WAX_UP_LABEL.toLocaleLowerCase();
+}
 
 interface MobileRemakeAnswers {
   remakeOfCaseId: string;
@@ -280,6 +298,32 @@ export default function AiReaderExtractedScreen() {
   // Each field initializes from userOverrides when the user already edited it
   // on a prior visit (e.g. added more pages and re-ran analysis), so a re-scan
   // never silently overwrites an intentional edit.
+  const initialCaseType = userOverrides.caseType !== undefined
+    ? userOverrides.caseType
+    : (extracted?.caseType ?? "");
+  const initialDiagnosticWaxUp = isDiagnosticWaxUp(initialCaseType);
+  const initialMaterial = userOverrides.material !== undefined
+    ? userOverrides.material
+    : initialDiagnosticWaxUp
+      ? DIAGNOSTIC_WAX_UP_LABEL
+      : (extracted?.material ?? "");
+  const initialShade = userOverrides.shade !== undefined
+    ? userOverrides.shade
+    : initialDiagnosticWaxUp
+      ? DIAGNOSTIC_WAX_UP_LABEL
+      : (extracted?.shade ?? "");
+  const extractedAssignmentValues = Object.fromEntries(
+    readExplicitAiToothAssignments(extracted?.toothAssignments).map((unit) => [
+      unit.toothNumber,
+      initialDiagnosticWaxUp
+        ? {
+            material: initialMaterial,
+            shade: initialShade,
+            restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+          }
+        : { material: unit.material ?? undefined, shade: unit.shade ?? undefined },
+    ]),
+  );
   const patientSplit = useMemo(() => splitName(extracted?.patientName), [extracted]);
   const [patientFirst, setPatientFirst] = useState(
     userOverrides.patientFirst !== undefined ? userOverrides.patientFirst : patientSplit.first,
@@ -287,42 +331,62 @@ export default function AiReaderExtractedScreen() {
   const [patientLast, setPatientLast] = useState(
     userOverrides.patientLast !== undefined ? userOverrides.patientLast : patientSplit.last,
   );
-  const [dueDate, setDueDate] = useState(
-    userOverrides.dueDate !== undefined ? userOverrides.dueDate : parseDueDateMDY(extracted?.dueDate),
+  const [receivedAt, setReceivedAt] = useState(
+    userOverrides.receivedAt !== undefined ? userOverrides.receivedAt : todayCalendarDate(),
   );
-  const [dueDateCapped, setDueDateCapped] = useState(false);
-  const [dueDateEarly, setDueDateEarly] = useState(false);
+  const [labDueDate, setLabDueDate] = useState(
+    userOverrides.labDueDate !== undefined
+      ? userOverrides.labDueDate
+      : userOverrides.dueDate !== undefined ? userOverrides.dueDate : "",
+  );
+  const [labDueDateEdited, setLabDueDateEdited] = useState(
+    userOverrides.labDueDateEdited ??
+      (userOverrides.labDueDate !== undefined || userOverrides.dueDate !== undefined),
+  );
+  const [rxDueDate, setRxDueDate] = useState(
+    userOverrides.rxDueDate !== undefined
+      ? userOverrides.rxDueDate
+      : parseDueDateMDY(extracted?.dueDate),
+  );
+  const selectedLab = labs.find((membership) => membership.organizationId === selectedLabId)?.organization;
+  const configuredTurnaroundDays = selectedLab?.defaultCaseDueDays as number | null | undefined;
+  const turnaroundDays =
+    configuredTurnaroundDays != null &&
+    Number.isInteger(configuredTurnaroundDays) &&
+    configuredTurnaroundDays > 0
+      ? configuredTurnaroundDays
+      : null;
+  const automaticLabDueDate = !labDueDateEdited && receivedAt && turnaroundDays != null
+    ? addCalendarDays(receivedAt, turnaroundDays) ?? ""
+    : "";
+  const reviewedLabDueDate = labDueDateEdited ? labDueDate : automaticLabDueDate;
+  const eligibleRxDueDate =
+    resolveAiIntakePrescriptionDueDate(rxDueDate, receivedAt, turnaroundDays) ?? "";
+  const showRxDueDateField =
+    turnaroundDays == null || !rxDueDate || !!eligibleRxDueDate;
   const [priority, setPriority] = useState<"normal" | "rush">(
     userOverrides.priority !== undefined ? userOverrides.priority : (extracted?.isRush ? "rush" : "normal"),
   );
   const [notes, setNotes] = useState(
     userOverrides.notes !== undefined ? userOverrides.notes : (extracted?.notes ?? ""),
   );
-  const [shade, setShade] = useState(
-    userOverrides.shade !== undefined ? userOverrides.shade : (extracted?.shade ?? ""),
-  );
+  const [shade, setShade] = useState(initialShade);
   const [gingivialShade, setGingivialShade] = useState(
     userOverrides.gingivialShade !== undefined ? userOverrides.gingivialShade : (extracted?.gingivialShade ?? ""),
   );
-  const [material, setMaterial] = useState(
-    userOverrides.material !== undefined ? userOverrides.material : (extracted?.material ?? ""),
-  );
-  const [caseType, setCaseType] = useState(
-    userOverrides.caseType !== undefined ? userOverrides.caseType : (extracted?.caseType ?? ""),
-  );
+  const [material, setMaterial] = useState(initialMaterial);
+  const [caseType, setCaseType] = useState(initialCaseType);
   const [arch, setArch] = useState<ArchSelection | null>(
     userOverrides.arch !== undefined ? userOverrides.arch : (extracted?.arch ?? null),
   );
   const [toothIndices, setToothIndices] = useState(
     userOverrides.toothIndices !== undefined ? userOverrides.toothIndices : (extracted?.toothIndices ?? ""),
   );
-  const [assignmentRoles, setAssignmentRoles] = useState<Record<string, "Crown" | "Pontic">>(
+  const [assignmentRoles, setAssignmentRoles] = useState<Record<string, "Crown" | "Pontic" | "Veneer">>(
     userOverrides.assignmentRoles ?? Object.fromEntries(readExplicitAiToothAssignments(extracted?.toothAssignments).map((unit) => [unit.toothNumber, unit.restorationType as "Crown" | "Pontic"])),
   );
   const [assignmentValues, setAssignmentValues] = useState<Record<string, ToothAssignmentValues>>({
-    ...(userOverrides.assignmentValues ?? Object.fromEntries(readExplicitAiToothAssignments(extracted?.toothAssignments).map((unit) => [unit.toothNumber, {
-      material: unit.material ?? undefined, shade: unit.shade ?? undefined,
-    }]))),
+    ...(userOverrides.assignmentValues ?? extractedAssignmentValues),
   });
   const [draftConnectors, setDraftConnectors] = useState(userOverrides.bridgeConnectors ?? "");
   useEffect(() => {
@@ -339,10 +403,69 @@ export default function AiReaderExtractedScreen() {
   function captureAssignmentUndo() {
     setAssignmentUndo({ roles: assignmentRoles, values: assignmentValues, teeth: toothIndices, connectors: draftConnectors, material, shade });
   }
+  function changeCaseType(value: string) {
+    const currentOverrides = getAiReaderSession().userOverrides;
+    const wasDiagnosticWaxUp = isDiagnosticWaxUp(caseType);
+    setCaseType(value);
+
+    if (isDiagnosticWaxUp(value)) {
+      if (wasDiagnosticWaxUp) {
+        saveOverride("caseType", value);
+        return;
+      }
+      const nextValues = { ...assignmentValues };
+      for (const [tooth, role] of Object.entries(assignmentRoles)) {
+        if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+        nextValues[tooth] = {
+          ...nextValues[tooth],
+          material: DIAGNOSTIC_WAX_UP_LABEL,
+          shade: DIAGNOSTIC_WAX_UP_LABEL,
+          restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+        };
+      }
+      setMaterial(DIAGNOSTIC_WAX_UP_LABEL);
+      setShade(DIAGNOSTIC_WAX_UP_LABEL);
+      setAssignmentValues(nextValues);
+      setAiReaderSession({
+        userOverrides: {
+          ...currentOverrides,
+          caseType: value,
+          material: DIAGNOSTIC_WAX_UP_LABEL,
+          shade: DIAGNOSTIC_WAX_UP_LABEL,
+          assignmentValues: nextValues,
+          assignmentOverridesManual: true,
+        },
+      });
+      return;
+    }
+
+    if (wasDiagnosticWaxUp) {
+      const nextValues = { ...assignmentValues };
+      let assignmentsChanged = false;
+      for (const [tooth, assignment] of Object.entries(nextValues)) {
+        if (assignment?.restorationSubtype !== DIAGNOSTIC_WAX_UP_SUBTYPE) continue;
+        nextValues[tooth] = { ...assignment, restorationSubtype: undefined };
+        assignmentsChanged = true;
+      }
+      if (assignmentsChanged) setAssignmentValues(nextValues);
+      setAiReaderSession({
+        userOverrides: {
+          ...currentOverrides,
+          caseType: value,
+          ...(assignmentsChanged
+            ? { assignmentValues: nextValues, assignmentOverridesManual: true }
+            : {}),
+        },
+      });
+      return;
+    }
+
+    saveOverride("caseType", value);
+  }
   const toothIds = useMemo(() => expandToothIdentifiers(toothIndices), [toothIndices]);
   const requiresExplicitToothRoles =
     normalizeCaseHierarchy({ caseType, material }).hierarchy.caseType === "restorative";
-  function setToothRole(toothId: string, role: "Crown" | "Pontic") {
+  function setToothRole(toothId: string, role: "Crown" | "Pontic" | "Veneer") {
     captureAssignmentUndo();
     const next = { ...assignmentRoles, [toothId]: role };
     setAssignmentRoles(next);
@@ -482,7 +605,7 @@ export default function AiReaderExtractedScreen() {
         const assignedMaterial = assignmentValues[r.toothNumber]?.material ?? material ?? r.material;
         const hasValidAssignment =
           requiresExplicitToothRoles &&
-          /^(Crown|Pontic)$/.test(role ?? "") &&
+          /^(Crown|Pontic|Veneer)$/.test(role ?? "") &&
           !!assignedMaterial?.trim();
         const rowMaterial = hasValidAssignment ? assignedMaterial : r.material;
         const rowShade = hasValidAssignment
@@ -526,6 +649,19 @@ export default function AiReaderExtractedScreen() {
     };
     return values;
   }
+  function applyClinicalAssignmentDefaults(patch: { material?: string; shade?: string }) {
+    const values = applyToothAssignmentDefaults(currentAssignmentDefaults(), patch);
+    if (isDiagnosticWaxUp(caseType)) {
+      for (const [tooth, role] of Object.entries(assignmentRoles)) {
+        if (!/^(Crown|Pontic|Veneer)$/.test(role)) continue;
+        values[tooth] = {
+          ...values[tooth],
+          restorationSubtype: DIAGNOSTIC_WAX_UP_SUBTYPE,
+        };
+      }
+    }
+    return values;
+  }
   const draftConnectorText = serializeConnectorState(draftConnectorState);
   const draftConnectorValidation = validateToothConnectors(draftConnectorText, previewRestorations);
   const draftAssignmentSummary = toothAssignmentSummary(previewRestorations, draftConnectorText);
@@ -546,7 +682,7 @@ export default function AiReaderExtractedScreen() {
     const values = { ...assignmentValues };
     const teeth = new Set(toothIds);
     if (payload.kind === "add_crown" || payload.kind === "add_pontic") {
-      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : "Crown";
+      roles[payload.toothId] = payload.kind === "add_pontic" ? "Pontic" : payload.restorationType === "Veneer" ? "Veneer" : "Crown";
       values[payload.toothId] = { material: payload.material, shade: payload.shade ?? "", restorationSubtype: payload.restorationSubtype };
       teeth.add(payload.toothId);
     } else if (payload.kind === "change_role") roles[payload.toothId] = payload.role;
@@ -833,57 +969,6 @@ export default function AiReaderExtractedScreen() {
   useEffect(() => {
     if (!caseNumberEdited && nextNumberQuery.data) setCaseNumber(nextNumberQuery.data);
   }, [nextNumberQuery.data, caseNumberEdited]);
-
-  // Apply due-date cap whenever the selected lab changes (or on first mount
-  // after labs resolve). If the AI extracted a date beyond the turnaround
-  // and the cap is on (default), snap it down and show a note. If the date
-  // is earlier than the default turnaround, keep it and show an early-delivery note.
-  useEffect(() => {
-    if (!selectedLabId) return;
-    const lab = labs.find((m) => m.organizationId === selectedLabId)?.organization;
-    const days = lab?.defaultCaseDueDays as number | null | undefined;
-    const cap = (lab as any)?.capCaseDueToDefault as boolean | null | undefined;
-    // cap === false means the lab has explicitly opted out — leave the date alone.
-    if (cap === false || !days || !dueDate) return;
-    const maxDate = new Date();
-    maxDate.setDate(maxDate.getDate() + days);
-    const maxStr = maxDate.toISOString().slice(0, 10);
-    if (dueDate > maxStr) {
-      setDueDate(maxStr);
-      setDueDateCapped(true);
-      setDueDateEarly(false);
-    } else {
-      // Date is within the turnaround — flag it as an early request.
-      const todayStr = new Date().toISOString().slice(0, 10);
-      setDueDateEarly(dueDate >= todayStr && dueDate < maxStr);
-    }
-  // Run whenever selected lab changes; intentionally omit dueDate so we
-  // don't re-fire on every keystroke.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedLabId, labs]);
-
-  function applyExtractedDueDateCap(raw: string): string {
-    if (!raw) { setDueDateCapped(false); setDueDateEarly(false); return raw; }
-    const lab = labs.find((m) => m.organizationId === selectedLabId)?.organization;
-    const days = lab?.defaultCaseDueDays as number | null | undefined;
-    const cap = (lab as any)?.capCaseDueToDefault as boolean | null | undefined;
-    // cap !== false: treat null/undefined as cap-enabled (default behaviour).
-    if (cap !== false && days) {
-      const maxDate = new Date();
-      maxDate.setDate(maxDate.getDate() + days);
-      const maxStr = maxDate.toISOString().slice(0, 10);
-      if (raw > maxStr) {
-        setDueDateCapped(true);
-        setDueDateEarly(false);
-        return maxStr;
-      }
-      // Date is within the default — flag early delivery.
-      const todayStr = new Date().toISOString().slice(0, 10);
-      setDueDateEarly(raw >= todayStr && raw < maxStr);
-    }
-    setDueDateCapped(false);
-    return raw;
-  }
 
   // ── User override persistence ─────────────────────────────────────────────
   // Saves a field the user explicitly edited so that a re-scan cannot silently
@@ -1595,7 +1680,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       patientLastName: patientLast.trim(),
       doctorName: effectiveDoctorName,
       priority,
-      ...(dueDate.trim() ? { dueDate: dueDate.trim() } : {}),
+      ...(receivedAt ? { receivedAt } : {}),
+      ...(reviewedLabDueDate ? { dueDate: reviewedLabDueDate } : {}),
+      ...(eligibleRxDueDate ? { prescriptionDueDate: eligibleRxDueDate } : {}),
+      aiIntakeReviewedDates: true,
       ...(notes.trim() ? { rxNotes: notes } : {}),
       ...(shade?.trim() ? { shade: shade.trim() } : {}),
       ...(gingivialShade?.trim() ? { gingivialShade: gingivialShade.trim() } : {}),
@@ -1676,7 +1764,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         labName,
         doctorName: effectiveDoctorName || null,
         patientName: `${patientFirst.trim()} ${patientLast.trim()}`.trim() || null,
-        dueDate: dueDate.trim() || null,
+        dueDate: reviewedLabDueDate || null,
         gingivialShade: gingivialShade.trim() || null,
       });
       setUploadProgress(0.3);
@@ -2157,24 +2245,70 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
           )}
         </Section>
 
-        {/* Due date + priority */}
-        <Section label="Due Date" styles={styles} colors={colors}>
+        {/* Reviewed dates */}
+        <Section label="Intake dates" styles={styles} colors={colors}>
+          <Text style={{ fontSize: 12, fontWeight: "600", color: colors.textSecondary }}>
+            Received date
+          </Text>
           <DateField
-            value={dueDate}
+            value={receivedAt}
             allowTyping
-            onChange={(v) => { const capped = applyExtractedDueDateCap(v); setDueDate(capped); saveOverride("dueDate", capped); }}
+            title="Received date"
+            testID="ai-reader-received-date"
+            onChange={(value) => {
+              setReceivedAt(value);
+              saveOverride("receivedAt", value);
+            }}
             placeholder="YYYY-MM-DD"
           />
-          {dueDateCapped && (
-            <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
-              Capped to lab's {(labs.find((m) => m.organizationId === selectedLabId)?.organization?.defaultCaseDueDays as number | null | undefined) ?? "?"}‑day turnaround
+          <Text style={{ fontSize: 12, fontWeight: "600", color: colors.textSecondary, marginTop: Spacing.sm }}>
+            Lab due date
+          </Text>
+          <DateField
+            value={reviewedLabDueDate}
+            allowTyping
+            title="Lab due date"
+            testID="ai-reader-lab-due-date"
+            onChange={(value) => {
+              setLabDueDate(value);
+              setLabDueDateEdited(true);
+              saveOverride("labDueDate", value);
+              saveOverride("labDueDateEdited", true);
+            }}
+            placeholder="YYYY-MM-DD"
+          />
+          {turnaroundDays == null ? (
+            <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 4 }}>
+              No lab turnaround is configured. Enter the Lab due date manually.
             </Text>
-          )}
-          {dueDateEarly && !dueDateCapped && (
-            <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
-              Rx requests delivery before standard turnaround
-            </Text>
-          )}
+          ) : null}
+          {showRxDueDateField ? (
+            <>
+              <Text style={{ fontSize: 12, fontWeight: "600", color: colors.textSecondary, marginTop: Spacing.sm }}>
+                Rx due date
+              </Text>
+              <DateField
+                value={eligibleRxDueDate || rxDueDate}
+                allowTyping
+                title="Rx due date"
+                testID="ai-reader-rx-due-date"
+                onChange={(value) => {
+                  setRxDueDate(value);
+                  saveOverride("rxDueDate", value);
+                }}
+                placeholder="YYYY-MM-DD"
+              />
+            </>
+          ) : null}
+          {turnaroundDays != null && eligibleRxDueDate ? (
+            <View style={[styles.warnBanner, { marginTop: Spacing.sm }]}>
+              <Ionicons name="alert-circle-outline" size={16} color={colors.warningStrong} />
+              <Text style={styles.warnText}>
+                The requested Rx date is within the lab’s {turnaroundDays}-day turnaround.
+                The Lab due date remains the lab schedule.
+              </Text>
+            </View>
+          ) : null}
         </Section>
 
         <Section label="Priority" styles={styles} colors={colors}>
@@ -2194,11 +2328,13 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         </Section>
 
         {/* Clinical details */}
-        <Section label="Case Type" styles={styles} colors={colors}>
+        <View>
+          <Text style={styles.clinicalFieldLabel}>Case Type</Text>
           <TextInput
             style={styles.input}
+            accessibilityLabel="Case Type"
             value={caseType}
-            onChangeText={(v) => { setCaseType(v); saveOverride("caseType", v); }}
+            onChangeText={changeCaseType}
             placeholder="Crown & Bridge, Removable…"
             placeholderTextColor={colors.textTertiary}
           />
@@ -2225,7 +2361,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               {!arch ? <Text style={styles.warnText}>Select an arch before previewing or creating this case.</Text> : null}
             </View>
           ) : null}
-        </Section>
+        </View>
 
         <Section label="Tooth Numbers" styles={styles} colors={colors}>
           <TextInput
@@ -2260,9 +2396,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               </Text>
               <ToothChart
                 readOnly={false}
-                selected={new Set(toothIds)}
+                selected={activeAssignmentTooth ? new Set([activeAssignmentTooth]) : undefined}
                 crownTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Crown"))}
                 ponticTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Pontic"))}
+                veneerTeeth={new Set(toothIds.filter((tooth) => assignmentRoles[tooth] === "Veneer"))}
                 connectedPairs={draftConnectorState.active}
                 connectorSuggestions={draftConnectorState.suggested}
                 connectorIssue={!draftConnectorValidation.valid ? draftConnectorValidation.errors.join(" ") : draftAssignmentSummary.unresolvedPontics.length ? `Review pontics ${draftAssignmentSummary.unresolvedPontics.join(", ")}` : null}
@@ -2331,13 +2468,14 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
 
         <View style={styles.row2Col}>
           <View style={styles.halfSection}>
-            <Text style={styles.sectionLabel}>Material</Text>
+            <Text style={styles.clinicalFieldLabel}>Case Material</Text>
             <TextInput
               style={styles.input}
+              accessibilityLabel="Case Material"
               value={material}
               onFocus={captureAssignmentUndo}
               onChangeText={(v) => { setMaterial(v);
-                const values = applyToothAssignmentDefaults(currentAssignmentDefaults(), { material: v });
+                const values = applyClinicalAssignmentDefaults({ material: v });
                 setAssignmentValues(values); setAiReaderSession({ userOverrides: { ...getAiReaderSession().userOverrides,
                   material: v, assignmentValues: values, assignmentOverridesManual: true } }); }}
               placeholder="Zirconia, E max…"
@@ -2345,13 +2483,14 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             />
           </View>
           <View style={styles.halfSection}>
-            <Text style={styles.sectionLabel}>Shade</Text>
+            <Text style={styles.clinicalFieldLabel}>Shade</Text>
             <TextInput
               style={styles.input}
+              accessibilityLabel="Shade"
               value={shade}
               onFocus={captureAssignmentUndo}
               onChangeText={(v) => { setShade(v);
-                const values = applyToothAssignmentDefaults(currentAssignmentDefaults(), { shade: v });
+                const values = applyClinicalAssignmentDefaults({ shade: v });
                 setAssignmentValues(values); setAiReaderSession({ userOverrides: { ...getAiReaderSession().userOverrides,
                   shade: v, assignmentValues: values, assignmentOverridesManual: true } }); }}
               placeholder="A2, B1…"
@@ -2478,6 +2617,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                 {isAdminForSelectedLab && editedLines !== null ? (
                   /* Admin: full-line editable table */
                   <>
+                    {!invoicePreviewLoading && !invoicePreviewError && editedLines.length === 0 &&
+                      (invoicePreview?.lineItems?.length ?? 0) === 0 && (
+                        <Text style={styles.invoiceMuted}>No billable line items were found in the prescription.</Text>
+                      )}
                     {editedLines.map((line) => {
                       const lineTotal = (Number(line.qty) || 0) * (Number(line.unitPrice) || 0);
                       return (
@@ -3476,6 +3619,12 @@ function makeStyles(c: ThemeColors) {
       marginBottom: Spacing.xs,
       textTransform: "uppercase",
       letterSpacing: 0.5,
+    },
+    clinicalFieldLabel: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: c.text,
+      marginBottom: Spacing.xs,
     },
 
     input: {

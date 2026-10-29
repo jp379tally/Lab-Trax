@@ -17,12 +17,16 @@ const localRequire = createRequire(__filename);
 
 export type ElectronMock = {
   app: {
+    commandLine?: { getSwitchValue: (name: string) => string };
+    setPath?: (name: string, value: string) => void;
     getPath: (name: string) => string;
     whenReady: () => Promise<void>;
     on: (event: string, fn: (...args: unknown[]) => void) => void;
     quit: () => void;
     getVersion: () => string;
     setName: (name: string) => void;
+    getLoginItemSettings?: () => { openAtLogin?: boolean; wasOpenedAtLogin?: boolean };
+    setLoginItemSettings?: (settings: { openAtLogin: boolean; openAsHidden?: boolean }) => void;
     dock?: { setIcon: (icon: unknown) => void };
   };
   safeStorage: {
@@ -40,6 +44,14 @@ export type ElectronMock = {
     new (...args: unknown[]): unknown;
     getAllWindows: () => unknown[];
   };
+  Tray?: new (image: unknown) => {
+    on: (event: string, listener: (...args: unknown[]) => void) => void;
+    setToolTip: (text: string) => void;
+    setContextMenu: (menu: unknown) => void;
+    destroy: () => void;
+  };
+  Menu?: { buildFromTemplate: (items: unknown[]) => unknown };
+  nativeImage?: { createFromPath: (imagePath: string) => unknown };
   protocol: {
     registerSchemesAsPrivileged: (...args: unknown[]) => void;
     handle: (...args: unknown[]) => void;
@@ -48,18 +60,30 @@ export type ElectronMock = {
   dialog: Record<string, unknown>;
   Notification: unknown;
   session: { fromPartition: (p: string) => unknown };
+  Tray?: new (image: unknown) => {
+    on: (event: string, listener: (...args: unknown[]) => void) => void;
+    setToolTip: (text: string) => void;
+    setContextMenu: (menu: unknown) => void;
+    destroy?: () => void;
+  };
+  Menu?: { buildFromTemplate: (items: unknown[]) => unknown };
+  nativeImage?: { createFromPath: (imagePath: string) => unknown };
 };
 
 export function installElectronMock(overrides: Partial<ElectronMock> = {}): ElectronMock {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const mock: ElectronMock = {
     app: {
+      commandLine: { getSwitchValue: () => "" },
+      setPath: () => {},
       getPath: () => "/tmp",
       whenReady: () => Promise.resolve(),
       on: () => {},
       quit: () => {},
       getVersion: () => "0.0.0-test",
       setName: () => {},
+      getLoginItemSettings: () => ({ openAtLogin: false, wasOpenedAtLogin: false }),
+      setLoginItemSettings: () => {},
       ...(overrides.app ?? {}),
     },
     safeStorage: {
@@ -112,6 +136,12 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
       } as unknown as ElectronMock["BrowserWindow"],
       { getAllWindows: () => [] as unknown[] },
     ),
+    Tray: class {
+      setToolTip() {}
+      setContextMenu() {}
+      on() {}
+    },
+    Menu: { buildFromTemplate: (template) => template },
     protocol: {
       registerSchemesAsPrivileged: () => {},
       handle: () => {},
@@ -120,6 +150,14 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
     net: { fetch: () => Promise.resolve(new Response("")) },
     dialog: {},
     Notification: function () {},
+    Tray: class {
+      on() {}
+      setToolTip() {}
+      setContextMenu() {}
+      destroy() {}
+    },
+    Menu: { buildFromTemplate: () => ({}) },
+    nativeImage: { createFromPath: () => ({}) },
     session: { fromPartition: () => ({}) },
     // Spread any remaining overrides (e.g. BrowserWindow) WITHOUT clobbering
     // the keys above that already deep-merge their own overrides. Spreading

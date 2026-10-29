@@ -12,6 +12,7 @@ import "@/index.css";
 
 const params = new URLSearchParams(window.location.search);
 const today = new Date();
+const nextBusinessDay = today.getDay() === 5 ? 3 : today.getDay() === 6 ? 2 : 1;
 const day = (offset: number) => {
   const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -28,7 +29,7 @@ const cases = Array.from({ length: 16 }, (_, i) => ({
   doctorName: `Dr. Example ${i % 3 + 1}`,
   status: ["received", "in_design", "qc"][i % 3],
   priority: i === 1 ? "rush" : "normal",
-  dueDate: i < 7 ? day(-1 - i) : i < 11 ? day(0) : i < 15 ? day(1) : null,
+  dueDate: i < 7 ? day(-1 - i) : i < 11 ? day(0) : i < 15 ? day(nextBusinessDay) : null,
   expectedDeliveryDate: null, dueTime: null, currentLocationName: "Crown & Bridge",
   createdAt: today.toISOString(), updatedAt: today.toISOString(), receivedAt: day(0),
   restorationTypes: "crown", restorationMaterials: "zirconia", totalPrice: "100",
@@ -40,7 +41,11 @@ const organization = {
   type: "lab", accountNumber: "REFERENCE1", isActive: true,
 };
 const requests: string[] = [];
-Object.assign(window, { dashboardFixtureRequests: requests });
+const analysisBodies: Record<string, unknown>[] = [];
+Object.assign(window, {
+  dashboardFixtureRequests: requests,
+  dashboardFixtureAnalysisBodies: analysisBodies,
+});
 setBaseUrl(null);
 
 function json(data: unknown, envelope = true, status = 200) {
@@ -53,6 +58,20 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(raw, window.location.origin);
   const path = url.pathname.replace(/^.*\/api/, "");
   requests.push(`${init?.method ?? "GET"} ${path}`);
+  // Opt-in visual intake fixture. This never reaches a server/model or saves a
+  // case; every other mutation remains rejected below.
+  if (params.has("rx-review") && path === "/analyze-prescription" && init?.method === "POST") {
+    analysisBodies.push(JSON.parse(String(init.body ?? "{}")));
+    return json({
+      doctorName: "Dr. Example",
+      patientName: "Synthetic Review",
+      caseType: "crown",
+      toothIndices: "14",
+      shade: "A2",
+      material: "Zirconia",
+      confidence: 0.9,
+    });
+  }
   if (init?.method && init.method !== "GET") return json({ message: "Fixture is read-only" }, false, 403);
   if (params.has("profile-error") && path === "/auth/me") {
     return json({ message: "Fixture profile load failure" }, false, 500);
@@ -89,11 +108,20 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     case "/organizations": return json([organization]);
     case "/locations": return json([{ id: "reference-location", name: "Crown & Bridge", code: "CB", status: "received" }]);
     case "/invoices/reports/sales": return json({ totalSales: "1520.00", invoices: 7 });
+    case "/catalog/tree": return json({ categories: [] }, false);
+    case "/pricing/pre-create-items": return json({ catalogItems: [], items: [] });
+    case "/rx-doctor-practice-memory": return json({ match: null });
+    case "/doctors/resolve-name": return json({ matches: [] });
     case "/notifications":
     case "/vocabulary":
     case "/cases/doctor-names":
     case "/cases/doctor-directory": return json([]);
     case "/auth/lab-team": return json({ pendingJoinRequests: [] });
+    // The real Electron bridge starts schedule discovery; keep the synthetic
+    // staff session from scheduling any filesystem work.
+    case "/admin/backup/schedule": return json({
+      enabled: false, interval: null, unit: null, destination: null, path: null,
+    });
     case "/admin/backup/overdue-status": return json({
       stale: false, overdue: false, lastSuccessfulBackupAt: today.toISOString(),
     });

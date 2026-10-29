@@ -1,0 +1,17 @@
+{
+  "source": "attached_assets/0_OneDrive_1_10-22-2026_1792686657257.zip :: Screenshot (3).png",
+  "generator": "scripts/build-tooth-atlas-exocad.cjs",
+  "window": "40 display px (x3.75)",
+  "cell": 104,
+  "mirrored": {
+    "2": "15"
+  },
+  "roles": [
+    "unassigned",
+    "crown",
+    "pontic",
+    "veneer",
+    "missing"
+  ],
+  "note": "number glyph inpainted; role tints baked from luminance"
+}

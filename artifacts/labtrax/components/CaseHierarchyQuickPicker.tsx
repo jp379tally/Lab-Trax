@@ -7,13 +7,16 @@ import {
 } from "@workspace/case-taxonomy";
 import { useTheme } from "@/lib/theme-context";
 import { saveClinicalDetails, clinicalSaveMessage } from "@/lib/case-clinical-edit";
+import { caseHierarchyLabels, type SavedHierarchyValues } from "@/lib/case-hierarchy-display";
+import { CaseDetailSelect, CaseDetailOptions, caseDetailFieldStyles } from "@/components/case-detail/CaseDetailField";
+import { Spacing, Typography } from "@/constants/tokens";
 
 type Field = "type" | "subtype" | "material";
 type Selection = { ct: CaseType; st: string | null; mat: string | null };
 
 /** View-mode saves only. The full Lab Slip editor owns a separate draft. */
 export function CaseHierarchyQuickPicker({
-  caseId, hierarchy, catalog, arch, refresh, empty, mixed = false,
+  caseId, hierarchy, catalog, arch, refresh, empty, mixed = false, savedValues = {}, canEdit = true,
 }: {
   caseId: string;
   hierarchy: CaseHierarchy | null;
@@ -22,6 +25,8 @@ export function CaseHierarchyQuickPicker({
   refresh: () => Promise<void>;
   empty: boolean;
   mixed?: boolean;
+  savedValues?: SavedHierarchyValues;
+  canEdit?: boolean;
 }) {
   const { colors } = useTheme();
   const [open, setOpen] = useState<Field | null>(null);
@@ -30,14 +35,26 @@ export function CaseHierarchyQuickPicker({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState<Selection | null>(null);
-  const ct = hierarchy?.caseType ?? null;
-  const st = hierarchy?.subtype ?? (hierarchy?.customSubtypeId ? `custom:${hierarchy.customSubtypeId}` : null);
-  const mat = hierarchy?.materialSubtype ?? (hierarchy?.customMaterialSubtypeId ? `custom:${hierarchy.customMaterialSubtypeId}` : null);
+  const serverIdentity = JSON.stringify([caseId, hierarchy, savedValues, empty, mixed]);
+  const [observedServer, setObservedServer] = useState(serverIdentity);
+  const [confirmed, setConfirmed] = useState<{
+    hierarchy: CaseHierarchy; values: SavedHierarchyValues; arch: typeof arch;
+  } | null>(null);
+  if (!saving && serverIdentity !== observedServer) {
+    setObservedServer(serverIdentity);
+    setConfirmed(null);
+  }
+  const currentHierarchy = confirmed?.hierarchy ?? hierarchy;
+  const currentMixed = confirmed ? false : mixed;
+  const labels = caseHierarchyLabels(currentHierarchy, confirmed?.values ?? savedValues, catalog, currentMixed);
+  const ct = currentHierarchy?.caseType ?? null;
+  const st = currentHierarchy?.subtype ?? (currentHierarchy?.customSubtypeId ? `custom:${currentHierarchy.customSubtypeId}` : null);
+  const mat = currentHierarchy?.materialSubtype ?? (currentHierarchy?.customMaterialSubtypeId ? `custom:${currentHierarchy.customMaterialSubtypeId}` : null);
   const ctNode = catalog?.caseTypes.find((node) => node.key === ct);
   const stNode = ctNode?.subtypes.find((node) => node.key === st);
 
-  async function save(selection: Selection, selectedArch = arch) {
-    if (inFlight.current) return;
+  async function save(selection: Selection, selectedArch = confirmed?.arch ?? arch) {
+    if (!canEdit || inFlight.current) return;
     if ((selection.ct === "removable" || selection.ct === "ortho") && !selectedArch) {
       setPending(selection);
       setOpen(null);
@@ -52,21 +69,26 @@ export function CaseHierarchyQuickPicker({
     const customSubtypeId = selection.st ? parseCustomToken(selection.st) : null;
     const customMaterialSubtypeId = selection.mat ? parseCustomToken(selection.mat) : null;
     try {
-      const outcome = await saveClinicalDetails(caseId, {
+      const nextHierarchy: CaseHierarchy = {
+        caseType: selection.ct,
+        subtype: customSubtypeId ? null : selection.st as CaseSubtype | null,
+        materialSubtype: customMaterialSubtypeId ? null : selection.mat as MaterialSubtype | null,
+        ...(customSubtypeId ? { customSubtypeId } : {}),
+        ...(customMaterialSubtypeId ? { customMaterialSubtypeId } : {}),
+      };
+      const values = {
         restorationType: subtype?.label ?? ({ restorative: "Crown", removable: "Full Denture", ortho: "Night Guard" }[selection.ct]),
-        restorationSubtype: selection.st ? encodeRestorationSubtype({
-          caseType: selection.ct,
-          subtype: customSubtypeId ? null : selection.st as CaseSubtype,
-          materialSubtype: customMaterialSubtypeId ? null : selection.mat as MaterialSubtype | null,
-          ...(customSubtypeId ? { customSubtypeId } : {}),
-          ...(customMaterialSubtypeId ? { customMaterialSubtypeId } : {}),
-        }) : null,
+        restorationSubtype: selection.st ? encodeRestorationSubtype(nextHierarchy) : null,
         material: material?.label ?? null,
-        ...(empty ? { toothNumbers: [] } : {}),
+      };
+      const outcome = await saveClinicalDetails(caseId, {
+        ...values,
+        ...(empty && !confirmed ? { toothNumbers: [] } : {}),
         ...((selection.ct === "removable" || selection.ct === "ortho")
           ? { arch: selectedArch === "both" ? "upper_lower" : selectedArch as "upper" | "lower" }
           : {}),
       });
+      setConfirmed({ hierarchy: nextHierarchy, values, arch: selectedArch });
       setPending(null);
       setOpen(null);
       setNotice(clinicalSaveMessage(outcome));
@@ -82,53 +104,44 @@ export function CaseHierarchyQuickPicker({
     }
   }
 
-  function field(label: string, key: Field, value: string, valueID: string, buttonID: string, options: Array<{ key: string; label: string }>, select: (key: string) => void) {
-    return <View style={{ gap: 6 }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-        <Text style={{ color: colors.textSecondary }}>{label}</Text>
-        <Pressable testID={buttonID} accessibilityRole="button" accessibilityLabel={`Change ${label}`}
-          disabled={saving || pending !== null} accessibilityState={{ disabled: saving || pending !== null }}
-          onPress={() => { if (!inFlight.current && !pending) setOpen(open === key ? null : key); }}
-          style={{ padding: 8, opacity: saving ? 0.6 : 1 }}>
-          <View style={{ flexDirection: "row", gap: 4 }}>
-            <Text testID={valueID} style={{ color: colors.tint }}>{value}</Text>
-            <Text style={{ color: colors.tint }}>▾</Text>
-          </View>
-        </Pressable>
-      </View>
-      {open === key && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {options.map((option) => <Pressable key={option.key} testID={`quick-${key}-${option.key || "none"}`}
-          accessibilityRole="button" accessibilityLabel={`${label}: ${option.label}`} disabled={saving}
-          onPress={() => { if (!inFlight.current) select(option.key); }}
-          style={{ padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6 }}>
-          <Text style={{ color: colors.text }}>{option.label}</Text>
-        </Pressable>)}
-        {key !== "type" && !catalog && <Text style={{ color: colors.textSecondary }}>Loading lab catalog…</Text>}
-      </View>}
+  function field(label: string, key: Field, value: string, valueID: string, buttonID: string, options: Array<{ key: string; label: string }>, selected: string | null, select: (key: string) => void) {
+    return <View style={{ width: "100%", gap: Spacing.xs }}>
+      <CaseDetailSelect label={label} valueLabel={value} valueTestID={valueID} testID={buttonID}
+        disabled={saving || pending !== null || options.length === 0}
+        expanded={open === key} busy={saving}
+        onPress={canEdit ? () => { if (!inFlight.current && !pending) setOpen(open === key ? null : key); } : undefined} />
+      {canEdit && open === key ? <CaseDetailOptions label={label} options={options}
+        selected={currentMixed ? null : selected} disabled={saving || pending !== null}
+        optionTestID={(value) => `quick-${key}-${value || "none"}`}
+        onSelect={(value) => {
+          if (inFlight.current) return;
+          setOpen(null);
+          if (!currentMixed && value === selected) return;
+          select(value);
+        }} /> : null}
     </View>;
   }
 
-  return <View style={{ gap: 8 }} testID="view-hierarchy-picker">
-    {field("Case Type", "type", mixed ? "Multiple" : ct ? CASE_TAXONOMY[ct].label : "—", "hierarchy-casetype-value", "hierarchy-edit-btn",
-      CASE_TYPES.map((key) => ({ key, label: CASE_TAXONOMY[key].label })), (key) => void save({ ct: key as CaseType, st: null, mat: null }))}
-    {ct ? field("Case Subtype", "subtype", mixed ? "Multiple" : stNode?.label ?? "—", "hierarchy-subtype-value", "hierarchy-edit-subtype-btn",
-      ctNode?.subtypes ?? [], (key) => void save({ ct, st: key, mat: null }))
-      : <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <Text style={{ color: colors.textSecondary }}>Case Subtype</Text><Text testID="hierarchy-subtype-value" style={{ color: colors.text }}>—</Text>
-        </View>}
-    {ct && stNode && stNode.materials.length > 0 ? field("Case Material", "material",
-      mixed ? "Multiple" : stNode.materials.find((node) => node.key === mat)?.label ?? "—", "hierarchy-material-value", "hierarchy-edit-material-btn",
-      [{ key: "", label: "None" }, ...stNode.materials], (key) => void save({ ct, st, mat: key || null }))
-      : <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <Text style={{ color: colors.textSecondary }}>Case Material</Text><Text testID="hierarchy-material-value" style={{ color: colors.text }}>{mixed ? "Multiple" : "—"}</Text>
-        </View>}
+  return <View style={{ width: "100%", minWidth: 0, gap: Spacing.lg }} testID="view-hierarchy-picker">
+    {field("Restoration Type", "type", labels.type, "hierarchy-casetype-value", "hierarchy-edit-btn",
+      CASE_TYPES.map((key) => ({ key, label: CASE_TAXONOMY[key].label })), ct, (key) => void save({ ct: key as CaseType, st: null, mat: null }))}
+    {field("Restoration Sub Type", "subtype", labels.subtype, "hierarchy-subtype-value", "hierarchy-edit-subtype-btn",
+      ctNode?.subtypes ?? [], st, (key) => { if (ct) void save({ ct, st: key, mat: null }); })}
+    {field("Material", "material", labels.material, "hierarchy-material-value", "hierarchy-edit-material-btn",
+      stNode?.materials.length ? [{ key: "", label: "None" }, ...stNode.materials] : [], mat ?? (labels.material === "—" ? "" : null), (key) => { if (ct) void save({ ct, st, mat: key || null }); })}
+    {canEdit && !catalog ? <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+      Lab catalog options are unavailable. Saved values are shown.
+    </Text> : null}
     {pending && <View style={{ gap: 8 }}>
       <Text style={{ color: colors.textSecondary }}>Choose an arch to switch to {CASE_TAXONOMY[pending.ct].label}.</Text>
       {(["upper", "lower", "both"] as const).map((value) => <Pressable key={value} disabled={saving}
+        accessibilityRole="button" accessibilityLabel={`Arch: ${value === "both" ? "Upper + Lower" : value}`}
+        accessibilityState={{ disabled: saving }} style={[caseDetailFieldStyles.control, { borderColor: colors.border }]}
         testID={`quick-arch-${value}`} onPress={() => void save(pending, value)}>
         <Text style={{ color: colors.tint }}>{value === "both" ? "Upper + Lower" : value === "upper" ? "Upper" : "Lower"}</Text>
       </Pressable>)}
-      <Pressable disabled={saving} onPress={() => setPending(null)}><Text style={{ color: colors.tint }}>Cancel</Text></Pressable>
+      <Pressable testID="quick-arch-cancel" accessibilityRole="button" disabled={saving}
+        style={caseDetailFieldStyles.option} onPress={() => setPending(null)}><Text style={{ color: colors.tint }}>Cancel</Text></Pressable>
     </View>}
     {saving && <ActivityIndicator accessibilityLabel="Saving case hierarchy" color={colors.tint} />}
     {notice && <Text accessibilityRole="text" style={{ color: colors.textSecondary }}>{notice}</Text>}

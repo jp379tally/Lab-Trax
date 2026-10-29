@@ -16,10 +16,12 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AdmZip from "adm-zip";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { requireIsolatedRestoreTest } from "../lib/restore-test-isolation.js";
 
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
@@ -61,6 +63,11 @@ const fake = vi.hoisted(() => ({
     { id: string; name: string; size: number; createdDateTime: string; webUrl: string | null }
   >(),
   archiveBytes: new Map<string, Buffer>(),
+  // Incremental baseline objects live in separate Graph folders from archives.
+  protectionObjects: new Map<string, {
+    id: string; name: string; size: number; createdDateTime: string;
+    webUrl: null; driveId: string; contentTag: string; bytes: Buffer;
+  }>(),
   mediaObjects: new Map<string, Buffer>(),
   privateObjects: new Map<string, Buffer>(),
   restoredObjects: new Map<string, Buffer>(),
@@ -70,6 +77,28 @@ const fake = vi.hoisted(() => ({
   mediaCopyStarted: null as null | (() => void),
   mediaCopyGate: null as null | Promise<void>,
 }));
+
+// These bytes and the signature attestation are synthetic. They exercise the
+// archive's identity contract, not native signing or a deployed production pair.
+const SYNTHETIC_SOURCE_REVISION = "c".repeat(40);
+const SYNTHETIC_INSTALLER = Buffer.from("synthetic signed-installer fixture");
+const SYNTHETIC_RELEASE_IDENTITY = {
+  schemaVersion: 1,
+  version: "0.0.0-test",
+  sourceRevision: SYNTHETIC_SOURCE_REVISION,
+  signatureVerification: "verified-installer",
+  artifact: {
+    fileName: "LabTrax-Setup.exe",
+    size: SYNTHETIC_INSTALLER.length,
+    sha256: createHash("sha256").update(SYNTHETIC_INSTALLER).digest("hex"),
+  },
+};
+
+function seedSyntheticReleaseIdentity() {
+  fake.privateObjects.set("desktop-installer/LabTrax-Setup.exe", SYNTHETIC_INSTALLER);
+  fake.privateObjects.set("desktop-installer/release-identity.json",
+    Buffer.from(JSON.stringify(SYNTHETIC_RELEASE_IDENTITY)));
+}
 
 vi.mock("../lib/case-media-object-storage.js", () => ({
   caseMediaObjectStorageAvailable: () => true,
@@ -104,7 +133,18 @@ vi.mock("../lib/case-media-object-storage.js", () => ({
       relativeName, size: bytes.length, generation: "1", modifiedAt: "2000-01-01T00:00:00Z",
       metadata: { contentType: "application/octet-stream", metadata: { visibility: "private" } },
       copyTo: async (target: string) => { await fs.writeFile(target, bytes); },
+      openStream: () => Readable.from([bytes]),
     }));
+  }),
+  openPrivateBackupObject: vi.fn(async (name: string) => {
+    const bytes = fake.restoredObjects.get(name);
+    if (!bytes) return null;
+    return {
+      relativeName: name, size: bytes.length, generation: "1",
+      modifiedAt: "2000-01-01T00:00:00Z",
+      openStream: () => Readable.from([bytes]),
+      copyTo: async (target: string) => { await writeFile(target, bytes); },
+    };
   }),
   restorePrivateBackupObject: vi.fn(async (name: string, bytes: Buffer) => {
     fake.restoredObjects.set(name, bytes);
@@ -121,6 +161,34 @@ vi.mock("../lib/onedrive.js", async (importOriginal) => {
   return {
     ...actual,
     isOneDriveConnectorAvailable: () => true,
+    uploadBackupToOneDrive: vi.fn(async (bytes: Buffer, name: string,
+      options: { folder?: string; signal?: AbortSignal } = {}) => {
+      options.signal?.throwIfAborted();
+      if (!options.folder?.includes("/production-content-v1/")) {
+        throw new Error("Unexpected synthetic protection upload namespace");
+      }
+      const key = `${options.folder}\0${name}`;
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const item = { id: createHash("sha256").update(key).digest("hex"), name,
+        size: bytes.length, createdDateTime: new Date().toISOString(), webUrl: null,
+        driveId: "synthetic-protection-drive", contentTag: digest, bytes: Buffer.from(bytes) };
+      fake.protectionObjects.set(key, item);
+      return { itemId: item.id, fileName: name, size: item.size, webUrl: null, folder: options.folder };
+    }),
+    downloadFileFromOneDrive: vi.fn(async (name: string, size: number, folder?: string,
+      itemId?: string, signal?: AbortSignal) => {
+      signal?.throwIfAborted();
+      const item = fake.protectionObjects.get(`${folder}\0${name}`);
+      if (!item || item.id !== itemId || item.size !== size) {
+        throw new Error("Synthetic protection download identity mismatch");
+      }
+      return Readable.from([Buffer.from(item.bytes)]);
+    }),
+    deleteOneDriveBackupFile: vi.fn(async (itemId: string) => {
+      const entry = [...fake.protectionObjects].find(([, item]) => item.id === itemId);
+      if (!entry) throw new Error("Unexpected synthetic protection deletion");
+      fake.protectionObjects.delete(entry[0]);
+    }),
     uploadBackupSourceToOneDrive: vi.fn(
       async (source: { size: number; readChunk(offset: number, length: number): Promise<Buffer> },
         fileName: string, options: { signal?: AbortSignal } = {}) => {
@@ -155,10 +223,17 @@ vi.mock("../lib/onedrive.js", async (importOriginal) => {
     ),
     // Verification reads the archive back by the identity the upload returned.
     getOneDriveFileByName: vi.fn(async (name: string, _folder?: string, itemId?: string) => {
+      if (_folder?.includes("/production-content-v1/")) {
+        const item = fake.protectionObjects.get(`${_folder}\0${name}`);
+        return item && (!itemId || item.id === itemId) ? item : null;
+      }
       if (itemId) return fake.stored.get(itemId) ?? null;
       return [...fake.stored.values()].find((f) => f.name === name) ?? null;
     }),
-    listOneDriveBackupFiles: vi.fn(async () => [...fake.stored.values()]),
+    listOneDriveBackupFiles: vi.fn(async (folder?: string) =>
+      folder?.includes("/production-content-v1/")
+        ? [...fake.protectionObjects].filter(([key]) => key.startsWith(`${folder}\0`)).map(([, item]) => item)
+        : [...fake.stored.values()]),
     pruneOneDriveBackups: vi.fn(async () => []),
   };
 });
@@ -197,6 +272,7 @@ async function assertLargeMediaRoundtrip(
     ];
     const recoveryBytes = Buffer.from("synthetic private historical recovery evidence\n");
     for (const name of recoveryClasses) fake.privateObjects.set(name, recoveryBytes);
+    seedSyntheticReleaseIdentity();
     await mkdir(path.join(uploadsRoot, "profile-photos"), { recursive: true });
     await writeFile(path.join(uploadsRoot, "profile-photos", "probe.jpg"), recoveryBytes);
     await dbMod.pool.query("CREATE TABLE public.backup_all_table_probe (id integer PRIMARY KEY, note text)");
@@ -247,8 +323,12 @@ async function assertLargeMediaRoundtrip(
       );
       for (const archive of archives) {
         const recovery = JSON.parse(archive.getEntry("complete-recovery.json")!.getData().toString());
-        expect(recovery.coverageVersion).toBe(1);
+        expect(recovery.coverageVersion).toBe(2);
         expect(recovery.sourceEnvironment).toBe("production");
+        expect(recovery.sourceRevision).toBe(SYNTHETIC_SOURCE_REVISION);
+        expect(recovery.backupScope).toBe("production-data");
+        expect(recovery.releaseIdentity).toBeUndefined();
+        expect(archive.getEntries().some(entry => entry.entryName.startsWith("private-objects/desktop-installer/"))).toBe(false);
         expect(recovery.tables.find((table: { name: string }) => table.name === "backup_all_table_probe")?.rows).toBe(1);
         expect(archive.getEntry("local-uploads/profile-photos/probe.jpg")!.getData().equals(recoveryBytes)).toBe(true);
         for (const name of recoveryClasses) {
@@ -334,6 +414,7 @@ maybe("off-site backup job (the production timer)", () => {
   let origMinBytes: string | undefined;
   let origDeployment: string | undefined;
   let origPrivateDir: string | undefined;
+  let syntheticApiIdentityPath: string | undefined;
 
   async function writeSetting(key: string, value: string | null): Promise<void> {
     const { db, systemSettings } = dbMod as any;
@@ -370,6 +451,15 @@ maybe("off-site backup job (the production timer)", () => {
   }
 
   beforeAll(async () => {
+    requireIsolatedRestoreTest();
+    const identityPath = fileURLToPath(new URL("../lib/build-identity.json", import.meta.url));
+    const relativeIdentityPath = path.relative(path.resolve(process.env.LABTRAX_ISOLATED_RESTORE_ROOT!), identityPath);
+    if (!relativeIdentityPath || relativeIdentityPath.startsWith("..") || path.isAbsolute(relativeIdentityPath)) {
+      throw new Error("Synthetic API build identity must stay inside the disposable restore source copy.");
+    }
+    // wx refuses to overwrite any real identity copied into this test tree.
+    await writeFile(identityPath, JSON.stringify({ sourceRevision: SYNTHETIC_SOURCE_REVISION }), { flag: "wx" });
+    syntheticApiIdentityPath = identityPath;
     origPrivateDir = process.env.PRIVATE_OBJECT_DIR;
     process.env.PRIVATE_OBJECT_DIR = "/synthetic-test-bucket/isolated";
     process.env["JWT_SECRET"] = process.env["JWT_SECRET"] ?? "labtrax-test-secret-offsite-job";
@@ -414,6 +504,10 @@ maybe("off-site backup job (the production timer)", () => {
     await writeSetting(backupMod.SETTING_BACKUP_SCHEDULE_ENABLED, "false");
     await writeSetting(backupMod.SETTING_BACKUP_FULL_ARCHIVE_INTERVAL_MINUTES, "60");
   }, 300000);
+
+  afterAll(async () => {
+    if (syntheticApiIdentityPath) await rm(syntheticApiIdentityPath, { force: true });
+  });
 
   afterAll(async () => {
     if (!dbMod) return;
@@ -489,7 +583,7 @@ maybe("off-site backup job (the production timer)", () => {
     expect(Date.now() - new Date(lastFullAt!).getTime()).toBeGreaterThan(60 * 60_000);
   }, 300000);
 
-  it("stages durable media after a restart and refuses a full archive with a missing reference", async () => {
+  it("manual full-media backups preserve durable media and report partial coverage independently of database protection", async () => {
     const originalDeployment = process.env["REPLIT_DEPLOYMENT"];
     const uploadsRoot = await mkdtemp(path.join(os.tmpdir(), "offsite-media-test-"));
     const caseMediaDir = path.join(uploadsRoot, "case-media");
@@ -507,8 +601,13 @@ maybe("off-site backup job (the production timer)", () => {
     fake.failMediaCopy = false;
     fake.mediaObjects.clear();
     fake.mediaObjects.set(durableFileName, Buffer.from("durable-object-copy"));
+    seedSyntheticReleaseIdentity();
     fake.uploads.length = 0;
     fake.archiveBytes.clear();
+
+    const manualFull = () => backupMod.runBackup("scheduler:offsite", "onedrive", undefined, {
+      archiveKind: "full",
+    }).catch(() => undefined);
 
     try {
       await db.insert(labCases).values({
@@ -522,7 +621,7 @@ maybe("off-site backup job (the production timer)", () => {
         backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT,
         new Date(Date.now() - 61 * 60_000).toISOString(),
       );
-      await backupMod.fireOffsiteBackup("interval");
+      await manualFull();
 
       expect(fake.uploads).toHaveLength(1);
       const run = await latestOffsiteRun();
@@ -534,6 +633,14 @@ maybe("off-site backup job (the production timer)", () => {
       expect(encrypted).toBeDefined();
       const zip = new AdmZip(backupMod.decryptBuffer(encrypted!));
       const manifest = JSON.parse(zip.getEntry("manifest.json")!.getData().toString("utf8"));
+      const recovery = JSON.parse(zip.readAsText("complete-recovery.json"));
+      expect(recovery.sourceRevision).toBe(SYNTHETIC_SOURCE_REVISION);
+      expect(recovery.backupScope).toBe("production-data");
+      expect(recovery.releaseIdentity).toBeUndefined();
+      expect(zip.getEntries().some(entry => entry.entryName.startsWith("private-objects/desktop-installer/"))).toBe(false);
+      expect(fake.protectionObjects.size).toBeGreaterThan(0);
+      const { getDatabaseProtectionStatus } = await import("../lib/database-protection-job.js");
+      expect((await getDatabaseProtectionStatus(undefined, "onedrive")).state).toBe("verified");
       expect(manifest.mediaFileCount).toBe(1);
       expect(manifest.mediaBytes).toBe(Buffer.byteLength("durable-object-copy"));
       expect(zip.getEntry(`media/${durableFileName}`)!.getData().toString()).toBe(
@@ -553,7 +660,7 @@ maybe("off-site backup job (the production timer)", () => {
       );
       fake.uploads.length = 0;
       fake.archiveBytes.clear();
-      await backupMod.fireOffsiteBackup("interval");
+      await manualFull();
       expect(fake.uploads).toHaveLength(1);
       const unionRun = await latestOffsiteRun();
       expect(unionRun.status).toBe("success");
@@ -568,8 +675,8 @@ maybe("off-site backup job (the production timer)", () => {
         "legacy-local-copy",
       );
 
-      // A non-empty staging directory is not enough: every live DB reference
-      // must be present before the archive can be marked successful.
+      // Save readable originals and all database rows, but never advance the
+      // complete-recovery clock when an original is unavailable.
       await db.insert(labCases).values({
         id: missingCaseId,
         ownerId: missingCaseId,
@@ -581,26 +688,38 @@ maybe("off-site backup job (the production timer)", () => {
       await writeSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT, missingReferenceFullAt);
       fake.uploads.length = 0;
       fake.archiveBytes.clear();
-      await backupMod.fireOffsiteBackup("interval");
-      expect(fake.uploads).toHaveLength(0);
-      const failedRun = await latestOffsiteRun();
-      expect(failedRun.status).toBe("error");
-      // The refusal is recorded against the phase where the capture stopped.
-      expect(failedRun.error).toMatch(/^Backup failed during case-media inventory and reference validation after [\d.]+s: /);
-      expect(failedRun.error).toContain("1 required file references have no readable recovery source");
-      expect(failedRun.error).toContain("Missing classes: case-media");
+      await manualFull();
+      expect(fake.uploads).toHaveLength(1);
+      const partialRun = await latestOffsiteRun();
+      expect(partialRun.status).toBe("success");
+      expect(partialRun.archiveKind).toBe("partial-production");
+      expect(partialRun.partialFailure).toBe(true);
+      expect(partialRun.warnings).toMatch(/not a complete recovery point/i);
+      expect(partialRun.error).toBeNull();
+      const partialZip = new AdmZip(backupMod.decryptBuffer(
+        fake.archiveBytes.get(fake.uploads[0]!.fileName)!,
+      ));
+      expect(JSON.parse(partialZip.readAsText("missing-files.json"))).toMatchObject({
+        missingFileCount: 1, missingReferences: [`case-media/${missingFileName}`],
+      });
+      expect(partialZip.readFile(`media/${durableFileName}`)?.toString()).toBe("durable-object-copy");
+      expect(partialZip.readFile(`media/${localFileName}`)?.toString()).toBe("legacy-local-copy");
+      expect(await db.select().from(labCases).where(eq(labCases.id, missingCaseId))).toHaveLength(1);
       expect(await readSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT)).toBe(
         missingReferenceFullAt,
       );
 
       fake.failMediaCopy = true;
+      fake.uploads.length = 0;
+      fake.archiveBytes.clear();
       const storageFailureFullAt = new Date(Date.now() - 61 * 60_000).toISOString();
       await writeSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT, storageFailureFullAt);
-      await backupMod.fireOffsiteBackup("interval");
+      await manualFull();
       expect(fake.uploads).toHaveLength(0);
       const storageFailureRun = await latestOffsiteRun();
       expect(storageFailureRun.status).toBe("error");
-      expect(storageFailureRun.error).toContain("test App Storage read failure");
+      expect(storageFailureRun.error).toMatch(/backup did not complete/i);
+      expect(storageFailureRun.error).not.toContain("test App Storage read failure");
       expect(await readSetting(backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT)).toBe(
         storageFailureFullAt,
       );
@@ -619,7 +738,7 @@ maybe("off-site backup job (the production timer)", () => {
     }
   }, 300000);
 
-  it("records a missed complete recovery point instead of a degraded fallback when a full archive holds the shared slot", async () => {
+  it("records skipped/busy database protection without disturbing an existing legacy full-media job", async () => {
     const originalDeployment = process.env["REPLIT_DEPLOYMENT"];
     const uploadsRoot = await mkdtemp(path.join(os.tmpdir(), "offsite-overlap-test-"));
     const lastFullSetting = backupMod.SETTING_BACKUP_LAST_FULL_ARCHIVE_AT;
@@ -643,9 +762,17 @@ maybe("off-site backup job (the production timer)", () => {
       signals.releaseMediaCopy = resolve;
     });
     let scheduledRun: Promise<unknown> | null = null;
+    const priorProtection = await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus(undefined, "onedrive");
 
     try {
-      process.env["REPLIT_DEPLOYMENT"] = "1";
+      // Claim the real shared slot through the legacy runner, then simulate
+      // the production database timer arriving while that older job remains.
+      process.env["REPLIT_DEPLOYMENT"] = "0";
+      backupMod.setScheduledBackupRunnerForTests(async () => {
+        signals.mediaCopyStarted();
+        await mediaCopyGate;
+        throw new Error("test full archive media staging timeout");
+      });
       backupMod._setUploadsRootForTests(uploadsRoot);
       fake.uploads.length = 0;
       fake.archiveBytes.clear();
@@ -664,16 +791,17 @@ maybe("off-site backup job (the production timer)", () => {
 
       scheduledRun = backupMod.fireScheduledBackup();
       await mediaCopyStarted;
+      process.env["REPLIT_DEPLOYMENT"] = "1";
 
-      // The ordinary schedule owns the shared slot for its slow, due full
-      // archive. The protection timer must still land and verify a DB archive.
+      // No competing dump or media job may start, and a skipped interval is
+      // not a failed or newly verified recovery point.
       await backupMod.fireOffsiteBackup("interval");
 
       expect(fake.uploads).toHaveLength(0);
-      const offsiteRun = await latestOffsiteRun();
-      expect(offsiteRun.status).toBe("error");
-      expect(offsiteRun.error).toContain("Missed required complete recovery point");
-      expect(offsiteRun.remoteItemId).toBeNull();
+      const protection = await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus();
+      expect(protection.state).toBe("skipped_busy");
+      expect(protection.lastVerifiedAt).toBe(priorProtection.lastVerifiedAt);
+      expect(protection.point).toEqual(priorProtection.point);
       expect(await readSetting(lastFullSetting)).toBe(fullArchiveAt);
 
       fake.failAfterBlockedMediaCopy = true;
@@ -682,13 +810,15 @@ maybe("off-site backup job (the production timer)", () => {
       scheduledRun = null;
 
       expect(fake.uploads).toHaveLength(0);
-      const scheduledFailure = await latestBackupRun("scheduler:interval");
-      expect(scheduledFailure.status).toBe("error");
-      expect(scheduledFailure.error).toContain("test full archive media staging timeout");
+      // This injected runner owns no archive/history writer. Its rejection
+      // releases the real slot without turning the skipped database interval
+      // into either a successful recovery point or a fabricated archive row.
+      expect((await (await import("../lib/database-protection-job")).getDatabaseProtectionStatus(undefined, "onedrive")).lastVerifiedAt).toBe(priorProtection.lastVerifiedAt);
       expect(await readSetting(lastFullSetting)).toBe(fullArchiveAt);
     } finally {
       signals.releaseMediaCopy();
       await scheduledRun?.catch(() => undefined);
+      backupMod.setScheduledBackupRunnerForTests(null);
       fake.blockMediaCopy = false;
       fake.mediaCopyStarted = null;
       fake.mediaCopyGate = null;

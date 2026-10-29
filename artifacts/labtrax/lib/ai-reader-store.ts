@@ -58,13 +58,18 @@ export interface AiReaderUserOverrides {
   arch?: "upper" | "lower" | "both" | null;
   toothIndices?: string;
   /** Per-tooth assignments explicitly confirmed by the operator. */
-  assignmentRoles?: Record<string, "Crown" | "Pontic">;
+  assignmentRoles?: Record<string, "Crown" | "Pontic" | "Veneer">;
   assignmentOverridesManual?: boolean;
   assignmentValues?: Record<string, { material?: string; shade?: string; restorationSubtype?: string }>;
   bridgeConnectors?: string;
   doctorName?: string;
   patientFirst?: string;
   patientLast?: string;
+  receivedAt?: string;
+  labDueDate?: string;
+  labDueDateEdited?: boolean;
+  rxDueDate?: string;
+  /** Legacy single-date override; interpreted as an edited lab due date. */
   dueDate?: string;
   notes?: string;
   priority?: "normal" | "rush";

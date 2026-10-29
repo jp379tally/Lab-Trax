@@ -469,6 +469,7 @@ export interface InvoiceLineItem {
 }
 
 export interface InvoiceDisplayMetadata {
+  shareNotesWithProvider?: boolean;
   patientName?: string | null;
   billTo?: string | null;
   teeth?: string | null;
@@ -563,6 +564,7 @@ export interface Invoice {
   aiPricingWarning?: string | null;
   aiReviewedAt?: string | null;
   aiReviewedByUserId?: string | null;
+  aiReviewedByName?: string | null;
   voidedAt?: string | null;
   voidedByUserId?: string | null;
   voidReason?: string | null;

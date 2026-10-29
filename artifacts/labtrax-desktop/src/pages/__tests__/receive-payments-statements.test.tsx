@@ -530,7 +530,13 @@ describe("statement receive payments", () => {
         { id: "offstmt", invoiceNumber: "INV-OFFSTMT", patientName: "Cy", doctorName: "Dr. Cy", dueAt: "2026-03-01", total: "45.00", currentBalanceDue: "45.00", eligibleForPayment: true },
       ],
     }];
-    await page();
+    await page(false);
+    fireEvent.click(await screen.findByRole("tab", { name: "Statements" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Pay Alpha by statement" }));
+    await waitFor(() => expect(screen.getByTestId("expected-payments")).toHaveTextContent("$100.00"));
+    fireEvent.click(screen.getByLabelText("Email receipts to customers"));
+    fireEvent.click(screen.getByTestId("receive-continue"));
+    await screen.findByText("INV-LATE");
 
     expect(screen.getByLabelText("Statement")).toHaveValue("a-new");
     await screen.findByText("INV-LATE");
@@ -568,7 +574,13 @@ describe("statement receive payments", () => {
       ],
     }];
     try {
-      await page();
+      await page(false);
+      fireEvent.click(await screen.findByRole("tab", { name: "Invoices" }));
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Select all shown invoices" }));
+      await waitFor(() => expect(screen.getByTestId("expected-payments")).toHaveTextContent("$100.00"));
+      fireEvent.click(screen.getByLabelText("Email receipts to customers"));
+      fireEvent.click(screen.getByTestId("receive-continue"));
+      await screen.findByText("INV-LATE");
       expect(screen.getByLabelText("Statement")).toHaveValue("");
       await screen.findByText("No saved statement for this account. Its outstanding invoices are listed in the invoice table and can be paid directly.");
       await recordPayment();

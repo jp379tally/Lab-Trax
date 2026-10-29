@@ -36,7 +36,9 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-intake"),
+  // Keep the owned synthetic workspace while using the real durable namespace.
+  // The production writer correctly refuses arbitrary unregistered folders.
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-ai-intake", "case-media"),
   extractMediaFileName: () => null,
   extractMediaFilenamesFromText: () => [],
 }));
@@ -494,6 +496,61 @@ maybe("AI intake data carry-through (db integration)", () => {
     expect(rests[0].toothNumber, "empty toothNumber must survive").toBe("");
   });
 
+  it("generic AI intake persists the reviewed lab date and filters Rx dates at the inclusive boundary", async () => {
+    const { db, organizations, cases: casesTable } = dbMod as any;
+    const [labBefore] = await db
+      .select({ defaultCaseDueDays: organizations.defaultCaseDueDays })
+      .from(organizations)
+      .where(eq(organizations.id, labOrgId));
+    await db
+      .update(organizations)
+      .set({ defaultCaseDueDays: 7 })
+      .where(eq(organizations.id, labOrgId));
+
+    try {
+      const { access } = await makeSession(labOwnerId);
+      const create = async (rxDueDate: string) => {
+        const response = await request(appMod.default)
+          .post("/api/cases")
+          .set("Authorization", `Bearer ${access}`)
+          .send({
+            caseNumber: rid("AIDATE"),
+            labOrganizationId: labOrgId,
+            providerOrganizationId: providerOrgId,
+            patientFirstName: "Reviewed",
+            patientLastName: "Dates",
+            doctorName: "Dr. Reviewed Dates",
+            confirmNewDoctor: true,
+            receivedAt: "2026-08-01",
+            dueDate: "2026-12-01",
+            prescriptionDueDate: rxDueDate,
+            aiIntakeReviewedDates: true,
+          });
+        expect(response.status, JSON.stringify(response.body)).toBe(201);
+        const caseId = response.body.data.id;
+        createdCaseIds.push(caseId);
+        const [caseRow] = await db
+          .select()
+          .from(casesTable)
+          .where(eq(casesTable.id, caseId));
+        return caseRow;
+      };
+
+      const boundaryCase = await create("2026-08-08");
+      expect(new Date(boundaryCase.dueDate).toISOString().slice(0, 10)).toBe("2026-12-01");
+      expect(boundaryCase.prescriptionDueDate).toBe("2026-08-08");
+
+      const outsideCase = await create("2026-08-09");
+      expect(new Date(outsideCase.dueDate).toISOString().slice(0, 10)).toBe("2026-12-01");
+      expect(outsideCase.prescriptionDueDate).toBeNull();
+    } finally {
+      await db
+        .update(organizations)
+        .set({ defaultCaseDueDays: labBefore?.defaultCaseDueDays ?? null })
+        .where(eq(organizations.id, labOrgId));
+    }
+  });
+
   // ── (6) Canonical GET /api/cases/:id returns restoration rows ─────────────
   // Both desktop and mobile use this endpoint (the mobile app reads the same
   // canonical API). Restorations[] must be present so caseToRxSummary can
@@ -779,6 +836,24 @@ maybe("AI intake data carry-through (db integration)", () => {
           unitPrice: 0,
         },
       ];
+      const providerContactSnapshot = {
+        doctorName: "Dr. Reviewed",
+        providerOrganizationId: providerOrgId,
+        practiceName: "Reviewed Practice",
+        primaryAddress: "50 Intake Avenue, Springfield, IL 62701",
+        billingAddress: "PO Box 20, Springfield, IL 62702",
+        phone: "555-0188",
+        primaryEmail: "office@example.test",
+        billingEmail: "billing@example.test",
+      };
+      const reviewedRestorations = [{
+        toothNumber: "14",
+        restorationType: "Crown",
+        restorationSubtype: "restorative/crown_and_bridge/zirconia",
+        material: "Zirconia",
+        shade: "A2",
+        quantity: 1,
+      }];
       const submit = () =>
         request(appMod.default)
           .post("/api/cases/import-from-itero-rx")
@@ -795,7 +870,17 @@ maybe("AI intake data carry-through (db integration)", () => {
           .field("patientLastNameHint", "Hatcher")
           .field("caseTypeHint", "Crown")
           .field("materialHint", "Zirconia")
+          .field("shadeHint", "A2")
+          .field("toothIndicesHint", "14")
           .field("receivedAt", "2026-08-19")
+          .field("scanDateHint", "2026-08-18")
+          .field("rxDueDateHint", "2026-08-29")
+          .field("labDueDateHint", "2026-09-03")
+          .field("externalPatientIdHint", "itero-reviewed-identity")
+          .field("casePanBarcodeHint", "PAN-REVIEWED-1")
+          .field("providerContactSnapshot", JSON.stringify(providerContactSnapshot))
+          .field("invoiceNotesHint", "Please call when ready.")
+          .field("reviewedRestorationsHint", JSON.stringify(reviewedRestorations))
           .field("invoiceOverrideLines", JSON.stringify(reviewedLines))
           .field("confirmNewDoctor", "true");
 
@@ -807,12 +892,29 @@ maybe("AI intake data carry-through (db integration)", () => {
       expect(caseNumber).toBeTruthy();
       createdCaseIds.push(caseId);
 
-      const { db, cases: casesTable, invoices, invoiceLineItems } = dbMod as any;
+      const { db, cases: casesTable, caseRestorations, invoices, invoiceLineItems } = dbMod as any;
       const [caseRow] = await db.select().from(casesTable).where(eq(casesTable.id, caseId));
       expect(caseRow.receivedAt).toBe("2026-08-19");
+      expect(caseRow.scanDate).toBe("2026-08-18");
+      expect(caseRow.prescriptionDueDate).toBe("2026-08-29");
+      expect(caseRow.externalPatientId).toBe("itero-reviewed-identity");
+      expect(caseRow.casePanBarcode).toBe("PAN-REVIEWED-1");
+      expect(caseRow.providerContactSnapshot).toEqual(providerContactSnapshot);
+      expect(new Date(caseRow.dueDate).toISOString()).toContain("2026-09-03");
+      const restorationRows = await db.select().from(caseRestorations)
+        .where(eq(caseRestorations.caseId, caseId));
+      expect(restorationRows).toHaveLength(1);
+      expect(restorationRows[0]).toMatchObject({
+        toothNumber: "14",
+        restorationType: "Crown",
+        restorationSubtype: "restorative/crown_and_bridge/zirconia",
+        material: "Zirconia",
+        shade: "A2",
+      });
 
       const [invoice] = await db.select().from(invoices).where(eq(invoices.caseId, caseId));
       expect(invoice.total).toBe("100.00");
+      expect(invoice.notes).toContain("Please call when ready.");
       const lines = await db
         .select()
         .from(invoiceLineItems)
@@ -975,6 +1077,72 @@ maybe("AI intake data carry-through (db integration)", () => {
         "batch ZIP must create exactly one notification for the imported case",
       ).toHaveLength(1);
     } finally {
+      if (origAiKey !== undefined) {
+        process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] = origAiKey;
+      }
+    }
+  });
+
+  it("iTero intake keeps the reviewed lab date and drops an Rx date after the turnaround window", async () => {
+    const origAiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    delete process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    const { db, organizations, cases: casesTable } = dbMod as any;
+    const [labBefore] = await db
+      .select({ defaultCaseDueDays: organizations.defaultCaseDueDays })
+      .from(organizations)
+      .where(eq(organizations.id, labOrgId));
+    await db
+      .update(organizations)
+      .set({ defaultCaseDueDays: 7 })
+      .where(eq(organizations.id, labOrgId));
+
+    try {
+      const { access } = await makeSession(labOwnerId);
+      const importRx = async (rxDueDate: string) => {
+        const response = await request(appMod.default)
+          .post("/api/cases/import-from-itero-rx")
+          .set("Authorization", `Bearer ${access}`)
+          .attach("file", Buffer.from("fake-reviewed-itero-rx"), {
+            filename: "reviewed-itero-rx.pdf",
+            contentType: "application/pdf",
+          })
+          .field("iteroOrderId", rid("iord_turnaround"))
+          .field("labOrganizationId", labOrgId)
+          .field("providerOrganizationId", providerOrgId)
+          .field("doctorNameHint", "Dr. Turnaround")
+          .field("patientFirstNameHint", "Turnaround")
+          .field("patientLastNameHint", "Patient")
+          .field("receivedAt", "2026-08-01")
+          .field("rxDueDateHint", rxDueDate)
+          .field("labDueDateHint", "2026-12-01")
+          .field("caseTypeHint", "Crown")
+          .field("materialHint", "Zirconia")
+          .field("confirmNewDoctor", "true");
+        expect(response.status, JSON.stringify(response.body)).toSatisfy(
+          (status: number) => status === 200 || status === 201,
+        );
+        const caseId = response.body.data?.caseId;
+        expect(caseId).toBeTruthy();
+        createdCaseIds.push(caseId);
+        const [caseRow] = await db
+          .select()
+          .from(casesTable)
+          .where(eq(casesTable.id, caseId));
+        return caseRow;
+      };
+
+      const boundaryCase = await importRx("2026-08-08");
+      expect(new Date(boundaryCase.dueDate).toISOString().slice(0, 10)).toBe("2026-12-01");
+      expect(boundaryCase.prescriptionDueDate).toBe("2026-08-08");
+
+      const afterBoundaryCase = await importRx("2026-08-09");
+      expect(new Date(afterBoundaryCase.dueDate).toISOString().slice(0, 10)).toBe("2026-12-01");
+      expect(afterBoundaryCase.prescriptionDueDate).toBeNull();
+    } finally {
+      await db
+        .update(organizations)
+        .set({ defaultCaseDueDays: labBefore?.defaultCaseDueDays ?? null })
+        .where(eq(organizations.id, labOrgId));
       if (origAiKey !== undefined) {
         process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] = origAiKey;
       }

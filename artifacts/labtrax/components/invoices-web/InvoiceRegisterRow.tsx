@@ -7,7 +7,7 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { titleCase, formatMoney, formatDate } from "@/lib/format";
 import { customerNameOf } from "@/lib/invoice-filters";
-import { doctorOf, isInvoiceOverdue, paymentActionState, patientOf, registerRestoration } from "@/lib/invoice-web-fields";
+import { doctorOf, isHistoricalInvoiceHeld, isInvoiceOverdue, paymentActionState, patientOf, registerRestoration } from "@/lib/invoice-web-fields";
 
 export function invoiceBadgeVariant(status?: string | null): BadgeVariant {
   const s = (status ?? "").toLowerCase();
@@ -61,7 +61,8 @@ export function InvoiceRegisterRow({ invoice: i, selected, wide = false, canWrit
   const practice = customerNameOf(i);
   const patient = patientOf(i) || doctorOf(i) || "—";
   const overdue = isInvoiceOverdue(i);
-  const readonlyDraft = i.status === "draft" || (i.status as string) === "recovery_draft";
+  const historicalHold = isHistoricalInvoiceHeld(i);
+  const readonlyDraft = i.status === "draft" || historicalHold;
   const pay = paymentActionState(i, canWrite && !readonlyDraft);
   const canEdit = canWrite && !i.frozen && !readonlyDraft;
   const num = i.invoiceNumber || "Invoice";
@@ -94,7 +95,11 @@ export function InvoiceRegisterRow({ invoice: i, selected, wide = false, canWrit
     <View style={s.menu} testID={`invoice-menu-${i.id}`}>
       <Pressable style={s.menuItem} onPress={() => { setMenu(false); onPress(); }} testID={`invoice-menu-details-${i.id}`}><Text style={s.menuText}>Open details</Text></Pressable>
       <Pressable style={s.menuItem} onPress={copy} testID={`invoice-menu-copy-${i.id}`}><Text style={s.menuText}>Copy invoice number</Text></Pressable>
-      {readonlyDraft ? <Text style={[s.menuText, { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs }]} testID={`invoice-menu-readonly-${i.id}`}>Draft invoices are read-only here.</Text> : null}
+      {readonlyDraft ? <Text style={[s.menuText, { paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs }]} testID={`invoice-menu-readonly-${i.id}`}>
+        {historicalHold
+          ? "Historical held invoice; not collectible or editable."
+          : "Draft invoices are read-only here."}
+      </Text> : null}
       {canEdit ? <Pressable style={s.menuItem} onPress={() => { setMenu(false); onEdit?.(i); }} testID={`invoice-menu-edit-${i.id}`}><Text style={s.menuText}>Edit invoice</Text></Pressable> : null}
       {pay.visible ? <Pressable style={[s.menuItem, !pay.enabled && { opacity: 0.4 }]} disabled={!pay.enabled} onPress={() => { setMenu(false); onRecordPayment?.(i); }}
         accessibilityState={{ disabled: !pay.enabled }} testID={`invoice-menu-payment-${i.id}`}><Text style={s.menuText}>Record payment</Text></Pressable> : null}
@@ -116,7 +121,7 @@ export function InvoiceRegisterRow({ invoice: i, selected, wide = false, canWrit
             </View>
             <Text style={[s.cell, { flex: COL.rest }]} numberOfLines={2}>{registerRestoration(i)}</Text>
             <View style={{ flex: COL.due }}>{due}</View>
-            <View style={{ flex: COL.status, alignItems: "flex-start" }}><StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceBadgeVariant(i.status)} size="sm" /></View>
+            <View style={{ flex: COL.status, alignItems: "flex-start" }}><StatusBadge label={historicalHold ? "Historical hold (not collectible)" : titleCase(i.status ?? "—")} variant={historicalHold ? "draft" : invoiceBadgeVariant(i.status)} size="sm" /></View>
             <Text style={[s.money, { flex: COL.total }]} numberOfLines={1}>{formatMoney(i.total)}</Text>
             <Text style={[s.money, { flex: COL.bal }]} numberOfLines={1}>{formatMoney(i.balanceDue ?? i.total)}</Text>
           </Pressable>
@@ -132,7 +137,7 @@ export function InvoiceRegisterRow({ invoice: i, selected, wide = false, canWrit
         accessibilityLabel={`Invoice ${i.invoiceNumber ?? ""}`} testID={`invoice-${i.id}`}>
         <View style={s.cardTop}>
           <View style={s.numRow}><Text style={s.num} numberOfLines={1}>{num}</Text>{flags}</View>
-        <StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceBadgeVariant(i.status)} size="sm" />
+        <StatusBadge label={historicalHold ? "Historical hold (not collectible)" : titleCase(i.status ?? "—")} variant={historicalHold ? "draft" : invoiceBadgeVariant(i.status)} size="sm" />
         </View>
         <Text style={s.practice} numberOfLines={1}>{practice || "—"}</Text>
         <Text style={s.sub} numberOfLines={1}>{patient}</Text>

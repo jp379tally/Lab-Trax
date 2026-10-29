@@ -15,6 +15,7 @@
  *  - Registry: all 6 are registered, all are readonly, summarize returns strings
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { cases } from "@workspace/db";
 import type { ToolContext } from "./ai-agent-tools";
 
 // ── Hoisted mock handles ──────────────────────────────────────────────────────
@@ -73,8 +74,8 @@ vi.mock("@workspace/db", () => ({
 }));
 
 vi.mock("drizzle-orm", () => ({
-  eq: () => ({}),
-  and: () => ({}),
+  eq: (column: unknown, value: unknown) => ({ op: "eq", column, value }),
+  and: (...conditions: unknown[]) => ({ op: "and", conditions }),
   or: () => ({}),
   gte: () => ({}),
   lte: () => ({}),
@@ -423,6 +424,26 @@ describe("draft_message", () => {
 
     expect(typeof result["draft"]).toBe("string");
     expect(String(result["draft"]).length).toBeGreaterThan(0);
+  });
+
+  it("scopes optional case context to the authorized lab", async () => {
+    delete process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    mockCasesFindFirst.mockResolvedValueOnce(null);
+    mockOrgsFindFirst.mockResolvedValueOnce({ displayName: "Bright Lab", name: "Bright Lab" });
+
+    await tool.execute(
+      { targetType: "doctor", targetName: "Dr. A", intent: "case ready", caseId: "case-from-other-lab" },
+      makeCtx({ labOrganizationId: "authorized-lab" }),
+    );
+
+    const query = mockCasesFindFirst.mock.calls[0]?.[0] as {
+      where: { conditions: Array<{ op: string; column?: unknown; value?: unknown }> };
+    };
+    expect(query.where.conditions).toContainEqual({
+      op: "eq",
+      column: cases.labOrganizationId,
+      value: "authorized-lab",
+    });
   });
 
   it("throws when role check fails", async () => {

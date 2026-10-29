@@ -1,7 +1,7 @@
 /**
  * Small, deliberately conservative PLY texture linker.  A PLY comment is
- * metadata, not a URL: only a plain filename can be used and it must match
- * exactly one image in the same archive.
+ * metadata, not a URL: only a bounded plain filename can be used, and it must
+ * match exactly one image in the same case/archive.
  */
 export type TextureEntry = { name: string; data: Buffer; mimeType: string };
 
@@ -13,13 +13,14 @@ export function declaredPlyTexture(ply: Buffer): string | null {
   const end = header.indexOf("end_header");
   if (end < 0) return null;
   const text = header.slice(0, end);
-  const declarations = [...text.matchAll(/(?:^|\r?\n)\s*comment\s+TextureFile\s+([^\s\r\n]+)/gi)];
+  const declarations = [...text.matchAll(/(?:^|\r?\n)\s*comment\s+TextureFile\s+([^\s\r\n]+)\s*(?=\r?\n|$)/gi)];
   if (declarations.length !== 1) return null;
   const value = declarations[0]![1]!;
   // Reject path traversal, absolute paths, URLs, and separators. Pairing is
   // intentionally basename-only and case-sensitive (provider exports rely on
   // exact references).
-  if (!value || value.includes("/") || value.includes("\\") || value.includes(":") ||
+  if (!value || value.length > 255 || /[\u0000-\u001f]/.test(value) ||
+      value.includes("/") || value.includes("\\") || value.includes(":") ||
       value === "." || value === ".." || value.includes("..")) return null;
   return value;
 }

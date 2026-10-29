@@ -57,7 +57,8 @@ export default defineConfig({
       prettier: true,
       override: {
         zod: {
-          version: 3,
+          // Match @workspace/api-zod's Zod 4 catalog dependency.
+          version: 4,
           generateEachHttpStatus: true,
           coerce: {
             query: ['boolean', 'number', 'string'],

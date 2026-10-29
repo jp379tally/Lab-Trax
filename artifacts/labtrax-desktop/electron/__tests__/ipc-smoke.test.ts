@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import Module from "node:module";
+import { runInNewContext } from "node:vm";
 import { installElectronMock, uninstallElectronMock, type ElectronMock } from "./_mock-electron";
 
 /**
@@ -44,6 +45,7 @@ const EXPECTED_CHANNELS = [
   "media:fetch-authenticated",
   // app-level
   "get-app-version",
+  "get-build-metadata",
   "install-update",
   "check-for-updates",
   "download-update",
@@ -52,6 +54,8 @@ const EXPECTED_CHANNELS = [
   "preview:open-file",
   "backup:save-to-folder",
   "backup:download-to-folder",
+  "backup:set-local-schedule-active",
+  "backup:is-folder-accessible",
   "dialog:show-folder",
   "dialog:showOpenDialog",
   "dialog:read-file",
@@ -60,6 +64,7 @@ const EXPECTED_CHANNELS = [
 
 let electronMock: ElectronMock;
 const handleCalls: string[] = [];
+const profileEvents: string[] = [];
 
 function injectModule(name: string, exports: unknown) {
   const filename = path.join(tmpDir, `__virt_${name.replace(/[^a-z0-9]/gi, "_")}.cjs`);
@@ -88,8 +93,14 @@ beforeAll(async () => {
   const handlers = new Map<string, (...a: unknown[]) => unknown>();
   electronMock = installElectronMock({
     app: {
+      commandLine: { getSwitchValue: name => name === "user-data-dir" ? tmpDir : "" },
+      setPath: (name, value) => {
+        expect(name).toBe("userData");
+        expect(value).toBe(tmpDir);
+        profileEvents.push("profile");
+      },
       getPath: () => tmpDir,
-      whenReady: () => Promise.resolve(),
+      whenReady: () => { profileEvents.push("ready"); return Promise.resolve(); },
       on: () => {},
       quit: () => {},
       getVersion: () => "0.0.0-smoke",
@@ -143,6 +154,34 @@ afterAll(() => {
 });
 
 describe("Electron main-process IPC startup", () => {
+  it("selects the explicit isolated profile before application startup", () => {
+    expect(profileEvents[0]).toBe("profile");
+    expect(profileEvents.indexOf("ready")).toBeGreaterThan(0);
+  });
+  it.each([
+    ["setLocalBackupScheduleActive", "backup:set-local-schedule-active", true],
+    ["setLocalBackupScheduleActive", "backup:set-local-schedule-active", false],
+    ["isBackupFolderAvailable", "backup:is-folder-accessible", tmpDir],
+  ])("exposes %s through the registered %s channel (%s)", async (method, channel, argument) => {
+    const response = Promise.resolve({ smoke: true });
+    const invoke = vi.fn(() => response);
+    const exposeInMainWorld = vi.fn();
+    runInNewContext(fs.readFileSync(path.join(__dirname, "../preload.cjs"), "utf8"), {
+      require: (name: string) => {
+        expect(name).toBe("electron");
+        return { contextBridge: { exposeInMainWorld }, ipcRenderer: { invoke } };
+      },
+    });
+
+    expect(exposeInMainWorld).toHaveBeenCalledExactlyOnceWith("electronAPI", expect.any(Object));
+    const api = exposeInMainWorld.mock.calls[0][1];
+    expect(EXPECTED_CHANNELS).toContain(channel);
+    expect(electronMock.ipcMain.handlers.has(channel)).toBe(true);
+    expect(api[method](argument)).toBe(response);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(channel, argument);
+    await response;
+  });
+
   it("registers every expected IPC channel", () => {
     for (const channel of EXPECTED_CHANNELS) {
       expect(electronMock.ipcMain.handlers.has(channel)).toBe(true);

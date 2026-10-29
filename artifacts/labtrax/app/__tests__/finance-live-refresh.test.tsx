@@ -25,15 +25,20 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react-native";
+import { router } from "expo-router";
 import {
+  mockInvalidateQueries,
+  mockUpdateInvoiceMutateAsync,
   resetMockAppState,
   resetMockFetchHandler,
   setMockAppState,
   setMockFetchHandler,
+  setMockSearchParams,
 } from "../../vitest.setup";
 import ReceivePaymentsScreen from "@/app/finance/receive-payments";
 import InvoicesScreen from "@/app/finance/invoices";
 import StatementsScreen from "@/app/finance/statements";
+import InvoiceEditorScreen from "@/app/invoice-editor/[id]";
 
 const openInvoice = {
   id: "invoice-a",
@@ -137,14 +142,24 @@ function respondToPayment(options: { settle: (() => void) | null }) {
  * only change by refetching.
  */
 async function renderWithList(list: React.ReactElement) {
-  const client = new QueryClient({
+  return renderWithClient(
+    <>
+      <ReceivePaymentsScreen />
+      {list}
+    </>,
+  );
+}
+
+async function renderWithClient(
+  content: React.ReactElement,
+  client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  }),
+) {
   vi.spyOn(client, "invalidateQueries");
   const screen = await render(
     <QueryClientProvider client={client}>
-      <ReceivePaymentsScreen />
-      {list}
+      {content}
     </QueryClientProvider>,
   );
   return { ...screen, client };
@@ -162,7 +177,154 @@ afterEach(() => {
   cleanup();
   resetMockAppState();
   resetMockFetchHandler();
+  mockUpdateInvoiceMutateAsync.mockReset().mockResolvedValue({ ok: true, data: null });
   vi.clearAllMocks();
+});
+
+describe("mobile invoice editor — live refresh after a saved amount edit", () => {
+  it("keeps a non-midnight issue timestamp and refreshes the mounted invoice list before returning", async () => {
+    const invoice = {
+      ...openInvoice,
+      issuedAt: "2026-03-10T05:30:00.000Z",
+      items: [{
+        id: "line-a",
+        description: "Crown",
+        quantity: 1,
+        unitPrice: "100.00",
+        subItems: [{
+          id: "child-a",
+          description: "Layered porcelain",
+          quantity: 1,
+          unitPrice: "10.00",
+        }],
+      }],
+    };
+    const revised = { ...invoice, total: "160.00", balanceDue: "160.00" };
+    setMockAppState({
+      liveInvoiceQueries: true,
+      meMemberships: [{
+        organizationId: "lab-1",
+        role: "admin",
+        status: "active",
+        organization: { id: "lab-1", type: "lab", name: "Test Lab" },
+      }],
+      invoices: [invoice],
+    });
+    setMockSearchParams({ id: invoice.id });
+    mockUpdateInvoiceMutateAsync.mockImplementation(async () => {
+      setMockAppState({ invoices: [revised] });
+      return { ok: true, data: null };
+    });
+
+    const view = await renderWithClient(
+      <>
+        <InvoicesScreen />
+        <InvoiceEditorScreen />
+      </>,
+    );
+    await waitFor(() => {
+      expect(view.getByTestId("column-total-total").props.children).toBe("$100.00");
+      expect(view.getByTestId("invoice-editor-line-price-0").props.value).toBe("100");
+    });
+
+    await fireEvent.changeText(view.getByTestId("invoice-editor-line-price-0"), "150");
+    mockInvalidateQueries.mockClear();
+    await fireEvent.press(view.getByTestId("invoice-editor-save"));
+
+    await waitFor(() => {
+      expect(view.getByTestId("column-total-total").props.children).toBe("$160.00");
+    });
+    expect(revised.issuedAt).toBe(invoice.issuedAt);
+    expect(router.back).toHaveBeenCalled();
+    expect(view.client.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["invoices"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["customer-center-summary"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["receive-payments", "statements"],
+    });
+  });
+});
+
+describe("mobile invoice editor — live refresh after AI review acknowledgment", () => {
+  const aiInvoice = {
+    ...openInvoice,
+    aiGenerated: true,
+    aiReviewedAt: null as string | null,
+    items: [],
+  };
+  const reviewedAiInvoice = {
+    ...aiInvoice,
+    aiReviewedAt: "2026-10-25T12:00:00.000Z",
+  };
+
+  async function renderAiReviewFlow() {
+    setMockAppState({
+      liveInvoiceQueries: true,
+      meMemberships: [{
+        organizationId: "lab-1",
+        role: "admin",
+        status: "active",
+        organization: { id: "lab-1", type: "lab", name: "Test Lab" },
+      }],
+      invoices: [aiInvoice],
+    });
+    setMockSearchParams({ id: aiInvoice.id });
+    return renderWithClient(
+      <>
+        <InvoicesScreen />
+        <InvoiceEditorScreen />
+      </>,
+    );
+  }
+
+  it("updates the mounted invoice list after acknowledgment succeeds", async () => {
+    const screen = await renderAiReviewFlow();
+    await waitFor(() =>
+      expect(screen.getByTestId(`invoice-ai-review-status-${aiInvoice.id}`).props.children).toBeTruthy(),
+    );
+    expect(screen.getByText("AI review needed")).toBeTruthy();
+
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/ai-review")) {
+        setMockAppState({ invoices: [reviewedAiInvoice] });
+        return new Response(JSON.stringify({ data: reviewedAiInvoice }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    await fireEvent.press(screen.getByTestId("invoice-editor-mark-ai-reviewed"));
+
+    await waitFor(() => expect(screen.getByText("AI reviewed")).toBeTruthy());
+    expect(screen.queryByText("AI review needed")).toBeNull();
+    expect(screen.client.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["invoices"],
+    });
+  });
+
+  it("leaves the mounted invoice list unchanged when acknowledgment fails", async () => {
+    const screen = await renderAiReviewFlow();
+    await waitFor(() => expect(screen.getByText("AI review needed")).toBeTruthy());
+
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/ai-review")) {
+        // Even if the server-side fixture changes independently, a failed
+        // response must not trigger a cache refresh that marks the row reviewed.
+        setMockAppState({ invoices: [reviewedAiInvoice] });
+        return new Response(JSON.stringify({ error: "Unavailable" }), { status: 503 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    await fireEvent.press(screen.getByTestId("invoice-editor-mark-ai-reviewed"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("invoice-editor-ai-review-warning")).toBeTruthy(),
+    );
+    expect(screen.getByText("AI review needed")).toBeTruthy();
+    expect(screen.queryByText("AI reviewed")).toBeNull();
+    expect(screen.client.invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: ["invoices"],
+    });
+  });
 });
 
 describe("mobile Invoices list — live refresh after a payment", () => {

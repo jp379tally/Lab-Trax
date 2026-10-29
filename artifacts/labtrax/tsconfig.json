@@ -24,6 +24,9 @@
     },
     {
       "path": "../../lib/legacy-case-media-contract"
+    },
+    {
+      "path": "../../lib/dashboard-labels"
     }
   ]
 }

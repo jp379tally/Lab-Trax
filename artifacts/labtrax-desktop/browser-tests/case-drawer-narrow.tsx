@@ -28,11 +28,40 @@ const detail: LabCase = {
   labOrganizationId: "browser-lab",
   viewerIsLabMember: true,
   viewerCanManageAttachments: true,
+  viewerCanUploadAttachments: params.has("accessibility"),
+  viewerCanPostNotes: params.has("accessibility"),
   activeException: params.has("exception") ? { id: "browser-exception" } : null,
-  restorations: [],
+  restorations: params.has("accessibility")
+    ? [{
+        id: "browser-restoration",
+        toothNumber: "8",
+        restorationType: "Crown",
+        restorationSubtype: null,
+        arch: null,
+        material: "Zirconia",
+        shade: "A2",
+        quantity: 1,
+        unitPrice: "125.00",
+        priceSource: null,
+        priceSourceId: null,
+        priceKey: null,
+        createdAt: "2026-01-15T10:00:00.000Z",
+      }]
+    : [],
   notes: [],
   events: [],
-  attachments: [],
+  attachments: params.has("accessibility")
+    ? [{
+        id: "browser-attachment",
+        fileName: "case-note.pdf",
+        fileType: "application/pdf",
+        visibility: "internal_lab_only",
+        category: "document",
+        note: null,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        uploaderName: "Browser Test",
+      }]
+    : [],
 } as unknown as LabCase;
 
 function json(body: unknown) {

@@ -13,7 +13,6 @@ import { isDbUnavailable } from "./lib/db-unavailable";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
-import { restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { startInviteEmailRetryScheduler } from "./lib/invite-email-retry";
 import { startSupportReportScheduler } from "./lib/support-report-outbox";
@@ -26,6 +25,10 @@ import {
   getSignedDownloadUrl,
   getDirectDownloadUrl,
   readUpdateManifest,
+  getDesktopUpdatePayloadHandle,
+  openDesktopUpdatePayloadStream,
+  getSignedDesktopUpdatePayloadUrl,
+  getDirectDesktopUpdatePayloadUrl,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
@@ -368,7 +371,7 @@ app.get("/downloads/latest.yml", async (_req: Request, res: Response) => {
     const content = await readUpdateManifest();
     if (!content) {
       res.setHeader("Cache-Control", "no-store");
-      res.status(404).json({ ok: false, message: "Auto-update manifest not found. Run a desktop build first." });
+      res.status(404).json({ ok: false, message: "Windows auto-update manifest not found. Publish a signed installer update first." });
       return;
     }
     res.setHeader("Content-Type", "application/yaml; charset=utf-8");
@@ -379,6 +382,110 @@ app.get("/downloads/latest.yml", async (_req: Request, res: Response) => {
     logger.error({ err }, "Failed to serve latest.yml auto-update manifest");
     res.setHeader("Cache-Control", "no-store");
     res.status(503).json({ ok: false, message: "Storage temporarily unavailable." });
+  }
+});
+
+app.get("/downloads/latest-mac.yml", async (_req: Request, res: Response) => {
+  try {
+    const content = await readUpdateManifest("mac");
+    if (!content) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(404).json({ ok: false, message: "macOS auto-update manifest not found. Publish a desktop release first." });
+      return;
+    }
+    res.setHeader("Content-Type", "application/yaml; charset=utf-8");
+    res.setHeader("Content-Length", String(content.length));
+    res.setHeader("Cache-Control", "no-cache");
+    res.status(200).send(content);
+  } catch (err) {
+    logger.error({ err }, "Failed to serve latest-mac.yml auto-update manifest");
+    res.setHeader("Cache-Control", "no-store");
+    res.status(503).json({ ok: false, message: "Storage temporarily unavailable." });
+  }
+});
+
+app.get("/downloads/:updateFile", async (req: Request, res: Response) => {
+  const fileName = typeof req.params.updateFile === "string" ? req.params.updateFile : "";
+  try {
+    const handle = await getDesktopUpdatePayloadHandle(fileName);
+    if (!handle) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(404).json({ ok: false, message: "Update package not found." });
+      return;
+    }
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${handle.fileName}"`);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("ETag", handle.etag);
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (typeof ifNoneMatch === "string" && ifNoneMatch.split(",").map((value) => value.trim()).includes(handle.etag)) {
+      res.status(304).end();
+      return;
+    }
+
+    const rawRange = req.headers.range;
+    const rangeHeader = Array.isArray(rawRange) ? rawRange[0] : rawRange;
+    const parsedRange = parseRangeHeader(rangeHeader, handle.size);
+    if (parsedRange === "invalid") {
+      res.setHeader("Content-Range", `bytes */${handle.size}`);
+      res.status(416).end();
+      return;
+    }
+    const ifRange = req.headers["if-range"];
+    const range =
+      parsedRange !== null && (typeof ifRange !== "string" || ifRange.trim() === handle.etag)
+        ? parsedRange
+        : null;
+    const start = range?.start ?? 0;
+    const end = range?.end ?? Math.max(handle.size - 1, 0);
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${handle.size}`);
+    } else {
+      res.status(200);
+    }
+    if (handle.size > 0) res.setHeader("Content-Length", String(end - start + 1));
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    if (!range) {
+      const signedUrl = await getSignedDesktopUpdatePayloadUrl(fileName);
+      const directUrl = signedUrl ?? (await getDirectDesktopUpdatePayloadUrl(fileName));
+      if (directUrl) {
+        res.removeHeader("Content-Length");
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, directUrl);
+        return;
+      }
+    }
+
+    const payload = await openDesktopUpdatePayloadStream(fileName, range ? { start, end } : undefined);
+    if (!payload) {
+      res.destroy();
+      return;
+    }
+    payload.stream.on("error", (error) => {
+      logger.error({ err: error, fileName }, "macOS update package stream failed");
+      if (!res.writableEnded) res.destroy(error as Error);
+    });
+    res.on("close", () => {
+      if (res.writableEnded) return;
+      const maybeDestroy = (payload.stream as unknown as { destroy?: () => void }).destroy;
+      if (typeof maybeDestroy === "function") maybeDestroy.call(payload.stream);
+    });
+    payload.stream.pipe(res);
+  } catch (error) {
+    logger.error({ err: error, fileName }, "Failed to serve macOS update package");
+    if (!res.headersSent) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(503).json({ ok: false, message: "Storage temporarily unavailable." });
+    } else if (!res.writableEnded) {
+      res.destroy(error as Error);
+    }
   }
 });
 
@@ -474,13 +581,8 @@ startJoinRequestNotificationScheduler();
 logStripeAccountOwnership().catch((err: unknown) => {
   logger.warn({ err }, "[stripe] Stripe account ownership check failed at startup");
 });
-// Dynamic recurring backup scheduler — reads persisted settings from DB and
-// starts the interval timer. Runs at startup so saved schedules survive restarts.
-restartScheduledBackupJob().catch((err: unknown) => {
-  logger.warn({ err }, "[backup] Failed to restore recurring backup schedule at startup");
-});
-// (That call also starts off-site protection: a verified OneDrive copy every
-// fifteen minutes plus a watchdog that alarms when those copies stop.)
+// Backup scheduling is started by index.ts after constraint installation.
+// An overdue pg_dump here can otherwise block startup's trigger DDL.
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {

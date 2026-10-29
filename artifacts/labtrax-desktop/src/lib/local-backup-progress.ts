@@ -6,11 +6,20 @@ export interface ScheduledLocalBackupProgress {
   liveStatus: LocalBackupLiveStatus | null;
 }
 
-let scheduledProgress: ScheduledLocalBackupProgress | null = null;
+export type ScheduledLocalBackupSession = symbol;
+
+interface ProgressSnapshot {
+  session: ScheduledLocalBackupSession | null;
+  progress: ScheduledLocalBackupProgress;
+}
+
+let activeSession: ScheduledLocalBackupSession | null = null;
+let scheduledProgress: ProgressSnapshot | null = null;
 const listeners = new Set<() => void>();
 
 export function getScheduledLocalBackupProgress(): ScheduledLocalBackupProgress | null {
-  return scheduledProgress;
+  if (!scheduledProgress) return null;
+  return scheduledProgress.session === activeSession ? scheduledProgress.progress : null;
 }
 
 export function subscribeScheduledLocalBackupProgress(listener: () => void): () => void {
@@ -18,9 +27,50 @@ export function subscribeScheduledLocalBackupProgress(listener: () => void): () 
   return () => listeners.delete(listener);
 }
 
-export function setScheduledLocalBackupProgress(progress: ScheduledLocalBackupProgress | null): void {
-  scheduledProgress = progress;
+function notifyProgressChanged(): void {
   for (const listener of listeners) listener();
+}
+
+export function activateScheduledLocalBackupSession(session: ScheduledLocalBackupSession): void {
+  if (activeSession === session) return;
+  activeSession = session;
+  if (scheduledProgress?.session !== session) {
+    scheduledProgress = null;
+    notifyProgressChanged();
+  }
+}
+
+export function deactivateScheduledLocalBackupSession(session: ScheduledLocalBackupSession): void {
+  if (activeSession !== session) return;
+  activeSession = null;
+  if (scheduledProgress?.session === session) {
+    scheduledProgress = null;
+    notifyProgressChanged();
+  }
+}
+
+export function setScheduledLocalBackupProgress(
+  progress: ScheduledLocalBackupProgress | null,
+  session?: ScheduledLocalBackupSession,
+): void {
+  if (session !== undefined) {
+    // A disposed scheduler may finish its disk write and report, but it can no
+    // longer publish into the progress store owned by a newer account session.
+    if (activeSession !== session) return;
+    if (progress) {
+      scheduledProgress = { session, progress };
+    } else if (scheduledProgress?.session === session) {
+      scheduledProgress = null;
+    } else {
+      return;
+    }
+  } else {
+    // Preserve the unscoped test/preview API when no authenticated scheduler
+    // session is active. While one is active, all writes must identify it.
+    if (activeSession !== null) return;
+    scheduledProgress = progress ? { session: null, progress } : null;
+  }
+  notifyProgressChanged();
 }
 
 export function formatBackupSize(bytes: number): string {
@@ -55,31 +105,43 @@ export function backupLivePhaseLabel(phase: string): string {
 }
 
 export function backupLiveMediaText(status: LocalBackupLiveStatus): string | null {
-  const { completedFiles, fileCount, mediaFileCount } = status.metrics;
+  const { completedFiles, fileCount, mediaFileCount, mediaBytesPerSecond } = status.metrics ?? {};
+  let summary: string | null = null;
   if (Number.isFinite(fileCount)) {
     const completed = Number.isFinite(completedFiles) ? completedFiles : 0;
-    return `${completed} of ${fileCount} media files`;
+    summary = `${completed} of ${fileCount} media files`;
+  } else if (Number.isFinite(mediaFileCount)) {
+    summary = `${mediaFileCount} media files`;
   }
-  if (Number.isFinite(mediaFileCount)) return `${mediaFileCount} media files`;
-  return null;
+  const throughput = Number.isFinite(mediaBytesPerSecond) && mediaBytesPerSecond > 0
+    ? `${formatBackupSize(mediaBytesPerSecond)}/s`
+    : null;
+  return [summary, throughput].filter(Boolean).join(" · ") || null;
 }
 
 export function backupLiveProgressText(status: LocalBackupLiveStatus): string | null {
-  const metrics = status.metrics;
+  const metrics = status.metrics ?? {};
+  const throughput = Number.isFinite(metrics.throughputBytesPerSecond) &&
+    metrics.throughputBytesPerSecond > 0
+    ? ` · ${formatBackupSize(metrics.throughputBytesPerSecond)}/s`
+    : "";
   if (Number.isFinite(metrics.tablesCompleted) && Number.isFinite(metrics.tableCount)) {
-    return `${metrics.tablesCompleted} of ${metrics.tableCount} database tables checked`;
+    const rate = Number.isFinite(metrics.rowsPerSecond) && metrics.rowsPerSecond > 0
+      ? ` · ${Math.round(metrics.rowsPerSecond).toLocaleString()} rows/s`
+      : "";
+    return `${metrics.tablesCompleted} of ${metrics.tableCount} database tables checked${rate}`;
   }
   if (Number.isFinite(metrics.transferredBytes)) {
     const downloaded = formatBackupSize(metrics.transferredBytes);
     return Number.isFinite(metrics.transferTotalBytes)
-      ? `${downloaded} of ${formatBackupSize(metrics.transferTotalBytes)} downloaded`
-      : `${downloaded} downloaded`;
+      ? `${downloaded} of ${formatBackupSize(metrics.transferTotalBytes)} downloaded${throughput}`
+      : `${downloaded} downloaded${throughput}`;
   }
   if (Number.isFinite(metrics.uploadedBytes)) {
     const sent = formatBackupSize(metrics.uploadedBytes);
     return Number.isFinite(metrics.uploadTotalBytes)
-      ? `${sent} of ${formatBackupSize(metrics.uploadTotalBytes)} uploaded`
-      : `${sent} uploaded`;
+      ? `${sent} of ${formatBackupSize(metrics.uploadTotalBytes)} uploaded${throughput}`
+      : `${sent} uploaded${throughput}`;
   }
   if (Number.isFinite(metrics.completedBytes)) {
     const done = formatBackupSize(metrics.completedBytes);
@@ -87,7 +149,7 @@ export function backupLiveProgressText(status: LocalBackupLiveStatus): string | 
       ? `${done} of ${formatBackupSize(metrics.totalBytes)} of case media added`
       : `${done} of case media added`;
   }
-  if (Number.isFinite(metrics.dumpBytes)) return `${formatBackupSize(metrics.dumpBytes)} of database data read`;
-  if (Number.isFinite(metrics.archiveBytes)) return `${formatBackupSize(metrics.archiveBytes)} sent`;
+  if (Number.isFinite(metrics.dumpBytes)) return `${formatBackupSize(metrics.dumpBytes)} of database data read${throughput}`;
+  if (Number.isFinite(metrics.archiveBytes)) return `${formatBackupSize(metrics.archiveBytes)} sent${throughput}`;
   return null;
 }

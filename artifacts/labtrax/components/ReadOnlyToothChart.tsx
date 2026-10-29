@@ -19,6 +19,8 @@ interface Props {
   missingTeeth?: Set<ToothId>;
   /** Teeth already billed on this case, shown with a green dashed halo. */
   billedTeeth?: Set<ToothId>;
+  /** Teeth with a veneer — teal with a V badge. */
+  veneerTeeth?: Set<ToothId>;
   selected?: Set<ToothId>;
   /** Legacy fallback: all highlighted teeth rendered in the brand tint. */
   highlighted?: Set<ToothId>;

@@ -7,7 +7,10 @@ function evidence(): RecoveryEvidence {
     now, enabled: true, intervalMinutes: 15, destination: "onedrive", listingComplete: true,
     archives: [{
       name: "backup.zip.enc", size: 100, itemId: "cloud-item", createdAt: new Date(now - 60_000).toISOString(),
-      authenticatedManifest: { exportedBy: "scheduler:interval", sourceEnvironment: "production", coverageVersion: 1 },
+      authenticatedManifest: {
+        exportedBy: "scheduler:interval", sourceEnvironment: "production", coverageVersion: 2,
+        coverageStatus: "complete", missingFileCount: 0,
+      },
     }],
     runs: [{
       actor: "scheduler:interval", status: "success", destination: "onedrive",
@@ -80,5 +83,12 @@ describe("Production-to-OneDrive recovery evidence", () => {
     const old = evidence();
     delete old.archives[0].authenticatedManifest!.coverageVersion;
     expect(assessRecoveryEvidence(old).healthy).toBe(false);
+  });
+  it("does not treat a warning archive as a complete production recovery point", () => {
+    const input = evidence();
+    input.archives[0].authenticatedManifest!.coverageStatus = "completed-with-warnings";
+    input.archives[0].authenticatedManifest!.missingFileCount = 526;
+    input.runs[0].partialFailure = true;
+    expect(assessRecoveryEvidence(input).healthy).toBe(false);
   });
 });

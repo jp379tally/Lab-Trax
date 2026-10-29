@@ -10,6 +10,7 @@ import { useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { relativeTime, statusLabel } from "@/lib/format";
 import type { CaseExceptionQueueItem } from "@/lib/types";
+import { DASHBOARD_SECTION_LABELS } from "@workspace/dashboard-labels";
 
 /** Shared React Query key for the active exception queue. */
 export const EXCEPTION_QUEUE_QUERY_KEY = ["case-exceptions", "active"] as const;
@@ -68,7 +69,9 @@ export function ExceptionCasesCard({
       >
         <div className="flex items-center gap-2">
           <AlertTriangle size={14} className="text-amber-500" />
-          <h2 className="text-sm font-semibold">Exception cases</h2>
+          <h2 className="text-sm font-semibold">
+            {DASHBOARD_SECTION_LABELS.exceptionCases}
+          </h2>
           {exceptions.length > 0 && (
             <span
               className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-xs font-semibold"
@@ -83,7 +86,8 @@ export function ExceptionCasesCard({
           aria-label={
             open ? "Collapse exception cases" : "Expand exception cases"
           }
-          className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+          aria-expanded={open}
+          className="shrink-0 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
           onClick={(e) => {
             e.stopPropagation();
             setOpen((v) => !v);

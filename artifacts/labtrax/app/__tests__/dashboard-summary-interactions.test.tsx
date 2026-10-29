@@ -1,6 +1,8 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
+import { mockScrollViewScrollTo } from "../../test-stubs/react-native";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
@@ -19,13 +21,74 @@ afterEach(async () => {
   await cleanup();
   resetMockAppState();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  mockScrollViewScrollTo.mockClear();
   vi.mocked(router.push).mockClear();
 });
 
 describe("native dashboard summary interactions", () => {
+  it("pairs equal-size primary actions and stacks Due tomorrow immediately after Due today", async () => {
+    setMockAppState({ meMemberships: [membership] });
+    const view = await render(<DashboardScreen />);
+    const pair = view.getByTestId("dashboard-primary-actions");
+    const add = view.getByTestId("dashboard-add-case-btn");
+    const assistant = view.getByTestId("dashboard-ai-assistant-btn");
+    expect(add.parent).toBe(assistant.parent);
+    expect(add.parent).toBe(pair);
+    expect(StyleSheet.flatten(pair.props.style)).toMatchObject({ flexDirection: "row", alignItems: "stretch" });
+    expect(StyleSheet.flatten(add.props.style)).toEqual(StyleSheet.flatten(assistant.props.style));
+    expect(StyleSheet.flatten(add.props.style)).toMatchObject({ flex: 1, minHeight: 44 });
+    const ids = view.getByTestId("dashboard-summary").children.map((child) =>
+      typeof child === "string" ? child : child.props.testID);
+    expect(ids).toEqual([
+      "dashboard-summary-past-due", "dashboard-summary-due-today",
+      "dashboard-summary-due-tomorrow", "dashboard-summary-unassigned",
+    ]);
+    expect(StyleSheet.flatten(view.getByTestId("dashboard-summary-due-tomorrow").props.style))
+      .toMatchObject({ flexBasis: "100%" });
+    await fireEvent.press(assistant);
+    expect(router.push).toHaveBeenCalledWith("/ai-assistant");
+  });
+
+  it("expands Due tomorrow before scrolling to its current off-screen position", async () => {
+    const now = new Date();
+    const offset = now.getDay() === 5 ? 3 : now.getDay() === 6 ? 2 : 1;
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    const date = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+    setMockAppState({ meMemberships: [membership], cases: [{
+      id: "tomorrow-case", caseNumber: "26-5435", status: "received",
+      patientFirstName: "Tomorrow", patientLastName: "Patient", dueDate: date,
+    }] });
+    const view = await render(<DashboardScreen />);
+    await fireEvent.press(view.getByLabelText("Collapse due tomorrow"));
+    expect(view.queryByLabelText("Collapse due tomorrow")).toBeNull();
+    await fireEvent(view.getByTestId("dashboard-section-due-tomorrow"), "layout", {
+      nativeEvent: { layout: { y: 1750 } },
+    });
+    mockScrollViewScrollTo.mockClear();
+    vi.useFakeTimers();
+    await fireEvent.press(view.getByLabelText("Due Tomorrow: 1"));
+    expect(view.getByLabelText("Collapse due tomorrow")).toBeTruthy();
+    expect(mockScrollViewScrollTo).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(mockScrollViewScrollTo).toHaveBeenCalledWith({ y: 1750, animated: true });
+  });
+
+  it("keeps a visible zero-count Due tomorrow button that reveals the empty queue", async () => {
+    setMockAppState({ meMemberships: [membership], cases: [] });
+    const view = await render(<DashboardScreen />);
+    await fireEvent.press(view.getByLabelText("Collapse due tomorrow"));
+    await fireEvent.press(view.getByLabelText("Due Tomorrow: 0"));
+    expect(view.getByText("Nothing due tomorrow.")).toBeTruthy();
+  });
   it("reveals the empty past-due queue when its zero-count card is pressed", async () => {
     setMockAppState({ meMemberships: [membership], cases: [] });
     const view = await render(<DashboardScreen />);
+    expect(view.getByTestId("dashboard-section-past-due").props.style).toMatchObject({
+      borderWidth: 1,
+      borderColor: expect.any(String),
+      backgroundColor: expect.any(String),
+    });
     await fireEvent.press(view.getByLabelText("Collapse past due"));
     expect(view.queryByText("No active cases past due.")).toBeNull();
     await fireEvent.press(view.getByTestId("dashboard-summary-past-due"));
@@ -45,14 +108,14 @@ describe("native dashboard summary interactions", () => {
     } as unknown as ReturnType<typeof apiClient.useCases>);
     const view = await render(<DashboardScreen />);
     expect(view.getByTestId("dashboard-summary-past-due")).toBeTruthy();
-    expect(view.queryByLabelText("Past due: 0")).toBeNull();
+    expect(view.queryByLabelText("Past Due: 0")).toBeNull();
     expect(view.queryByText("No active cases past due.")).toBeNull();
     expect(view.queryByText("Nothing due today.")).toBeNull();
     if (state === "error") {
       await fireEvent.press(view.getByTestId("dashboard-summary-past-due"));
       expect(refetch).toHaveBeenCalledTimes(1);
     } else {
-      expect(view.getByLabelText("Past due: loading")).toBeTruthy();
+      expect(view.getByLabelText("Past Due: loading")).toBeTruthy();
     }
   });
 
@@ -83,8 +146,8 @@ describe("native dashboard summary interactions", () => {
       data: undefined, isLoading: false, isError: true, refetch,
     } as unknown as ReturnType<typeof authMe.useMe>);
     const view = await render(<DashboardScreen />);
-    expect(view.getByLabelText("Unassigned documents count unavailable, tap to retry")).toBeTruthy();
-    expect(view.queryByLabelText("Unassigned documents: 0")).toBeNull();
+    expect(view.getByLabelText("Unassigned Documents count unavailable, tap to retry")).toBeTruthy();
+    expect(view.queryByLabelText("Unassigned Documents: 0")).toBeNull();
     await fireEvent.press(view.getByTestId("dashboard-summary-unassigned"));
     expect(refetch).toHaveBeenCalledTimes(1);
   });

@@ -1,4 +1,4 @@
-import { finalizedInvoiceSql } from "./recovery-billing-hold";
+import { finalizedInvoiceSql } from "./historical-invoice-hold";
 import PDFDocument from "pdfkit";
 import fs from "node:fs";
 import path from "node:path";
@@ -33,6 +33,13 @@ import { LAB_LOGO_CID, getAppBaseUrl, sendMail } from "./mail";
 import { checkEmailPref } from "./email-prefs";
 import { formatNumericDate, formatNumericDateTime, formatNumericMonthYear } from "./date-format";
 import { invoiceDueDate } from "./invoice-due-date";
+import {
+  drawStatementTable,
+  prepareStatementTable,
+  statementTableNeedsContinuation,
+  type StatementTransactionRow,
+  type StatementTableCursor,
+} from "./statement-transaction-table";
 import {
   coerceStatementTemplate,
   StatementDefaultTextBlock,
@@ -849,14 +856,7 @@ export async function generateStatementPdfBuffer(
     invoiceDueDayOfMonth ?? 10,
   );
 
-  type PdfRow = {
-    text: string;
-    amount?: string;
-    height: number;
-    bold?: boolean;
-    color?: string;
-  };
-  const rows: PdfRow[] = [];
+  const rows: StatementTransactionRow[] = [];
   let runningBalance = 0;
   const invoiceById = new Map(data.invoices.map((invoice) => [invoice.id, invoice]));
   const ledgerEvents = [
@@ -894,28 +894,30 @@ export async function generateStatementPdfBuffer(
         PAYMENT_METHOD_LABELS[event.payment.paymentMethod] ??
         event.payment.paymentMethod;
       rows.push({
-        text: `Payment — ${invoice.invoiceNumber}  ·  ${fmtDate(event.payment.paidAt)}  ·  ${method}${event.payment.referenceNumber ? `  ·  Ref: ${event.payment.referenceNumber}` : ""}`,
-        amount: `${fmtMoney(-amount)}${fmtMoney(runningBalance)}`,
-        height: 17,
+        group: `payment:${event.id}`,
+        cells: ["Payment", invoice.invoiceNumber, fmtDate(event.payment.paidAt), "", method, fmtMoney(-amount), fmtMoney(runningBalance)],
         color: "#333",
       });
+      if (event.payment.referenceNumber) rows.push({
+        group: `payment:${event.id}`,
+        cells: [`Ref: ${event.payment.referenceNumber}`, "", "", "", "", "", ""],
+        detail: true,
+      });
+      rows[rows.length - 1]!.groupEnd = true;
       continue;
     }
     const invoice = event.invoice;
     runningBalance += invoice.status === "void" ? 0 : Number(invoice.total) || 0;
     const billTo = invoice.billTo?.trim();
-    let text = [
-      invoice.invoiceNumber,
-      invoice.patientName?.trim() || "—",
-      fmtDate(invoice.issuedAt),
-      fmtDate(dueDate),
-      invoice.status,
-    ].join("  ·  ");
-    if (billTo && billTo !== data.practiceName) text += `\nBill to: ${billTo}`;
     rows.push({
-      text,
-      amount: `${fmtMoney(invoice.status === "void" ? 0 : Number(invoice.total))}${fmtMoney(runningBalance)}`,
-      height: billTo && billTo !== data.practiceName ? 28 : 17,
+      group: `invoice:${event.id}`,
+      cells: [invoice.invoiceNumber, invoice.patientName?.trim() || "—", fmtDate(invoice.issuedAt),
+        fmtDate(dueDate), invoice.status, fmtMoney(invoice.status === "void" ? 0 : Number(invoice.total)), fmtMoney(runningBalance)],
+    });
+    if (billTo && billTo !== data.practiceName) rows.push({
+      group: `invoice:${event.id}`,
+      detail: true,
+      cells: [`Bill to: ${billTo}`, "", "", "", "", "", ""],
     });
     const parents = (invoice.lineItems ?? []).filter((item) => !item.parentLineItemId);
     const childrenByParent = new Map<string, LineItemEntry[]>();
@@ -928,35 +930,36 @@ export async function generateStatementPdfBuffer(
     for (const parent of parents) {
       const children = childrenByParent.get(parent.id) ?? [];
       rows.push({
-        text: `  ${parent.isDiscount ? "Discount: " : ""}${parent.description}`,
-        amount: parent.isDiscount
+        group: `invoice:${event.id}`,
+        detail: true,
+        cells: [`  ${parent.isDiscount ? "Discount: " : ""}${parent.description}`, "", "", "", "", parent.isDiscount
           ? fmtDiscountLineMoney(Number(parent.lineTotal))
-          : fmtMoney(Number(parent.lineTotal)),
-        height: 14,
+          : fmtMoney(Number(parent.lineTotal)), ""],
         bold: children.length > 0,
         color: "#333",
       });
       for (const child of children) {
         rows.push({
-          text: `    ↳ ${child.description}`,
-          amount: fmtMoney(Number(child.lineTotal)),
-          height: 14,
+          group: `invoice:${event.id}`,
+          detail: true,
+          cells: [`    - ${child.description}`, "", "", "", "", fmtMoney(Number(child.lineTotal)), ""],
           color: "#666",
         });
       }
       if (children.length) {
         rows.push({
-          text: "  — Subtotal",
-          amount: fmtMoney(
+          group: `invoice:${event.id}`,
+          detail: true,
+          cells: ["  — Subtotal", "", "", "", "", fmtMoney(
             Number(parent.lineTotal) +
               children.reduce((sum, child) => sum + Number(child.lineTotal), 0),
-          ),
-          height: 15,
+          ), ""],
           bold: true,
           color: "#555",
         });
       }
     }
+    rows[rows.length - 1]!.groupEnd = true;
   }
 
   return await new Promise<Buffer>((resolve, reject) => {
@@ -1107,53 +1110,36 @@ export async function generateStatementPdfBuffer(
       }
     };
 
-    const drawTransactionPage = (section: StatementTemplateSection, start: number): number => {
-      const box = section.box;
-      doc.save();
-      doc.rect(box.x, box.y, box.w, box.h).clip();
-      doc.font("Helvetica-Bold").fontSize(10).fillColor("#000");
-      doc.text(section.title.trim() || "Invoices", box.x + 5, box.y + 4);
-      doc.font("Helvetica-Bold").fontSize(7).fillColor("#555");
-      doc.text("Invoice / patient / dates / status", box.x + 5, box.y + 21, { width: box.w - 155 });
-      doc.text("Amount / Running balance", box.x + box.w - 150, box.y + 21, { width: 145, align: "right" });
-      doc.moveTo(box.x + 5, box.y + 32).lineTo(box.x + box.w - 5, box.y + 32).strokeColor("#ccc").stroke();
-      let y = box.y + 37;
-      let index = start;
-      while (index < rows.length && y + rows[index]!.height <= box.y + box.h - 4) {
-        const row = rows[index]!;
-        doc.font(row.bold ? "Helvetica-Bold" : "Helvetica").fontSize(7.5).fillColor(row.color ?? "#000");
-        doc.text(row.text, box.x + 5, y, { width: box.w - 155, height: row.height });
-        if (row.amount) doc.text(row.amount, box.x + box.w - 150, y, { width: 145, height: row.height, align: "right" });
-        y += row.height;
-        index += 1;
-      }
-      if (index === start && index < rows.length) {
-        const row = rows[index]!;
-        doc.font(row.bold ? "Helvetica-Bold" : "Helvetica").fontSize(7.5).fillColor(row.color ?? "#000");
-        doc.text(row.text, box.x + 5, box.y + 37, { width: box.w - 155, height: row.height });
-        if (row.amount) {
-          doc.text(row.amount, box.x + box.w - 150, box.y + 37, {
-            width: 145,
-            height: row.height,
-            align: "right",
-          });
-        }
-        index += 1;
-      }
-      doc.restore();
-      return index;
-    };
-
+    const tables = transactionSections.map((section) => {
+      const overflow = statementTableNeedsContinuation(section.box);
+      const box = overflow ? { x: 40, y: 40, w: 532, h: 700 } : section.box;
+      return { section, box, overflow, table: prepareStatementTable(doc, box, rows) };
+    });
     drawStaticSections();
-    let nextRows = transactionSections.map((section) => drawTransactionPage(section, 0));
-    while (nextRows.some((next) => next < rows.length)) {
+    let cursors: StatementTableCursor[] = tables.map(({ section, box, overflow, table }) => {
+      if (overflow) {
+        drawBoundedText(doc, section.box, rows.length ? `${section.title} (continued on following pages)` : section.title, { fontSize: 8 });
+        return { row: 0, line: 0 };
+      }
+      return drawStatementTable(doc, box, section.title, table, { row: 0, line: 0 });
+    });
+    while (tables.some((table, index) => !table.overflow && cursors[index]!.row < rows.length)) {
       doc.addPage();
       drawStaticSections();
-      nextRows = transactionSections.map((section, index) =>
-        nextRows[index]! < rows.length
-          ? drawTransactionPage(section, nextRows[index]!)
-          : nextRows[index]!,
+      cursors = tables.map(({ section, box, overflow, table }, index) =>
+        !overflow && cursors[index]!.row < rows.length
+          ? drawStatementTable(doc, box, section.title, table, cursors[index]!)
+          : cursors[index]!,
       );
+    }
+    // Unreadable legacy boxes get independent full-width continuation pages.
+    for (const { section, box, overflow, table } of tables) {
+      if (!overflow) continue;
+      let cursor = { row: 0, line: 0 };
+      while (cursor.row < rows.length) {
+        doc.addPage();
+        cursor = drawStatementTable(doc, box, section.title, table, cursor);
+      }
     }
     doc.end();
   });

@@ -284,153 +284,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/InvoiceDiscountReportResult"
         "403": { description: Insufficient role }
-  /billing-recovery:
-    get:
-      operationId: getRecoveryBilling
-      summary: List evidence-backed recovered-case billing for authorized lab billing staff
-      tags: [billing-recovery]
-      responses:
-        "200":
-          description: Held replacements and individually classified exclusions
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryBillingList" }
-  /billing-recovery/cases/{caseId}/analyze:
-    post:
-      operationId: analyzeRecoveryPrescription
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryEvidenceInput" }
-      responses:
-        "200":
-          description: Established prescription intake; never dollar amounts
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryAnalysis" }
-  /billing-recovery/cases/{caseId}/preview:
-    post:
-      operationId: previewRecoveryBilling
-      summary: Price entered recovered-case work at current catalog rates without saving anything
-      description: >-
-        Runs the same eligibility checks and current-catalog pricing as staging, but needs no review
-        confirmations or notes and writes no proposal, work or invoice. The result is a current-rate
-        replacement estimate, not the original invoice total.
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryPreviewInput" }
-      responses:
-        "200":
-          description: Unsaved current-catalog pricing and the exceptions that would block applying
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryPricePreview" }
-        "409":
-          description: Case is not eligible for a replacement (existing billing, do not bill, or outside scope)
-  /billing-recovery/cases/{caseId}/proposal:
-    post:
-      operationId: proposeRecoveryBilling
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryProposalInput" }
-      responses:
-        "200":
-          description: Persisted proposal with current resolver pricing and exceptions
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryProposalResult" }
-  /billing-recovery/cases/{caseId}/apply:
-    post:
-      operationId: applyRecoveryBilling
-      summary: Owner/admin application of one exact staged proposal as a held replacement invoice
-      description: >-
-        Creates the case's held replacement invoice from its latest staged proposal. The invoice stays held
-        (balance 0.00, not on the customer's balance) until an owner/admin releases it. The proposal must be
-        the latest for the case and have no exceptions; the case must be unchanged since staging, re-resolved
-        current pricing must match, and no other billing may exist. Repeating the request for the same proposal
-        returns the same invoice. Applying one case here needs no operator run approval; the operator batch
-        tooling still applies only proposals authorized by its rehearsed run approval.
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryProposalReference" }
-      responses:
-        "200":
-          description: Atomically created held draft or idempotent replay
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryWriteResult" }
-        "403":
-          description: Only lab owners and admins may apply
-        "409":
-          description: Case or pricing changed, proposal superseded, other billing exists, or exception unresolved
-  /billing-recovery/cases/{caseId}/correct:
-    post:
-      operationId: correctRecoveryBilling
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryProposalReference" }
-      responses:
-        "200":
-          description: Corrected held draft only; no issuance or collection
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryWriteResult" }
-  /billing-recovery/cases/{caseId}/do-not-bill:
-    post:
-      operationId: excludeRecoveryBilling
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryExclusionInput" }
-      responses:
-        "200":
-          description: Audited exclusion, preserving the case and original work
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryExclusionResult" }
-  /billing-recovery/cases/{caseId}/release:
-    post:
-      operationId: releaseRecoveryBilling
-      summary: Lab-admin-only explicit charge and historical-settlement review
-      tags: [billing-recovery]
-      parameters: [{ $ref: "#/components/parameters/RecoveryCaseId" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RecoveryReleaseInput" }
-      responses:
-        "200":
-          description: >-
-            Reviewed replacement released as an open invoice with its total as balance due, issued now with the
-            lab's normal due date; not a restored original invoice
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RecoveryWriteResult" }
-        "409":
-          description: Prior payment evidence, changed work, or competing invoice prevents release
   /analytics/saved-card-setup:
     post:
       operationId: recordSavedCardSetupOutcome
@@ -2125,6 +1978,61 @@ paths:
                   type: string
                 patientLastNameHint:
                   type: string
+                receivedAt:
+                  type: string
+                  format: date
+                scanDateHint:
+                  oneOf:
+                    - type: string
+                      format: date
+                    - type: string
+                      enum: [""]
+                rxDueDateHint:
+                  type: string
+                  description: Rx due date, not the lab's scheduled due date.
+                labDueDateHint:
+                  oneOf:
+                    - type: string
+                      format: date
+                    - type: string
+                      enum: [""]
+                externalPatientIdHint:
+                  type: string
+                  description: Source-platform case/order identifier, separate from the Case Pan barcode.
+                casePanBarcodeHint:
+                  type: string
+                providerContactSnapshot:
+                  type: string
+                  description: JSON-encoded contact details reviewed for this case.
+                invoiceNotesHint:
+                  type: string
+                toothIndicesHint:
+                  type: string
+                shadeHint:
+                  type: string
+                materialHint:
+                  type: string
+                caseTypeHint:
+                  type: string
+                archHint:
+                  type: string
+                removableSubtypeHint:
+                  type: string
+                  enum: ["", partial, denture, flipper, repair_partial, repair_denture, repair]
+                reviewedRestorationsHint:
+                  type: string
+                  description: JSON-encoded reviewed restoration rows; prices are resolved by the server.
+                toothAssignments:
+                  type: string
+                  description: JSON-encoded explicit tooth-chart roles.
+                bridgeConnectors:
+                  type: string
+                  description: Explicit bridge connector pairs from the reviewed tooth chart.
+                notesHint:
+                  type: string
+                invoiceOverrideLines:
+                  type: string
+                  description: JSON-encoded role-authorized reviewed invoice lines.
       responses:
         "201":
           description: Case created
@@ -3230,6 +3138,34 @@ paths:
           description: Caller is not a member of the case's lab
         "404":
           description: Case not found
+  /cases/{caseId}/tooth-chart:
+    patch:
+      operationId: saveCaseToothChart
+      tags: [cases]
+      summary: Save staged tooth assignments and the case invoice atomically
+      description: |
+        Requires lab billing permission. Missing is a nonbillable tooth status.
+        Refuses paid, finalized or reviewed invoices without committing chart changes.
+        The chart, connector graph and invoice rebuild commit together or roll back.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToothChartCommitInput" }
+      responses:
+        "200":
+          description: Chart and invoice committed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToothChartCommitResult" }
+        "400": { description: Invalid assignments or no configured catalog price }
+        "403": { description: Billing permission required }
+        "409": { description: Conflicting assignment or protected invoice; nothing committed }
   /cases/{caseId}/restorations/hierarchy:
     patch:
       operationId: updateCaseRestorationHierarchy
@@ -4715,6 +4651,12 @@ paths:
             schema:
               $ref: "#/components/schemas/BackupRunRequest"
       responses:
+        "202":
+          description: Cloud backup accepted when respondAsync is true; poll the exact runId until a verified terminal result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupRunResult"
         "200":
           description: Backup completed
           content:
@@ -4725,6 +4667,25 @@ paths:
           description: Invalid destination or missing path
         "403":
           description: Admin access required
+  /admin/backup/status/{runId}:
+    get:
+      operationId: getBackupRunStatus
+      tags: [backup]
+      summary: Get shared phase and exact terminal result for one backup run
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Shared live status, with the matching history result after verification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupJobStatus"
+        "404":
+          description: No live status is available for this run
   /admin/backup/schedule:
     get:
       operationId: getBackupSchedule
@@ -4786,6 +4747,32 @@ paths:
                   enabled: { type: boolean }
         "403":
           description: Admin access required
+  /admin/backup/database-retention:
+    put:
+      operationId: saveDatabaseProtectionRetention
+      tags: [backup]
+      summary: Save the approved production database retention policy
+      description: |
+        Updates the dependency-aware retention policy for production database
+        recovery points. Enabling cleanup requires explicit owner approval.
+        The retention policy is disabled by default.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DatabaseProtectionRetentionInput"
+      responses:
+        "200":
+          description: Retention policy saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseProtectionRetentionResult"
+        "400":
+          description: Invalid policy, missing explicit owner approval, or active database protection
+        "403":
+          description: Platform administrator access required
   /admin/backup/onedrive-status:
     get:
       operationId: getOneDriveBackupStatus
@@ -6097,6 +6084,31 @@ paths:
                 $ref: "#/components/schemas/OrganizationResult"
         "403":
           description: Insufficient role
+  /organizations/{organizationId}/intake-contact:
+    patch:
+      operationId: updateIntakePracticeContact
+      tags: [organizations]
+      summary: Save contact fields explicitly approved during AI case intake
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IntakePracticeContactInput"
+      responses:
+        "200":
+          description: Updated practice contact fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResult"
+        "403":
+          description: Caller is not an admin or owner of the practice's lab
   /organizations/{organizationId}/invites:
     post:
       operationId: createInvitation
@@ -7530,6 +7542,27 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/AdminProviderSubscriptionListResult" } } }
         "401": { description: Authentication required }
         "403": { description: Authenticated platform-admin unlock required }
+  /admin/pin/verify:
+    post:
+      operationId: verifyAdminPin
+      tags: [admin]
+      summary: Verify the signed-in administrator PIN without creating a platform-admin session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyAdminPinInput"
+      responses:
+        "200":
+          description: PIN verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyAdminPinResult"
+        "400": { description: PIN must be exactly four digits }
+        "401": { description: Authentication required }
+        "403": { description: Admin role required or PIN is incorrect }
   /admin/provider-subscriptions/{id}:
     patch:
       operationId: updateAdminProviderSubscription
@@ -7743,11 +7776,6 @@ paths:
 
 components:
   parameters:
-    RecoveryCaseId:
-      in: path
-      name: caseId
-      required: true
-      schema: { type: string }
     PagingLimit:
       in: query
       name: limit
@@ -7808,6 +7836,89 @@ components:
         materials breakdown; "Unspecified" matches restorations without a
         material). Legacy cases match on their blob material string.
   schemas:
+    VerifyAdminPinInput:
+      type: object
+      required: [pin]
+      properties:
+        pin: { type: string, minLength: 4, maxLength: 4, pattern: "^\\d{4}$" }
+    VerifyAdminPinResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, const: true }
+    ToothChartCommitInput:
+      type: object
+      required: [creates, updates, deletes, bridgeConnectors]
+      properties:
+        creates:
+          type: array
+          maxItems: 52
+          items:
+            type: object
+            required: [localId, toothNumber, restorationType]
+            properties:
+              localId: { type: string, format: uuid }
+              toothNumber: { type: string }
+              restorationType: { type: string }
+              material: { type: [string, "null"] }
+              restorationSubtype: { type: [string, "null"] }
+              shade: { type: [string, "null"] }
+              quantity: { type: integer, minimum: 1, maximum: 128 }
+              arch: { type: [string, "null"] }
+              unitPrice: { type: number, minimum: 0 }
+              implantRetention: { type: [string, "null"] }
+              implantManufacturer: { type: [string, "null"] }
+              implantPlatformNotes: { type: [string, "null"], maxLength: 10000 }
+        updates:
+          type: array
+          maxItems: 52
+          items:
+            type: object
+            required: [restorationId, toothNumber]
+            properties:
+              restorationId: { type: string }
+              toothNumber: { type: string }
+              restorationType:
+                type: string
+                enum: [Crown, Coping, Overlay, Pontic, Diagnostic, Inlay/Onlay, Offset inlay, Veneer, Denture, Partial denture, Bite splint, Primary telescopic crown, Secondary telescopic crown, Attachment]
+              arch: { type: [string, "null"], enum: [upper, lower, null] }
+              material: { type: string }
+              restorationSubtype: { type: string }
+              shade: { type: string }
+        deletes:
+          type: array
+          maxItems: 104
+          items: { type: string }
+        bridgeConnectors: { type: [string, "null"] }
+        caseDetails:
+          type: object
+          description: Clinical form fields saved in the same transaction as chart and invoice. Doctor/practice reassignment uses its existing dedicated workflow.
+          additionalProperties: true
+        hierarchy:
+          type: object
+          description: Existing validated whole-case clinical reconciliation, applied before explicit staged row operations.
+          additionalProperties: true
+        implants:
+          type: array
+          items:
+            type: object
+            required: [restorationId, values]
+            properties:
+              restorationId: { type: string }
+              values:
+                type: object
+                additionalProperties: { type: [string, "null"] }
+    ToothChartCommitResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [invoiceId, invoiceAction]
+          properties:
+            invoiceId: { type: [string, "null"] }
+            invoiceAction: { type: string, enum: [updated, created, skipped] }
     CreatorAccess:
       type: object
       required: [isCreator, pinConfigured, unlocked, expiresAt]
@@ -8100,229 +8211,6 @@ components:
       properties:
         amount: { type: string }
         count: { type: integer }
-    RecoveryWork:
-      type: object
-      additionalProperties: false
-      required: [toothNumber, restorationType, restorationSubtype, arch, material, shade, quantity]
-      properties:
-        toothNumber: { type: string }
-        restorationType: { type: string, minLength: 1 }
-        restorationSubtype: { type: [string, "null"] }
-        arch: { type: [string, "null"], enum: [upper, lower, null] }
-        material: { type: [string, "null"] }
-        shade: { type: [string, "null"] }
-        quantity: { type: integer, minimum: 1, maximum: 32 }
-    RecoveryEvidenceInput:
-      type: object
-      additionalProperties: false
-      required: [evidenceAttachmentId]
-      properties:
-        evidenceAttachmentId: { type: string }
-    RecoveryProposalInput:
-      type: object
-      additionalProperties: false
-      required: [evidenceAttachmentId, restorations, prescriptionReviewed, identityReviewed, duplicateReviewed, reviewNotes]
-      properties:
-        evidenceAttachmentId: { type: string }
-        restorations:
-          type: array
-          minItems: 1
-          maxItems: 64
-          items: { $ref: "#/components/schemas/RecoveryWork" }
-        bridgeConnectors: { type: [string, "null"] }
-        prescriptionReviewed: { type: boolean, enum: [true] }
-        identityReviewed: { type: boolean, enum: [true] }
-        duplicateReviewed: { type: boolean, enum: [true] }
-        reviewNotes: { type: string, minLength: 1, maxLength: 4000 }
-    RecoveryPreviewInput:
-      type: object
-      additionalProperties: false
-      required: [evidenceAttachmentId, restorations]
-      properties:
-        evidenceAttachmentId: { type: string }
-        restorations:
-          type: array
-          minItems: 1
-          maxItems: 64
-          items: { $ref: "#/components/schemas/RecoveryWork" }
-        bridgeConnectors: { type: [string, "null"] }
-    RecoveryPricePreview:
-      type: object
-      description: Unsaved current-rate replacement pricing; never a staged proposal or the original total.
-      required: [rows, lines, total, exceptions, pricingAt, pricingBasis, persisted]
-      properties:
-        rows:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryPricedWork" }
-        lines:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryPricedLine" }
-        total: { type: string }
-        exceptions:
-          type: array
-          items: { type: string }
-        pricingAt: { type: string, format: date-time }
-        pricingBasis: { type: string, enum: [current_catalog] }
-        persisted: { type: boolean, enum: [false] }
-    RecoveryPricedWork:
-      allOf:
-        - { $ref: "#/components/schemas/RecoveryWork" }
-        - type: object
-          required: [id, unitPrice, priceSource, priceSourceId, priceSourceName, priceKey]
-          properties:
-            id: { type: string }
-            unitPrice: { type: string }
-            priceSource: { type: [string, "null"] }
-            priceSourceId: { type: [string, "null"] }
-            priceSourceName: { type: [string, "null"] }
-            priceKey: { type: [string, "null"] }
-    RecoveryPricedLine:
-      type: object
-      additionalProperties: true
-      required: [description, quantity, unitPrice, lineTotal]
-      properties:
-        description: { type: string }
-        quantity: { type: integer }
-        unitPrice: { type: string }
-        lineTotal: { type: string }
-        priced: { type: boolean }
-        childItems:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryPricedChild" }
-    RecoveryPricedChild:
-      type: object
-      additionalProperties: true
-      required: [description, quantity, unitPrice, lineTotal]
-      properties:
-        description: { type: string }
-        quantity: { type: integer }
-        unitPrice: { type: string }
-        lineTotal: { type: string }
-        priced: { type: boolean }
-    RecoveryProposal:
-      type: object
-      required: [version, caseFingerprint, input, rows, lines, total, exceptions, pricingAt, pricingBasis]
-      properties:
-        version: { type: integer, enum: [1] }
-        caseFingerprint: { type: string }
-        input: { $ref: "#/components/schemas/RecoveryProposalInput" }
-        rows:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryPricedWork" }
-        lines:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryPricedLine" }
-        total: { type: string }
-        exceptions:
-          type: array
-          items: { type: string }
-        pricingAt: { type: string, format: date-time }
-        pricingBasis: { type: string, enum: [current_catalog] }
-        previousInvoiceId: { type: string }
-        previousInvoiceFingerprint: { type: string }
-        previousLinesFingerprint: { type: string }
-        doctorIdentity: { type: [string, "null"] }
-    RecoveryProposalResult:
-      type: object
-      required: [proposalId, proposal]
-      properties:
-        proposalId: { type: string }
-        proposal: { $ref: "#/components/schemas/RecoveryProposal" }
-    RecoveryProposalReference:
-      type: object
-      additionalProperties: false
-      required: [proposalId]
-      properties:
-        proposalId: { type: string }
-    RecoveryAnalysis:
-      type: object
-      required: [analysisId, restorations, exceptions, extracted]
-      properties:
-        analysisId: { type: string }
-        restorations:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryWork" }
-        exceptions:
-          type: array
-          items: { type: string }
-        extracted: { type: object, additionalProperties: true }
-    RecoveryReleaseInput:
-      type: object
-      additionalProperties: false
-      required: [chargesReviewed, historicalPaymentsReviewed, historicalSettlement, evidenceNotes]
-      properties:
-        chargesReviewed: { type: boolean, enum: [true] }
-        historicalPaymentsReviewed: { type: boolean, enum: [true] }
-        historicalSettlement: { type: string, enum: [independent_evidence_of_no_payment] }
-        evidenceNotes: { type: string, minLength: 20, maxLength: 4000 }
-    RecoveryWriteResult:
-      type: object
-      required: [invoiceId, total, outcome]
-      properties:
-        invoiceId: { type: string }
-        total: { type: string }
-        outcome: { type: string }
-    RecoveryExclusionInput:
-      type: object
-      additionalProperties: false
-      required: [reason]
-      properties:
-        reason: { type: string, minLength: 1, maxLength: 4000 }
-    RecoveryExclusionResult:
-      type: object
-      required: [decisionId]
-      properties:
-        decisionId: { type: string }
-    RecoveryBillingInvoice:
-      type: object
-      required: [id, invoiceNumber, status, total, balanceDue, dueAt, recoveryBilling]
-      properties:
-        id: { type: string }
-        invoiceNumber: { type: string }
-        status: { type: string }
-        total: { type: string }
-        balanceDue: { type: string }
-        dueAt: { type: ["string", "null"], format: date-time }
-        recoveryBilling: { type: [object, "null"], additionalProperties: true }
-    RecoveryBillingRow:
-      type: object
-      required: [caseId, caseNumber, historicalDate, patientName, doctorName, practiceId, rxNotes, sourceFlagged, state, proposalId, proposal, invoice, prescriptions, decision]
-      properties:
-        caseId: { type: string }
-        caseNumber: { type: string }
-        historicalDate: { type: string }
-        patientName: { type: string }
-        doctorName: { type: string }
-        practiceId: { type: [string, "null"] }
-        rxNotes: { type: [string, "null"] }
-        sourceFlagged: { type: boolean }
-        state: { type: string, enum: [unresolved, deleted_case, deleted_or_void_billing, held, released, existing_billing, do_not_bill, existing_work, exception, proposed, needs_prescription_review] }
-        proposalId: { type: [string, "null"] }
-        proposal:
-          anyOf:
-            - { $ref: "#/components/schemas/RecoveryProposal" }
-            - { type: "null" }
-        invoice:
-          anyOf:
-            - { $ref: "#/components/schemas/RecoveryBillingInvoice" }
-            - { type: "null" }
-        prescriptions:
-          type: array
-          items:
-            type: object
-            required: [id, fileName]
-            properties:
-              id: { type: string }
-              fileName: { type: string }
-        decision: { type: [object, "null"], additionalProperties: true }
-    RecoveryBillingList:
-      type: object
-      required: [timezone, rows]
-      properties:
-        timezone: { type: string }
-        rows:
-          type: array
-          items: { $ref: "#/components/schemas/RecoveryBillingRow" }
     ScanOutputFormat:
       type: string
       enum: [ply, stl]
@@ -9620,6 +9508,11 @@ components:
         city: { type: string, nullable: true }
         state: { type: string, nullable: true }
         zip: { type: string, nullable: true }
+        billingAddressLine1: { type: string, nullable: true }
+        billingAddressLine2: { type: string, nullable: true }
+        billingCity: { type: string, nullable: true }
+        billingState: { type: string, nullable: true }
+        billingZip: { type: string, nullable: true }
         isActive: { type: boolean, nullable: true }
         statementEmailOptOut: { type: boolean, nullable: true }
         defaultCaseDueDays: { type: integer, nullable: true }
@@ -9646,6 +9539,22 @@ components:
           description: Monthly revenue high threshold (dollars) for chart green coloring. Null = default (95 000).
         licenseNumber: { type: string, nullable: true }
         accountNumber: { type: string, nullable: true }
+    IntakePracticeContactInput:
+      type: object
+      properties:
+        addressLine1: { type: string, nullable: true }
+        addressLine2: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
+        billingAddressLine1: { type: string, nullable: true }
+        billingAddressLine2: { type: string, nullable: true }
+        billingCity: { type: string, nullable: true }
+        billingState: { type: string, nullable: true }
+        billingZip: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        primaryEmail: { type: string, format: email, nullable: true }
+        billingEmail: { type: string, format: email, nullable: true }
     Organization:
       type: object
       description: Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.
@@ -10065,6 +9974,13 @@ components:
           description: |
             Calendar date when the case was received by the lab. Canonical and
             projected legacy/mobile cases both expose YYYY-MM-DD.
+        scanDate: { type: string, format: date, nullable: true }
+        prescriptionDueDate: { type: string, format: date, nullable: true }
+        providerContactSnapshot:
+          type: object
+          nullable: true
+          additionalProperties: true
+        externalPatientId: { type: string, nullable: true }
         createdAt: { type: string, nullable: true }
         updatedAt: { type: string, nullable: true }
         restorationCount: { type: number, nullable: true }
@@ -10283,6 +10199,29 @@ components:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Calendar date the case was received.
+        scanDate:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Calendar date explicitly recorded for the scan.
+        prescriptionDueDate:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: Due date explicitly extracted from the prescription; separate from lab scheduling.
+        aiIntakeReviewedDates:
+          type: boolean
+          enum: [true]
+          description: >
+            True when an AI intake review explicitly supplied its received,
+            lab due, and eligible prescription dates. The server persists the
+            reviewed lab schedule without applying a second current-date cap.
+        providerContactSnapshot:
+          type: object
+          additionalProperties: true
+          description: Contact details reviewed for this case, independent of shared practice edits.
+        invoiceNotes:
+          type: string
+          maxLength: 10000
+          description: Notes saved on the initial draft invoice.
         status:
           type: string
           nullable: true
@@ -11232,6 +11171,10 @@ components:
         notes:
           type: string
           nullable: true
+          description: Invoice notes; provider-facing reads and invoice outputs show these only when shareNotesWithProvider is true.
+        shareNotesWithProvider:
+          type: boolean
+          description: Explicitly share invoice notes with the linked provider. Unset legacy values are private.
         providerOrganizationId:
           type: string
           nullable: true
@@ -11463,6 +11406,11 @@ components:
       type: object
       required: [destination]
       properties:
+        runId: { type: string, format: uuid }
+        respondAsync:
+          type: boolean
+          description: Opt into HTTP 202 for cloud backups. Requires runId. Older installed clients retain synchronous HTTP 200.
+        archiveKind: { type: string, enum: [full, database-only] }
         destination:
           type: string
           enum: [onedrive, google-drive, local, network]
@@ -11473,10 +11421,29 @@ components:
     BackupRunResult:
       type: object
       properties:
+        runId: { type: string, format: uuid }
+        state: { type: string, enum: [running] }
+        archiveKind: { type: string, nullable: true }
+        partialFailure: { type: boolean }
+        warnings: { type: string, nullable: true }
         ok: { type: boolean }
         size: { type: integer, description: "Backup archive size in bytes" }
         completedAt: { type: string, format: date-time }
         fileName: { type: string }
+    BackupJobStatus:
+      type: object
+      required: [runId, state, phase]
+      properties:
+        runId: { type: string, format: uuid }
+        state: { type: string, enum: [running, awaiting_verification, completed, failed, stale] }
+        phase: { type: string }
+        elapsedMs: { type: integer }
+        metrics:
+          type: object
+          additionalProperties: { type: number }
+        error: { type: string }
+        result:
+          $ref: "#/components/schemas/BackupRunResult"
     BackupScheduleInput:
       type: object
       required: [interval, unit, destination, enabled]
@@ -11499,6 +11466,20 @@ components:
     BackupScheduleResult:
       type: object
       properties:
+        offsite:
+          type: object
+          additionalProperties: true
+          properties:
+            enabled: { type: boolean }
+            running: { type: boolean }
+            intervalMinutes: { type: integer }
+            lastVerifiedAt: { type: string, nullable: true }
+            databaseProtection:
+              $ref: "#/components/schemas/DatabaseProtectionStatus"
+        sourceEnvironment:
+          type: string
+          enum: [development, production]
+          description: The connected server's immutable backup source. Use the development app or published app to select a source; this field does not rebind a database.
         ok: { type: boolean }
         interval:
           type: integer
@@ -11516,7 +11497,89 @@ components:
         path:
           type: string
           nullable: true
+        databaseRetention:
+          $ref: "#/components/schemas/DatabaseProtectionRetentionSchedule"
         enabled: { type: boolean }
+    DatabaseProtectionStatus:
+      type: object
+      description: Production database and readable media in encrypted content-addressed storage. Fresh database exports; reusable media chunks, not WAL/PITR. Missing originals mean partial coverage.
+      properties:
+        mode: { type: string, enum: [incremental-storage-fresh-export, incremental-records-and-media] }
+        scope: { type: string, enum: [production-database-and-media] }
+        coverage: { type: string, enum: [complete, partial] }
+        mediaFiles: { type: integer }
+        mediaBytes: { type: number }
+        missingFiles: { type: integer }
+        state: { type: string, enum: [not_started, running, verified, skipped_busy, failed] }
+        stage: { type: string }
+        lastAttemptAt: { type: string, nullable: true }
+        lastVerifiedAt: { type: string, nullable: true }
+        recoveryPointAt: { type: string, nullable: true }
+        lastDestinationCheckAt: { type: string, nullable: true }
+        point: { type: string, nullable: true }
+        dumpBytes: { type: number }
+        newChunks: { type: number }
+        newBytes: { type: number, description: Encrypted new chunk bytes, excluding small point/marker metadata. }
+        reusedChunks: { type: number }
+        error: { type: string, nullable: true }
+    DatabaseProtectionRetentionInput:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        confirmation:
+          type: string
+          enum: [APPROVE_DATABASE_RETENTION]
+          description: Required when enabling destructive cleanup.
+        keepAllWithinHours: { type: integer, minimum: 1, maximum: 2160 }
+        keepHourlyWithinDays: { type: integer, minimum: 1, maximum: 365 }
+        keepDailyWithinDays: { type: integer, minimum: 1, maximum: 3650 }
+        safetyGraceHours: { type: integer, minimum: 48, maximum: 720 }
+    DatabaseProtectionRetentionConfig:
+      type: object
+      required:
+        - enabled
+        - keepAllWithinHours
+        - keepHourlyWithinDays
+        - keepDailyWithinDays
+        - safetyGraceHours
+        - approvedAt
+        - approvedBy
+      properties:
+        enabled: { type: boolean }
+        keepAllWithinHours: { type: integer }
+        keepHourlyWithinDays: { type: integer }
+        keepDailyWithinDays: { type: integer }
+        safetyGraceHours: { type: integer }
+        approvedAt: { type: [string, "null"], format: date-time }
+        approvedBy: { type: [string, "null"] }
+    DatabaseProtectionRetentionStatus:
+      type: object
+      required: [state, pendingObjects, deletedObjects, lastUpdatedAt, error]
+      properties:
+        state:
+          type: string
+          enum: [planned, deleting, complete, paused, failed, disabled, not_started]
+        pendingObjects: { type: integer }
+        deletedObjects: { type: integer }
+        lastUpdatedAt: { type: [string, "null"], format: date-time }
+        error: { type: [string, "null"] }
+    DatabaseProtectionRetentionSchedule:
+      allOf:
+        - $ref: "#/components/schemas/DatabaseProtectionRetentionConfig"
+        - type: object
+          required: [status]
+          properties:
+            status:
+              $ref: "#/components/schemas/DatabaseProtectionRetentionStatus"
+    DatabaseProtectionRetentionResult:
+      allOf:
+        - $ref: "#/components/schemas/DatabaseProtectionRetentionConfig"
+        - type: object
+          required: [ok]
+          properties:
+            ok: { type: boolean }
     OneDriveBackupStatusResult:
       type: object
       properties:
@@ -12234,6 +12297,12 @@ components:
         priority:
           type: string
           enum: [normal, rush]
+        labLocationId:
+          type: string
+          nullable: true
+          description: >
+            Lab station where the case is physically located. Null clears the
+            stored station without changing the case status.
         receivedAt:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}$'

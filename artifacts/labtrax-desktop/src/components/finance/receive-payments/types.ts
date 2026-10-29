@@ -59,6 +59,12 @@ export type EligibleAccount = {
   doctorNames?: string[];
   doctors?: Array<{ doctorIdentity: string | null; doctorDisplayName: string }>;
   doctorProfiles?: Array<{ id: string; doctorName: string; doctorDisplayName: string }>;
+  /** Latest received payment for each doctor identity, excluding unattributed sessions. */
+  doctorLastPayments?: Array<{
+    doctorIdentity: string;
+    lastPaymentAt: string;
+    lastPaymentAmount: string;
+  }>;
   outstandingInvoices?: StatementInvoice[];
   /** Customer Center account number; null when the customer has none. */
   accountNumber?: string | null;
@@ -118,5 +124,6 @@ export type SavedSelection = {
    * when the set was saved. Sets saved before scopes were kept have none;
    * those customers load with their default scope.
    */
-  customers: Array<{ id: string; name: string; scope?: CustomerScope }>;
+  /** Explicit account kind distinguishes new practice selections from legacy sets. */
+  customers: Array<{ id: string; name: string; scope?: CustomerScope; accountKind?: "practice" | "doctor" }>;
 };

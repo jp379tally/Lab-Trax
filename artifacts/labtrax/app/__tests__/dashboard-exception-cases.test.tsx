@@ -1,9 +1,10 @@
 import React from "react";
 import { describe, it, expect, afterEach } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react-native";
+import { cleanup, fireEvent, render, within } from "@testing-library/react-native";
 import { router } from "expo-router";
 import { resetMockAppState, setMockAppState } from "../../vitest.setup";
 import DashboardScreen from "../(tabs)/dashboard";
+import { DASHBOARD_SECTION_LABELS } from "@workspace/dashboard-labels";
 
 /**
  * Mobile dashboard — Exception Cases section.
@@ -56,6 +57,55 @@ afterEach(() => {
 });
 
 describe("Mobile dashboard — Exception cases", () => {
+  it("uses matching title case for section headings and dynamic summary cards", async () => {
+    setMockAppState({
+      meMemberships: [LAB_MEMBERSHIP],
+      caseExceptions: [makeException()],
+    });
+
+    const { getAllByText, getByText, getByTestId, queryByText } = await render(
+      <DashboardScreen />,
+    );
+
+    expect(getByText(DASHBOARD_SECTION_LABELS.recentCases)).toBeTruthy();
+    expect(getByText(DASHBOARD_SECTION_LABELS.exceptionCases)).toBeTruthy();
+    expect(
+      getAllByText(DASHBOARD_SECTION_LABELS.pastDue).length,
+    ).toBeGreaterThan(0);
+    expect(
+      getAllByText(DASHBOARD_SECTION_LABELS.dueToday).length,
+    ).toBeGreaterThan(0);
+    expect(
+      getAllByText(DASHBOARD_SECTION_LABELS.dueTomorrow).length,
+    ).toBeGreaterThan(0);
+    expect(
+      getAllByText(DASHBOARD_SECTION_LABELS.unassignedDocuments).length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(getByTestId("dashboard-summary-past-due")).getByText(
+        DASHBOARD_SECTION_LABELS.pastDue,
+      ),
+    ).toBeTruthy();
+    expect(
+      within(getByTestId("dashboard-summary-due-today")).getByText(
+        DASHBOARD_SECTION_LABELS.dueToday,
+      ),
+    ).toBeTruthy();
+    expect(
+      within(getByTestId("dashboard-summary-due-tomorrow")).getByText(
+        DASHBOARD_SECTION_LABELS.dueTomorrow,
+      ),
+    ).toBeTruthy();
+    expect(
+      within(getByTestId("dashboard-summary-unassigned")).getByText(
+        DASHBOARD_SECTION_LABELS.unassignedDocuments,
+      ),
+    ).toBeTruthy();
+    expect(getByText("RX Intake")).toBeTruthy();
+    expect(queryByText("Recent cases")).toBeNull();
+    expect(queryByText("Exception cases")).toBeNull();
+  });
+
   it("renders the queue with patient, case, issue, author and a media indicator", async () => {
     setMockAppState({
       meMemberships: [LAB_MEMBERSHIP],
@@ -164,8 +214,15 @@ describe("Mobile dashboard — Exception cases", () => {
   it("shows an explicit empty state instead of hiding the section", async () => {
     setMockAppState({ meMemberships: [LAB_MEMBERSHIP], caseExceptions: [] });
 
-    const { getByTestId, queryByTestId } = await render(<DashboardScreen />);
+    const { getByTestId, getByText, queryByTestId } = await render(
+      <DashboardScreen />,
+    );
     expect(getByTestId("dashboard-exception-empty")).toBeTruthy();
+    expect(
+      getByText(
+        "No exception cases right now.",
+      ),
+    ).toBeTruthy();
     expect(queryByTestId("dashboard-exception-count")).toBeNull();
   });
 
@@ -200,10 +257,10 @@ describe("Mobile dashboard — Exception cases", () => {
     );
     expect(getByTestId("dashboard-exception-row-exc_1")).toBeTruthy();
 
-    await fireEvent.press(getByText("Exception cases"));
+    await fireEvent.press(getByText("Exception Cases"));
     expect(queryByTestId("dashboard-exception-row-exc_1")).toBeNull();
 
-    await fireEvent.press(getByText("Exception cases"));
+    await fireEvent.press(getByText("Exception Cases"));
     expect(getByTestId("dashboard-exception-row-exc_1")).toBeTruthy();
   });
 

@@ -5,6 +5,7 @@ import {
   serializeConnectorState,
   suggestPonticConnectorPairs,
   validateToothConnectors,
+  incompatibleToothConnectorPairs,
   expandToothAssignmentIdentifiers,
   copyToothAssignment,
   withPonticConnectorSuggestions,
@@ -14,9 +15,44 @@ import {
   readExplicitAiToothAssignments,
   invalidToothAssignmentTokens,
   describeToothAssignments,
+  toothBridgeLabels,
 } from "./tooth-assignment";
 
 describe("tooth assignment connectors", () => {
+  it("counts and describes a veneer without reclassifying it as a prepared crown or bridge", () => {
+    const units = [{ toothNumber: "8", restorationType: "Veneer", material: "e.max", shade: "A1", quantity: 1 }];
+    expect(validateToothConnectors(null, units)).toEqual({ valid: true, errors: [] });
+    expect(toothAssignmentSummary(units)).toMatchObject({
+      units: 1, veneers: 1, crowns: 0, pontics: 0, groups: [],
+      materials: [{ material: "e.max", count: 1 }],
+    });
+    expect(describeToothAssignments(units)).toContain("#8 veneer, e.max, shade A1");
+    expect(suggestPonticConnectorPairs(units)).toEqual(new Set());
+  });
+
+  it("blocks veneer connectors and duplicate assignments without deleting their saved choices", () => {
+    const units = [
+      { toothNumber: "8", restorationType: "Veneer", material: "e.max", quantity: 1 },
+      { toothNumber: "9", restorationType: "Crown", material: "e.max", quantity: 1 },
+    ];
+    expect(validateToothConnectors("8-9", units).errors.join(" ")).toContain("cannot connect a veneer");
+    expect(incompatibleToothConnectorPairs(units)).toEqual(new Set(["8-9"]));
+    expect(toothAssignmentSummary(units, "8-9")).toMatchObject({ units: 2, veneers: 1, groups: [] });
+    expect(serializeConnectorState(parseConnectorState("8-9"))).toBe("8-9");
+    expect(validateToothConnectors(null, [...units, { ...units[1], toothNumber: "8" }]).errors)
+      .toContain("Tooth #8 has more than one billable assignment.");
+  });
+
+  it("does not display orphaned or incompatible persisted endpoints as a successful bridge", () => {
+    const units = [
+      { toothNumber: "2", restorationType: "Crown", material: "Zirconia" },
+      { toothNumber: "3", restorationType: "Pontic", material: "PFM" },
+    ];
+    expect(toothAssignmentSummary(units, "2-3,3-4")).toMatchObject({
+      units: 2, groups: [], unresolvedPontics: ["3"],
+    });
+    expect(parseConnectorState("2-3,3-4").active).toEqual(new Set(["2-3", "3-4"]));
+  });
   it("keeps malformed legacy connections visible during unrelated unit edits", () => {
     const graph = withPonticConnectorSuggestions("invalid-edge,2-4", [
       { toothNumber: "2", restorationType: "Crown", material: "Zirconia", quantity: 1 },
@@ -55,6 +91,8 @@ describe("tooth assignment connectors", () => {
     expect(text).toContain("#2");
     expect(text).toMatch(/prepared crown/i);
     expect(text).toMatch(/pontic/i);
+    expect(toothBridgeLabels(units, "?2-3,?3-4")).toEqual(["Zirconia bridge #2–4 | 3 units"]);
+    expect(text).toContain("Zirconia bridge #2–4 | 3 units");
     expect(toothAssignmentSummary([{ toothNumber: "2-4", restorationType: "Crown & Bridge", material: "Zirconia" }], null).units).toBe(0);
     expect(invalidToothAssignmentTokens("2-4,16-17,33,J-K")).toEqual(["16-17", "33", "J-K"]);
   });
@@ -121,6 +159,19 @@ describe("tooth assignment connectors", () => {
       { toothNumber: "3", restorationType: "Pontic", material: "PFM" },
     ]).errors.join(" ")).toContain("incompatible materials");
     expect(parseConnectorState("16-17,1-33").active.size).toBe(0);
+  });
+
+  it("identifies only adjacent assigned teeth with incompatible connector products", () => {
+    expect(incompatibleToothConnectorPairs([
+      { toothNumber: "2", restorationType: "Crown", material: "Zirconia" },
+      { toothNumber: "3", restorationType: "Pontic", material: "PFM" },
+      { toothNumber: "4", restorationType: "Crown", material: "Zirconia" },
+      { toothNumber: "8", restorationType: "Crown", material: "Zirconia" },
+      { toothNumber: "9", restorationType: "Pontic", material: "Zirconia" },
+      { toothNumber: "10", restorationType: "Crown", material: null },
+      { toothNumber: "17", restorationType: "Crown", material: "Zirconia" },
+      { toothNumber: "18", restorationType: "Crown", material: "e.max" },
+    ])).toEqual(new Set(["2-3", "3-4", "9-10", "17-18"]));
   });
 
   it("expands only same-arch ranges, and copies values without identities", () => {

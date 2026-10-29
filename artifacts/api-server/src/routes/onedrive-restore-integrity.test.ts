@@ -256,8 +256,19 @@ describe("Isolated synthetic OneDrive recovery", () => {
             ok: true, status: 200, json: async () => ({ id: itemId, name: item.name, size: item.bytes.length }),
             text: async () => "",
           };
-          return { ok: true, status: 200, json: async () => ({}), text: async () => "",
-            arrayBuffer: async () => Uint8Array.from(item.bytes).buffer };
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({}),
+            text: async () => "",
+            headers: new Headers({ "Content-Length": String(item.bytes.length) }),
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(item.bytes);
+                controller.close();
+              },
+            }),
+          };
         }
         throw new Error("Unexpected synthetic Graph request");
       });
@@ -283,9 +294,20 @@ describe("Isolated synthetic OneDrive recovery", () => {
       destination: "onedrive", triggeredBy: actor, status: "success",
       path: cloud.oneDriveItemPath(uploaded.itemId), fileName: uploaded.fileName, sizeBytes: uploaded.size,
     }).returning();
-    downloaded = await cloud.downloadFileFromOneDrive(
-      history.fileName!, undefined, cloud.oneDriveItemIdFromPath(history.path),
+    const downloadedStream = await cloud.downloadFileFromOneDrive(
+      history.fileName!,
+      history.sizeBytes!,
+      undefined,
+      cloud.oneDriveItemIdFromPath(history.path),
     );
+    const downloadedChunks: Buffer[] = [];
+    let downloadedSize = 0;
+    for await (const chunk of downloadedStream) {
+      const bytes = Buffer.from(chunk);
+      downloadedChunks.push(bytes);
+      downloadedSize += bytes.length;
+    }
+    downloaded = Buffer.concat(downloadedChunks, downloadedSize);
     expect(createHash("sha256").update(downloaded).digest("hex"))
       .toBe(createHash("sha256").update(encrypted).digest("hex"));
     expect(backup.parseAndValidateBackupManifest(downloaded).exportedBy).toBe(actor);

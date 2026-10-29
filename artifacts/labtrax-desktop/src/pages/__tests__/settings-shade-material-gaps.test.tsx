@@ -21,6 +21,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { AuthContext, type AuthContextValue } from "@/lib/auth-context";
+import { clearSessionSecret, setSessionSecret } from "@/lib/platform-admin-session";
 import SettingsPage from "@/pages/settings";
 
 const LAB_ORG_ID = "lab-org-1";
@@ -200,6 +201,7 @@ function makeStableWrapper(path = "/settings?tab=vocabulary") {
   // in-memory router — so the tab query param must be pushed onto real
   // history for the "vocabulary" tab (and its VocabularyPanel) to mount.
   window.history.pushState({}, "", path);
+  setSessionSecret("1234");
   const qc = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
@@ -219,6 +221,7 @@ function makeStableWrapper(path = "/settings?tab=vocabulary") {
 }
 
 beforeEach(() => {
+  clearSessionSecret();
   apiFetchMock.mockClear();
   apiFetchMock.mockImplementation(makeApiFetchImpl());
 

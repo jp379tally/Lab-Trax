@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isValidDueTime, resolveCaseDueDate } from "./case-due-date";
+import {
+  addCalendarDays,
+  isValidDueTime,
+  resolveAiIntakePrescriptionDueDate,
+  resolveCaseDueDate,
+} from "./case-due-date";
 
 describe("resolveCaseDueDate", () => {
   const entry = new Date("2025-01-01T00:00:00.000Z");
@@ -61,4 +66,38 @@ describe("case due time validation", () => {
       expect(isValidDueTime(value)).toBe(false);
     },
   );
+});
+
+describe("AI intake date window", () => {
+  it("adds calendar days across month and year boundaries", () => {
+    expect(addCalendarDays("2026-12-29", 7)).toBe("2027-01-05");
+    expect(addCalendarDays("2026-02-25", 7)).toBe("2026-03-04");
+  });
+
+  it.each([
+    ["before receipt", "2026-07-31", null],
+    ["on receipt", "2026-08-01", "2026-08-01"],
+    ["on the turnaround boundary", "2026-08-08", "2026-08-08"],
+    ["after the turnaround boundary", "2026-08-09", null],
+  ])("handles a prescription date %s", (_label, prescriptionDate, expected) => {
+    expect(
+      resolveAiIntakePrescriptionDueDate(prescriptionDate, "2026-08-01", 7),
+    ).toBe(expected);
+  });
+
+  it("preserves a valid prescription date when no turnaround is configured", () => {
+    expect(
+      resolveAiIntakePrescriptionDueDate("2026-08-20", "2026-08-01", null),
+    ).toBe("2026-08-20");
+  });
+
+  it("omits missing or invalid prescription and received dates when a turnaround applies", () => {
+    expect(resolveAiIntakePrescriptionDueDate("", "2026-08-01", 7)).toBeNull();
+    expect(
+      resolveAiIntakePrescriptionDueDate("2026-08-08", "2026-02-31", 7),
+    ).toBeNull();
+    expect(
+      resolveAiIntakePrescriptionDueDate("2026-02-31", "2026-08-01", 7),
+    ).toBeNull();
+  });
 });

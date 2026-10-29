@@ -451,11 +451,15 @@ describe("off-site backup round trip (OneDrive → restore)", () => {
       expect(stored!.id).toBe(remoteItemId);
       expect(stored!.name).toBe(backup.fileName);
       expect(stored!.size).toBe(backup.size);
-      const downloaded = await downloadFileFromOneDrive(
+      const downloadStream = await downloadFileFromOneDrive(
         backup.fileName,
+        backup.size,
         verificationFolder,
         remoteItemId,
       );
+      const downloadChunks: Buffer[] = [];
+      for await (const chunk of downloadStream) downloadChunks.push(Buffer.from(chunk));
+      const downloaded = Buffer.concat(downloadChunks);
       expect(downloaded.length).toBe(backup.size);
       expect(createHash("sha256").update(downloaded).digest("hex")).toBe(stagedArchiveSha256);
 
@@ -554,7 +558,9 @@ describe("off-site backup round trip (OneDrive → restore)", () => {
       process.env.PRIVATE_OBJECT_DIR = sourceObjectDir!;
       try {
         await writeCaseMediaToObjectStorage(fileName, original, "application/octet-stream");
-        const inventoried = (await listCaseMediaBackupObjects())[0]!;
+        const inventoried = (await listCaseMediaBackupObjects())
+          .find((file) => file.relativeName === fileName)!;
+        expect(inventoried).toBeDefined();
         expect(inventoried.relativeName).toBe(fileName);
         expect(inventoried.generation).toBeTruthy();
 
@@ -576,7 +582,9 @@ describe("off-site backup round trip (OneDrive → restore)", () => {
           fs.rmSync(stalePath, { force: true });
         }
 
-        const current = (await listCaseMediaBackupObjects())[0]!;
+        const current = (await listCaseMediaBackupObjects())
+          .find((file) => file.relativeName === fileName)!;
+        expect(current).toBeDefined();
         expect(current.generation).not.toBe(inventoried.generation);
         const currentPath = path.join(os.tmpdir(), `task5171-current-generation-${randomUUID()}.bin`);
         try {
@@ -603,36 +611,45 @@ describe("off-site backup round trip (OneDrive → restore)", () => {
       if (!stagingBucket || !stagingPrefix) {
         throw new Error("The isolated GCS staging namespace was not initialized.");
       }
-      const controller = new AbortController();
-      const stage = await createBackupCloudStage("non-production", 60_000, controller.signal);
-      const writer = stage.open();
-      writer.write(Buffer.alloc(8 * 1024 * 1024 + 1, 0x71));
-      controller.abort();
-      await stage.cleanup();
+      const previousPrivateObjectDir = process.env.PRIVATE_OBJECT_DIR;
+      // The preceding restore changes this env to the restore namespace. The
+      // lease writer and the assertions must use the same test-owned source.
+      process.env.PRIVATE_OBJECT_DIR = sourceObjectDir!;
+      try {
+        const controller = new AbortController();
+        const stage = await createBackupCloudStage("non-production", 60_000, controller.signal);
+        const writer = stage.open();
+        writer.write(Buffer.alloc(8 * 1024 * 1024 + 1, 0x71));
+        controller.abort();
+        await stage.cleanup();
 
-      const leasePrefix = `${stagingPrefix}/leases/`;
-      const [leasesAfterCancel] = await stagingBucket.getFiles({ prefix: leasePrefix });
-      const ownLease = leasesAfterCancel.find((file) => !initialStagingNames.has(file.name));
-      expect(ownLease, "a cancelled, unsealed upload must retain its durable lease").toBeTruthy();
-      const id = ownLease!.name.slice(leasePrefix.length).replace(/\.json$/, "");
-      const [archiveExists] = await stagingBucket.file(`${stagingPrefix}/archives/${id}.zip.enc`).exists();
-      expect(archiveExists).toBe(false);
+        const leasePrefix = `${stagingPrefix}/leases/`;
+        const [leasesAfterCancel] = await stagingBucket.getFiles({ prefix: leasePrefix });
+        const ownLease = leasesAfterCancel.find((file) => !initialStagingNames.has(file.name));
+        expect(ownLease, "a cancelled, unsealed upload must retain its durable lease").toBeTruthy();
+        const id = ownLease!.name.slice(leasePrefix.length).replace(/\.json$/, "");
+        const [archiveExists] = await stagingBucket.file(`${stagingPrefix}/archives/${id}.zip.enc`).exists();
+        expect(archiveExists).toBe(false);
 
-      // Expire only this test's lease, then let the real next-stage sweep
-      // remove it. No other GCS prefix is listed or modified.
-      await ownLease!.setMetadata({ metadata: { expiresAt: "1" } });
-      const retryStage = await createBackupCloudStage(
-        "non-production",
-        60_000,
-        new AbortController().signal,
-      );
-      const [leasesAfterSweep] = await stagingBucket.getFiles({ prefix: leasePrefix });
-      expect(leasesAfterSweep.some((file) => file.name === ownLease!.name)).toBe(false);
-      const retryWriter = retryStage.open();
-      await pipeline(Readable.from([Buffer.from("synthetic cleanup verification")]), retryWriter);
-      await retryStage.seal(Buffer.byteLength("synthetic cleanup verification"));
-      await retryStage.cleanup();
-      expect([...await getStagingNames()].filter((name) => !initialStagingNames.has(name))).toEqual([]);
+        // Expire only this test's lease, then let the real next-stage sweep
+        // remove it. No other GCS prefix is listed or modified.
+        await ownLease!.setMetadata({ metadata: { expiresAt: "1" } });
+        const retryStage = await createBackupCloudStage(
+          "non-production",
+          60_000,
+          new AbortController().signal,
+        );
+        const [leasesAfterSweep] = await stagingBucket.getFiles({ prefix: leasePrefix });
+        expect(leasesAfterSweep.some((file) => file.name === ownLease!.name)).toBe(false);
+        const retryWriter = retryStage.open();
+        await pipeline(Readable.from([Buffer.from("synthetic cleanup verification")]), retryWriter);
+        await retryStage.seal(Buffer.byteLength("synthetic cleanup verification"));
+        await retryStage.cleanup();
+        expect([...await getStagingNames()].filter((name) => !initialStagingNames.has(name))).toEqual([]);
+      } finally {
+        if (previousPrivateObjectDir === undefined) delete process.env.PRIVATE_OBJECT_DIR;
+        else process.env.PRIVATE_OBJECT_DIR = previousPrivateObjectDir;
+      }
     },
   );
 

@@ -42,8 +42,21 @@ export default function TabLayout() {
           tabBarInactiveTintColor: isDashboard ? "#BFD0F0" : colors.tabIconDefault,
           tabBarStyle: {
             backgroundColor: isDashboard ? "#0B1B3F" : colors.surface,
+            borderTopWidth: 1,
             borderTopColor: isDashboard ? "#263A5C" : colors.border,
           },
+          tabBarItemStyle: {
+            flex: 1,
+            minWidth: 0,
+            borderRightWidth: 1,
+            borderRightColor: isDashboard ? "#263A5C" : colors.border,
+          },
+          tabBarLabelStyle: {
+            fontSize: 10,
+            fontWeight: "600",
+            marginTop: 1,
+          },
+          tabBarLabelPosition: "below-icon",
         }}
       >
         <Tabs.Screen

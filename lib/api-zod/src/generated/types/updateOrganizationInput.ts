@@ -19,6 +19,11 @@ export interface UpdateOrganizationInput {
   city?: string | null;
   state?: string | null;
   zip?: string | null;
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingCity?: string | null;
+  billingState?: string | null;
+  billingZip?: string | null;
   isActive?: boolean | null;
   statementEmailOptOut?: boolean | null;
   defaultCaseDueDays?: number | null;

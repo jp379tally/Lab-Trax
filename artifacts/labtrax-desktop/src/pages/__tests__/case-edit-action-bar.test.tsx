@@ -84,6 +84,12 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const path = new URL(url, "http://localhost").pathname.replace(/^\/api/, "");
+    if (path === `/cases/${detail.id}/tooth-chart` && init?.method === "PATCH") {
+      const response = await writeRestoration(path, init);
+      const body = JSON.parse(String(init.body));
+      if (response.ok && body.caseDetails) await patchCase(body.caseDetails);
+      return response;
+    }
     if (path === `/cases/${detail.id}`) {
       if (init?.method === "PATCH") return patchCase(JSON.parse(String(init.body)));
       return refreshDetail ? refreshDetail() : json(detail);
@@ -126,7 +132,7 @@ function editNotes(notes: string) {
 }
 
 async function stageManualRestoration() {
-  fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+  fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
   fireEvent.click(screen.getByRole("button", { name: "Add manually" }));
   fireEvent.change(await screen.findByPlaceholderText("Case Type…"), { target: { value: "Crown" } });
   fireEvent.change(screen.getByPlaceholderText(/Material…|Legacy\/free text material/), { target: { value: "Zirconia" } });
@@ -232,9 +238,9 @@ describe("Case drawer pinned edit actions", () => {
     await renderDrawer();
     enterEdit();
     editNotes("Unstaged notes");
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
     expect(screen.queryByTestId("case-edit-action-bar")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     expect(screen.queryByPlaceholderText("Prescription notes…")).not.toBeInTheDocument();
     expect(screen.getByTestId("case-details-edit")).toBeInTheDocument();
     expect(patchCase).not.toHaveBeenCalled();
@@ -243,7 +249,7 @@ describe("Case drawer pinned edit actions", () => {
   it("keeps earlier staged actions reachable during another edit and across tabs until discarded", async () => {
     const view = await renderDrawer();
     await stageManualRestoration();
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     enterEdit();
     const footer = screen.getByTestId("case-edit-action-bar");
     expect(within(footer).getByTestId("case-details-edit-actions")).toBeInTheDocument();
@@ -251,7 +257,7 @@ describe("Case drawer pinned edit actions", () => {
     fireEvent.click(screen.getByTestId("case-details-edit-cancel"));
     expect(screen.queryByTestId("case-details-edit-actions")).not.toBeInTheDocument();
     expect(screen.getByTestId("case-pending-actions")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
     expect(screen.getByTestId("case-pending-actions")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("case-pending-discard"));
     expect(screen.queryByTestId("case-edit-action-bar")).not.toBeInTheDocument();
@@ -262,7 +268,7 @@ describe("Case drawer pinned edit actions", () => {
 
   it.each([{ docked: false }, { docked: true }])("pins manual restoration actions outside the scroll pane (docked=$docked)", async ({ docked }) => {
     await renderDrawer(docked);
-    fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add manually" }));
     const footer = screen.getByTestId("case-edit-action-bar");
     expect(screen.getByTestId("case-detail-body").nextElementSibling).toBe(footer);
@@ -304,47 +310,44 @@ describe("Case drawer pinned edit actions", () => {
       fireEvent.click(screen.getByRole("button", { name: "Chart tooth 14" }));
       fireEvent.click(screen.getByRole("button", { name: action }));
     }
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     enterEdit();
     editNotes("Everything together");
-    fireEvent.change(screen.getByLabelText("Tooth Numbers"), { target: { value: "3, 4, 6" } });
+    fireEvent.change(screen.getByLabelText("Tooth Numbers"), { target: { value: "3, 4" } });
     fireEvent.click(screen.getByTestId("case-details-edit-save"));
     await waitFor(() => expect(screen.queryByTestId("case-edit-action-bar")).not.toBeInTheDocument());
     expect(patchCase).toHaveBeenCalledTimes(1);
     expect(writeRestoration.mock.calls.map(([path, init]) => [path, init.method])).toEqual([
-      [`/cases/${detail.id}/restorations/hierarchy`, "PATCH"],
-      [`/cases/${detail.id}/restorations/row-3`, "DELETE"],
-      [`/cases/${detail.id}/restorations/row-4`, "PATCH"],
-      [`/cases/${detail.id}/restorations`, "POST"],
-      [`/cases/${detail.id}/restorations`, "POST"],
+      [`/cases/${detail.id}/tooth-chart`, "PATCH"],
     ]);
+    const committed = JSON.parse(String(writeRestoration.mock.calls[0][1].body));
+    expect(committed.caseDetails.rxNotes).toBe("Everything together");
+    expect(committed.deletes).toEqual(["row-3"]);
+    expect(committed.updates).toEqual([expect.objectContaining({ restorationId: "row-4", toothNumber: "5", shade: "B1" })]);
+    expect(committed.creates.map((row: { toothNumber: string }) => row.toothNumber)).toEqual(["18", "14"]);
     expect(guardNavigation(vi.fn())).toBe(false);
   });
 
-  it("retries only remaining rows after a partial save without reconciling the hierarchy or duplicating committed additions", async () => {
+  it("retries a refused atomic bundle with stable IDs without partially committing clinical details", async () => {
     await renderDrawer();
     await stageManualRestoration();
     fireEvent.click(screen.getByRole("button", { name: "Chart tooth 14" }));
     fireEvent.click(screen.getByRole("button", { name: "Stage crown" }));
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     enterEdit();
     fireEvent.change(screen.getByLabelText("Tooth Numbers"), { target: { value: "6" } });
-    let creates = 0;
-    writeRestoration.mockImplementation(async (path, init) => {
-      if (path.endsWith("/hierarchy")) return json({ invoiceAction: "updated" });
-      if (init.method === "POST" && ++creates === 2) return json({ error: "Try again" }, 503);
-      return json({});
-    });
+    writeRestoration.mockResolvedValueOnce(json({ error: "Try again" }, 503)).mockResolvedValueOnce(json({}));
     fireEvent.click(screen.getByTestId("case-details-edit-save"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Try again"));
     await waitFor(() => expect(screen.getByTestId("case-details-edit-save")).toBeEnabled());
+    expect(patchCase).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Tooth Numbers")).toHaveValue("6");
     fireEvent.click(screen.getByTestId("case-details-edit-save"));
     await waitFor(() => expect(screen.queryByTestId("case-edit-action-bar")).not.toBeInTheDocument());
-    expect(writeRestoration.mock.calls.filter(([path]) => path.endsWith("/hierarchy"))).toHaveLength(1);
-    const postedTeeth = writeRestoration.mock.calls.filter(([, init]) => init.method === "POST")
-      .map(([, init]) => JSON.parse(String(init.body)).toothNumber);
-    expect(postedTeeth).toEqual(["18", "14", "14"]);
+    expect(writeRestoration).toHaveBeenCalledTimes(2);
+    const bundles = writeRestoration.mock.calls.map(([, init]) => JSON.parse(String(init.body)));
+    expect(bundles[0].creates.map((row: { toothNumber: string }) => row.toothNumber)).toEqual(["18", "14"]);
+    expect(bundles[1]).toEqual(bundles[0]);
     await waitFor(() => expect(guardNavigation(vi.fn())).toBe(false));
   });
 
@@ -354,20 +357,22 @@ describe("Case drawer pinned edit actions", () => {
       { id: "row-4", toothNumber: "4", restorationType: "Crown", material: "Zirconia" },
     ] } as unknown as LabCase;
     await renderDrawer();
-    fireEvent.click(screen.getByRole("button", { name: /Restorations/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Restorations/ }));
     for (const action of ["Stage removal", "Stage replacement"]) {
       fireEvent.click(screen.getByRole("button", { name: "Chart tooth 14" }));
       fireEvent.click(screen.getByRole("button", { name: action }));
     }
-    fireEvent.click(screen.getByRole("button", { name: "Lab Slip" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Lab Slip" }));
     enterEdit();
-    fireEvent.change(screen.getByLabelText("Tooth Numbers"), { target: { value: "6" } });
+    fireEvent.change(screen.getByLabelText("Tooth Numbers"), { target: { value: "3" } });
     fireEvent.click(screen.getByTestId("case-details-edit-save"));
     await waitFor(() => expect(screen.queryByTestId("case-edit-action-bar")).not.toBeInTheDocument());
-    expect(JSON.parse(String(writeRestoration.mock.calls[0][1].body)).toothNumbers).toEqual(["6", "4"]);
+    const bundle = JSON.parse(String(writeRestoration.mock.calls[0][1].body));
+    expect(bundle.hierarchy.toothNumbers).toEqual(["3"]);
+    expect(bundle.deletes).toEqual(["row-3"]);
+    expect(bundle.updates).toEqual([expect.objectContaining({ restorationId: "row-4", toothNumber: "5" })]);
     expect(writeRestoration.mock.calls.map(([path]) => path)).toEqual([
-      `/cases/${detail.id}/restorations/hierarchy`,
-      `/cases/${detail.id}/restorations/row-4`,
+      `/cases/${detail.id}/tooth-chart`,
     ]);
   });
 });

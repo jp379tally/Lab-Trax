@@ -16,7 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { build as esbuild } from "esbuild";
+import { buildBackupSmokeHelper } from "./lib/backup-smoke-helper.mjs";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = path.join(desktopRoot, "electron-dist");
@@ -103,7 +103,7 @@ function startSyntheticApi() {
       ) {
         const scenario = requestUrl.searchParams.get("smokeScenario");
         generationRequests.push(scenario);
-        if (!["success", "interrupted", "disk-full"].includes(scenario)) {
+        if (!["success", "interrupted", "retry", "disk-full"].includes(scenario)) {
           response.writeHead(400).end("Unknown synthetic backup scenario.");
           return;
         }
@@ -239,7 +239,7 @@ function queryLabTraxUninstallRegistrations(registryRoot) {
   if (result.status !== 0) {
     if (
       result.status === 1 &&
-      /unable to find|unable to locate|specified registry key or value/i.test(output)
+      /unable to find|unable to locate|specified registry key or value|end of search:\s*0 match\(es\) found/i.test(output)
     ) {
       return [];
     }
@@ -265,19 +265,28 @@ function queryLabTraxUninstallRegistrations(registryRoot) {
   return registrations;
 }
 
-async function assertInstallerProfileIsClean(phase) {
+async function assertInstallerProfileIsClean(phase, timeoutMs = 0) {
   const shortcutRoots = getInstallerProfileShortcutRoots();
   const registryRoots = [
     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
   ];
-  const [shortcutsByRoot, registrationsByRoot] = await Promise.all([
-    Promise.all(shortcutRoots.map((root) => findLabTraxShortcuts(root))),
-    Promise.all(registryRoots.map((root) => queryLabTraxUninstallRegistrations(root))),
-  ]);
-  const shortcuts = shortcutsByRoot.flat();
-  const registrations = registrationsByRoot.flat();
+  const deadline = Date.now() + timeoutMs;
+  let shortcuts;
+  let registrations;
+  while (true) {
+    const [shortcutsByRoot, registrationsByRoot] = await Promise.all([
+      Promise.all(shortcutRoots.map((root) => findLabTraxShortcuts(root))),
+      Promise.all(registryRoots.map((root) => queryLabTraxUninstallRegistrations(root))),
+    ]);
+    shortcuts = shortcutsByRoot.flat();
+    registrations = registrationsByRoot.flat();
+    if (shortcuts.length === 0 && registrations.length === 0) return;
+    if (Date.now() >= deadline) break;
+    // NSIS removes shortcuts and registry entries after deleting the app folder.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   assert(
     shortcuts.length === 0,
     `${phase}: LabTrax shortcut(s) remain in the Windows profile: ${shortcuts.join(", ")}`,
@@ -289,13 +298,20 @@ async function assertInstallerProfileIsClean(phase) {
 }
 
 async function assertPathWasRemoved(targetPath, description) {
-  try {
-    await stat(targetPath);
-  } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw new Error(`Could not verify ${description} "${targetPath}": ${error.message}`);
+  // NSIS can hand off to a temporary worker before its launcher exits.
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      await stat(targetPath);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw new Error(`Could not verify ${description} "${targetPath}": ${error.message}`);
+    }
+    if (Date.now() >= deadline) {
+      fail(`${description} remains after silent uninstall: ${targetPath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  fail(`${description} remains after silent uninstall: ${targetPath}`);
 }
 
 function hashFile(filePath) {
@@ -345,15 +361,17 @@ async function launchPackagedApp(executable, env) {
 }
 
 function expectedReports(reports) {
-  assert(reports.length === 4, `Expected four history reports, received ${reports.length}.`);
+  assert(reports.length === 5, `Expected five history reports, received ${reports.length}.`);
   const successful = reports.filter((report) => report.body.status === "success");
-  assert(successful.length === 1, `Expected one successful history report, received ${successful.length}.`);
-  assert(successful[0].scenario === "success", "A failure scenario was incorrectly reported as successful.");
+  assert(successful.length === 2, `Expected two successful history reports, received ${successful.length}.`);
+  assert(
+    successful.map((report) => report.scenario).sort().join(",") === "retry,success",
+    "An interrupted or otherwise failed backup was incorrectly reported as successful.",
+  );
   for (const scenario of ["interrupted", "unavailable-folder", "disk-full"]) {
-    assert(
-      reports.some((report) => report.scenario === scenario && report.body.status === "error"),
-      `Missing error history report for ${scenario}.`,
-    );
+    const scenarioReports = reports.filter((report) => report.scenario === scenario);
+    assert(scenarioReports.length === 1 && scenarioReports[0].body.status === "error",
+      `Expected exactly one error history report for ${scenario}.`);
   }
 }
 
@@ -389,16 +407,15 @@ async function main() {
       CSC_IDENTITY_AUTO_DISCOVERY: "false",
     };
     await mkdir(path.dirname(generatedHelper), { recursive: true });
-    await esbuild({
-      entryPoints: [path.join(desktopRoot, "src", "lib", "local-backup-execution.ts")],
-      bundle: true,
-      platform: "node",
-      format: "cjs",
-      target: "node24",
+    await buildBackupSmokeHelper({
+      desktopRoot,
+      apiOrigin: baseUrl,
       outfile: generatedHelper,
     });
     try {
-      const builderConfig = await readFile(path.join(desktopRoot, "electron-builder.yml"), "utf8");
+      // Windows Git checkouts use CRLF; normalize before matching YAML line anchors.
+      const builderConfig = (await readFile(path.join(desktopRoot, "electron-builder.yml"), "utf8"))
+        .replace(/\r\n/g, "\n");
       if (!builderConfig.includes("${UPDATE_FEED_URL}")) {
         fail("electron-builder.yml no longer contains the expected update-feed placeholder.");
       }
@@ -487,17 +504,20 @@ async function main() {
       api.generationRequests.filter((scenario) => scenario === "unavailable-folder").length === 0,
       "An unavailable folder still triggered server-side archive generation.",
     );
-    for (const scenario of ["success", "interrupted", "disk-full"]) {
+    for (const scenario of ["success", "interrupted", "retry", "disk-full"]) {
       assert(
         api.generationRequests.filter((value) => value === scenario).length === 1,
         `Expected one archive request for ${scenario}.`,
       );
     }
 
-    for (const scenario of ["interrupted", "disk-full"]) {
-      const names = await readdir(path.join(selectedBackupRoot, scenario));
-      assert(names.length === 0, `${scenario} left files behind: ${names.join(", ")}`);
-    }
+    const interruptedNames = await readdir(path.join(selectedBackupRoot, "interrupted"));
+    assert(
+      interruptedNames.length === 1 && interruptedNames[0] === "synthetic-backup.zip",
+      `Interrupted-folder retry did not leave exactly one complete archive: ${interruptedNames.join(", ")}`,
+    );
+    const diskFullNames = await readdir(path.join(selectedBackupRoot, "disk-full"));
+    assert(diskFullNames.length === 0, `disk-full left files behind: ${diskFullNames.join(", ")}`);
     console.log(
       `${installerMode ? "Installed" : "Packaged"} backup smoke passed: 256 MiB hash verified; ` +
         "user-selected destination confirmed; all failure artifacts cleaned.",
@@ -529,7 +549,7 @@ async function main() {
           );
         }
         await assertPathWasRemoved(installationDirectory, "Selected LabTrax installation folder");
-        await assertInstallerProfileIsClean("After silent NSIS uninstall");
+        await assertInstallerProfileIsClean("After silent NSIS uninstall", 30_000);
       }
     } finally {
       await rm(smokeRoot, { recursive: true, force: true });

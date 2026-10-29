@@ -35,6 +35,7 @@ type Invoice = {
   invoiceNumber: string;
   patientName: string;
   doctorName: string;
+  doctorIdentity?: string | null;
   issuedAt: string;
   dueAt: string;
   total: string;
@@ -436,6 +437,116 @@ describe("Receive Payments selection", () => {
     expect(invoiceOrder()).toHaveLength(6);
   });
 
+  it("selects two doctors from one practice as separate payments without selecting the overlapping practice account", async () => {
+    const previousLength = INVOICE_ACCOUNTS.length;
+    const multiAda = { ...invoice("multi-a", "INV-MULTI-A", "Dr. Ada Multi", -4, 20, "30.00", "30.00"), doctorIdentity: "profile-multi-ada" };
+    const multiBen = { ...invoice("multi-b", "INV-MULTI-B", "Dr. Ben Multi", -3, 18, "25.00", "25.00"), doctorIdentity: "profile-multi-ben" };
+    INVOICE_ACCOUNTS.push({
+      ...INVOICE_ACCOUNTS[0]!,
+      providerOrganizationId: "multi",
+      providerName: "Multi Dental",
+      invoiceCount: 2,
+      currentBalanceDue: "55.00",
+      doctorNames: ["Dr. Ada Multi", "Dr. Ben Multi"],
+      doctors: [
+        { doctorIdentity: "profile-multi-ada", doctorDisplayName: "Dr. Ada Multi" },
+        { doctorIdentity: "profile-multi-ben", doctorDisplayName: "Dr. Ben Multi" },
+      ],
+      outstandingInvoices: [multiAda, multiBen],
+    } as (typeof INVOICE_ACCOUNTS)[number]);
+    try {
+      renderPage();
+      await loaded();
+      const ada = () => screen.getByRole("checkbox", { name: "Select Dr. Ada Multi at Multi Dental" });
+      const ben = () => screen.getByRole("checkbox", { name: "Select Dr. Ben Multi at Multi Dental" });
+      const parent = () => screen.getByRole("checkbox", { name: "Select all doctors at Multi Dental" });
+      expect(rowIds()).toEqual([
+        "beta",
+        "alpha",
+        "gamma",
+        "multi",
+        "doctor:multi:profile-multi-ada",
+        "doctor:multi:profile-multi-ben",
+      ]);
+      fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "name" } });
+      expect(rowIds()).toEqual([
+        "alpha",
+        "beta",
+        "multi",
+        "doctor:multi:profile-multi-ada",
+        "doctor:multi:profile-multi-ben",
+        "gamma",
+      ]);
+      fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "balance" } });
+      const adaRow = screen.getByTestId("receive-customer-row-doctor:multi:profile-multi-ada");
+      expect(within(adaRow).getAllByText("Dr. Ada Multi")).toHaveLength(2);
+      const adaCells = adaRow.querySelectorAll("td");
+      expect(adaCells[1]?.querySelector(".tabular-nums")).toHaveTextContent("$30.00");
+      expect(adaCells[3]).toBeEmptyDOMElement();
+      expect(screen.getByTestId("receive-customer-row-multi").querySelectorAll("td")[3]).toBeEmptyDOMElement();
+
+      // Search keeps the practice as context but filtered select-all picks
+      // only the matching doctor account.
+      fireEvent.change(screen.getByLabelText("Search customers"), { target: { value: "Dr. Ada Multi" } });
+      expect(rowIds()).toEqual(["multi", "doctor:multi:profile-multi-ada"]);
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select all shown customers" }));
+      expect(ada()).toBeChecked();
+      expect(parent()).toHaveAttribute("aria-checked", "mixed");
+      expectCards("1", "1", "$30.00");
+      fireEvent.change(screen.getByLabelText("Search customers"), { target: { value: "" } });
+
+      // The parent selects and clears all payable doctor accounts, never the
+      // practice-wide account.
+      fireEvent.click(parent());
+      expect(ada()).toBeChecked();
+      expect(ben()).toBeChecked();
+      expect(parent()).toBeChecked();
+      expectCards("2", "2", "$55.00");
+      fireEvent.click(parent());
+      expect(ada()).not.toBeChecked();
+      expect(ben()).not.toBeChecked();
+      expectCards("0", "0", "$0.00");
+
+      fireEvent.click(ada());
+      expect(parent()).toHaveAttribute("aria-checked", "mixed");
+      fireEvent.click(ben());
+      expectCards("2", "2", "$55.00");
+      expect(parent()).toBeChecked();
+      fireEvent.change(screen.getByLabelText("Payment Method"), { target: { value: "cash" } });
+
+      await startReceiving();
+      expect(screen.getByTestId("receive-practice-progress")).toHaveTextContent(
+        "Customer 1 of 2: Dr. Ada Multi · Multi Dental",
+      );
+      expect(screen.getByText("Current payment · Multi Dental")).toBeInTheDocument();
+      expect(screen.getByTestId("payment-scope-summary")).toHaveTextContent("Dr. Ada Multi · Multi Dental");
+      expect(screen.getByText("INV-MULTI-A")).toBeInTheDocument();
+      expect(screen.queryByText("INV-MULTI-B")).toBeNull();
+      await savePayment();
+      await screen.findByRole("dialog", { name: "Payment recorded" });
+      expect(screen.getByTestId("receipt-payment-scope")).toHaveTextContent("Dr. Ada Multi · Multi Dental");
+      expect(paymentPosts[0]).toMatchObject({
+        providerOrganizationId: "multi",
+        doctorIdentity: "profile-multi-ada",
+        doctorName: "Dr. Ada Multi",
+        applications: [{ invoiceId: "multi-a", amount: 30, creditAmount: 0 }],
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await screen.findByText("INV-MULTI-B");
+      await savePayment();
+      await screen.findByRole("dialog", { name: "Payment recorded" });
+      expect(paymentPosts[1]).toMatchObject({
+        providerOrganizationId: "multi",
+        doctorIdentity: "profile-multi-ben",
+        doctorName: "Dr. Ben Multi",
+        applications: [{ invoiceId: "multi-b", amount: 25, creditAmount: 0 }],
+      });
+    } finally {
+      INVOICE_ACCOUNTS.splice(previousLength);
+    }
+  });
+
   it("sorts from the column headers and the toolbar, flipping direction on the same column", async () => {
     renderPage();
     await loaded();
@@ -688,8 +799,8 @@ describe("Receive Payments selection", () => {
       }>;
     expect(stored().map((entry) => entry.name).sort()).toEqual(["Mixed", "Monthly statements", "Old batch"]);
     expect(stored().find((entry) => entry.name === "Monthly statements")?.customers).toEqual([
-      { id: "alpha", name: "Alpha Dental", scope: { mode: "statement", invoiceIds: null } },
-      { id: "beta", name: "Beta Smiles", scope: { mode: "statement", invoiceIds: null } },
+      { id: "alpha", name: "Alpha Dental", accountKind: "practice", scope: { mode: "statement", invoiceIds: null } },
+      { id: "beta", name: "Beta Smiles", accountKind: "practice", scope: { mode: "statement", invoiceIds: null } },
     ]);
 
     const load = (name: string) => {
@@ -755,8 +866,8 @@ describe("Receive Payments selection", () => {
       customers: unknown[];
     }>;
     expect(stored.find((entry) => entry.name === "Partial")?.customers).toEqual([
-      { id: "alpha", name: "Alpha Dental", scope: { mode: "statement", invoiceIds: ["a1"] } },
-      { id: "gamma", name: "Gamma Ortho", scope: { mode: "invoices", invoiceIds: ["g1"] } },
+      { id: "alpha", name: "Alpha Dental", accountKind: "practice", scope: { mode: "statement", invoiceIds: ["a1"] } },
+      { id: "gamma", name: "Gamma Ortho", accountKind: "practice", scope: { mode: "invoices", invoiceIds: ["g1"] } },
     ]);
 
     const load = (name: string) => {

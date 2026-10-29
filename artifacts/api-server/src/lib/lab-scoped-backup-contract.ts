@@ -160,6 +160,7 @@ const unattributedScanUpload: MediaRule = {
 };
 /** Every URL/path/blob locator and JSON column is reviewed, including metadata. */
 export const LAB_BACKUP_MEDIA_RULES: Record<string, Record<string, MediaRule>> = {
+  cases: { provider_contact_snapshot: embedded },
   case_restorations: { assignment_provenance: metadata },
   case_saved_views: { filters: metadata },
   users: { email_preferences: metadata, sms_preferences: metadata, in_app_preferences: metadata, doctor_preferences: metadata, profile_photo_url: privateMedia("profile-photo") },
@@ -190,7 +191,7 @@ export const LAB_BACKUP_MEDIA_RULES: Record<string, Record<string, MediaRule>> =
   subscription_events: { raw_payload_json: metadata },
   vendor_bill_events: { metadata_json: embedded, effective_lines_json: metadata },
   backup_runs: { path: metadata, file_name: metadata },
-  backup_live_status: { metrics: metadata, archive_evidence: metadata },
+  backup_live_status: { metrics: metadata, archive_evidence: metadata, delivery: metadata },
   lab_inbox_files: { original_filename: metadata, storage_path: caseMedia, object_storage_key: caseMedia },
   doctor_dup_dismissals: { doctors_json: metadata },
   provider_messenger_messages: { formatting_json: metadata },

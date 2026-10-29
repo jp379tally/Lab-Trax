@@ -1,4 +1,5 @@
 import { Storage } from "@google-cloud/storage";
+import { writeProductionObject, deleteProductionObject } from "./production-media-object-write";
 import type { ExternalAccountClientOptions } from "google-auth-library";
 
 const sidecar: ExternalAccountClientOptions = {
@@ -21,13 +22,14 @@ function file(key: string) {
 export async function writeSupportReportAttachment(key: string, data: Buffer, contentType: string): Promise<boolean> {
   const target = file(key);
   if (!target) return false;
-  await target.save(data, { resumable: false, contentType, metadata: { contentDisposition: `attachment; filename="${key}"` } });
+  await writeProductionObject(target, `private-objects/support-reports/${key}`, "support-report", data,
+    { resumable: false, contentType, metadata: { contentDisposition: `attachment; filename="${key}"` } });
   return true;
 }
 export async function deleteSupportReportAttachment(key: string): Promise<void> {
   const target = file(key);
   if (!target) throw new Error("Support report storage is unavailable");
-  await target.delete({ ignoreNotFound: true });
+  await deleteProductionObject(target, `private-objects/support-reports/${key}`, "support-report");
 }
 export async function readSupportReportAttachment(key: string): Promise<Buffer | null> {
   const target = file(key);

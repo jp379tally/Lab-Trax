@@ -20,6 +20,10 @@ describe("materialToPriceKey", () => {
     expect(materialToPriceKey("widget", "thingy")).toBeNull();
   });
 
+  it("does not infer a crown price from Diagnostic Wax Up text", () => {
+    expect(materialToPriceKey("Diagnostic Wax Up", "Crown")).toBeNull();
+  });
+
   it("maps zirconia variants to zirconia_crown", () => {
     expect(materialToPriceKey("Zirconia", "Crown")).toBe("zirconia_crown");
     expect(materialToPriceKey("BruxZir Solid Zirconia", null)).toBe(

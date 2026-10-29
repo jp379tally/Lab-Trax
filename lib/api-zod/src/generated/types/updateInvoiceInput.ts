@@ -18,7 +18,10 @@ export interface UpdateInvoiceInput {
   dueAt?: Date | null;
   issuedAt?: Date | null;
   invoiceNumber?: string | null;
+  /** Invoice notes; provider-facing reads and invoice outputs show these only when shareNotesWithProvider is true. */
   notes?: string | null;
+  /** Explicitly share invoice notes with the linked provider. Unset legacy values are private. */
+  shareNotesWithProvider?: boolean;
   providerOrganizationId?: string | null;
   items?: UpdateInvoiceInputItemsItem[] | null;
   /** Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields. */

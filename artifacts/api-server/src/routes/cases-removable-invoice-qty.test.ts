@@ -38,7 +38,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
-  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-removable-qty"),
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-removable-qty", "case-media"),
   extractMediaFileName: () => null,
   extractMediaFilenamesFromText: () => [],
 }));

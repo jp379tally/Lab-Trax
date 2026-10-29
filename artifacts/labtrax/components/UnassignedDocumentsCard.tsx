@@ -30,7 +30,7 @@ import { resilientFetch } from "@/lib/query-client";
 import { saveFileToUnassignedDocuments } from "@/lib/shared-file-inbox";
 import { openAttachment } from "@/lib/open-attachment";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { BorderWidth, Spacing, Radius, Typography } from "@/constants/tokens";
 import {
   DismissKeyboardView,
   scrollKeyboardDismissMode,
@@ -408,8 +408,8 @@ function makeRowStyles(colors: ThemeColors) {
   return StyleSheet.create({
     row: {
       paddingVertical: Spacing.sm,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
+      borderBottomWidth: BorderWidth.section,
+      borderBottomColor: colors.sectionBorder,
     },
     rowTop: {
       flexDirection: "row",
@@ -565,16 +565,16 @@ function makeRowStyles(colors: ThemeColors) {
     results: {
       marginTop: 4,
       maxHeight: 180,
-      borderWidth: 1,
-      borderColor: colors.border,
+      borderWidth: BorderWidth.section,
+      borderColor: colors.sectionBorder,
       borderRadius: Radius.sm,
       backgroundColor: colors.surface,
     },
     resultRow: {
       paddingHorizontal: Spacing.sm,
       paddingVertical: 8,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
+      borderBottomWidth: BorderWidth.section,
+      borderBottomColor: colors.sectionBorder,
     },
     resultName: {
       ...Typography.body,

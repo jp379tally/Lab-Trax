@@ -256,7 +256,15 @@ describe("off-site backup round trip (Google Drive → restore)", () => {
       expect(remote!.name).toBe(backup.fileName);
       expect(remote!.size).toBe(backup.size);
       expect(remote!.parentIds).toContain(live.folderId);
-      const downloaded = await downloadGoogleDriveBackupFile(remote!.id, backup.size);
+      const downloadedStream = await downloadGoogleDriveBackupFile(remote!.id, backup.size);
+      const downloadedChunks: Buffer[] = [];
+      let downloadedSize = 0;
+      for await (const chunk of downloadedStream) {
+        const bytes = Buffer.from(chunk);
+        downloadedChunks.push(bytes);
+        downloadedSize += bytes.length;
+      }
+      const downloaded = Buffer.concat(downloadedChunks, downloadedSize);
       expect(downloaded.length).toBe(backup.size);
       expect(downloaded.equals(stagedArchiveBytes), "Google Drive read-back must match every uploaded byte")
         .toBe(true);

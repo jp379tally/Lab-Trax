@@ -41,6 +41,7 @@ vi.mock("./google-drive", async (original) => ({
 }));
 
 import { createBackupDeadline, decryptBuffer, runGoogleDriveBackup } from "./backup";
+import { BackupCancelledError } from "./backup-phase";
 import { requireCompleteBackupCapacity } from "./complete-backup";
 
 const availableTemp = 25_063_153_664;
@@ -179,6 +180,17 @@ function expectCaptureLockReleased() {
 }
 
 describe("complete Google Drive cloud staging", () => {
+  it("distinguishes user cancellation from timeout expiry", () => {
+    const controller = new AbortController();
+    const cancellable = createBackupDeadline(30_000, controller.signal);
+    controller.abort();
+
+    expect(cancellable.cancelled()).toBe(true);
+    expect(cancellable.expired()).toBe(false);
+    expect(() => cancellable.throwIfExpired("archive delivery")).toThrow(BackupCancelledError);
+    cancellable.dispose();
+  });
+
   it.each([{ source: "production" as const }, { source: "non-production" as const }])(
     "streams the full encrypted archive using its $source namespace, not local capacity", async ({ source }) => {
       environment = source;
@@ -186,7 +198,9 @@ describe("complete Google Drive cloud staging", () => {
         availableTemp, durableBytes, boundedWorkingBytes, dumpBytes, "local",
       )).toThrow(/capacity failure/);
       const result = await runGoogleDriveBackup("synthetic-test", { deadline });
-      expect(fake.capture.mock.calls[0]?.[3]).toEqual({ archiveDestination: "cloud" });
+      expect(fake.capture.mock.calls[0]?.[3]).toEqual({
+        archiveDestination: "cloud", allowMissingReferences: true, productionDataOnly: true,
+      });
       expect(fake.stageSetup).toHaveBeenCalledWith(source, deadline.timeoutMs, deadline.signal);
       expect(fake.uploadFile).not.toHaveBeenCalled();
       expect(stage.seal).toHaveBeenCalledTimes(1);
@@ -197,7 +211,7 @@ describe("complete Google Drive cloud staging", () => {
       expect(zip.readFile("private-objects/profile-photos/fixture.jpg")).toEqual(fixtureProfile);
       const manifest = JSON.parse(zip.readAsText("manifest.json"));
       expect(manifest).toMatchObject({
-        sourceEnvironment: source, coverageVersion: 1, includesMedia: true,
+        sourceEnvironment: source, coverageVersion: 2, includesMedia: true,
         archiveKind: source === "production" ? "complete-production" : "complete-non-production",
         profilePhotoFileCount: 1, attachmentRowCount: 1,
       });

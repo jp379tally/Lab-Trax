@@ -327,6 +327,43 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
     await db.delete(userSessions).where(inArray(userSessions.id, [p1.sid, p2.sid]));
   });
 
+  it("logout revokes only the current session, not another session or another user", async () => {
+    const current = await makeSession(userAId);
+    const sameUserOtherSession = await makeSession(userAId);
+    const unrelatedUserSession = await makeSession(userBId);
+
+    const logout = await request(appMod.default)
+      .post("/api/auth/logout")
+      .set("Authorization", `Bearer ${current.access}`);
+    expect(logout.status).toBe(200);
+
+    const [revoked, sameUser, unrelatedUser] = await Promise.all([
+      request(appMod.default)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${current.access}`),
+      request(appMod.default)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${sameUserOtherSession.access}`),
+      request(appMod.default)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${unrelatedUserSession.access}`),
+    ]);
+
+    expect(revoked.status).toBe(401);
+    expect(sameUser.status).toBe(200);
+    expect(sameUser.body.user.id).toBe(userAId);
+    expect(unrelatedUser.status).toBe(200);
+    expect(unrelatedUser.body.user.id).toBe(userBId);
+
+    const { db, userSessions } = dbMod as any;
+    const sessionIds = [
+      current.refresh,
+      sameUserOtherSession.refresh,
+      unrelatedUserSession.refresh,
+    ].map((refresh) => authLib.verifyRefreshToken(refresh).sid);
+    await db.delete(userSessions).where(inArray(userSessions.id, sessionIds));
+  });
+
   // ── POST /api/auth/logout ─────────────────────────────────────────────────
 
   it("logout invalidates the session; subsequent requests return 401", async () => {

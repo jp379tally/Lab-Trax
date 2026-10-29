@@ -1,6 +1,6 @@
 import { and, eq, gte, isNull, lte, ne, sql } from "drizzle-orm";
 import { invoices } from "@workspace/db";
-import { finalizedInvoiceSql } from "./recovery-billing-hold";
+import { finalizedInvoiceSql } from "./historical-invoice-hold";
 
 export const salesIssuedDate = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
 

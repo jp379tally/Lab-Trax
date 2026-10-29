@@ -136,6 +136,7 @@ const RESTORATION_TYPE_VOCAB = [
   { id: "r1", value: "Crown & Bridge", isDefault: true },
   { id: "r2", value: "Denture", isDefault: false },
   { id: "r3", value: "Implant", isDefault: false },
+  { id: "r4", value: "Diagnostic Wax Up", isDefault: false },
 ];
 
 const SHADE_VOCAB = [
@@ -201,7 +202,10 @@ function makeDefaultMock(opts: { createBody?: (body: any) => void } = {}) {
  * and stubs the doctor-resolve, patient-similarity, and case-number endpoints
  * so createCaseFromRx can reach the POST /cases call.
  */
-function makeSubmitMock(opts: { createBody?: (body: any) => void } = {}) {
+function makeSubmitMock(opts: {
+  createBody?: (body: any) => void;
+  previewBody?: (body: any) => void;
+} = {}) {
   return (path: string, reqOpts?: any) => {
     if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
     if (path.startsWith("/organizations"))
@@ -220,6 +224,10 @@ function makeSubmitMock(opts: { createBody?: (body: any) => void } = {}) {
     if (path === "/analyze-prescription")
       return Promise.resolve(AI_RX_RESPONSE);
     if (path.startsWith("/rx-practice-aliases")) return Promise.resolve({});
+    if (path === "/invoices/preview-draft") {
+      opts.previewBody?.(JSON.parse(reqOpts?.body ?? "{}"));
+      return Promise.resolve({ lineItems: [], subtotal: "0.00", total: "0.00" });
+    }
     if (path.startsWith("/doctors/resolve-name"))
       return Promise.resolve({
         exactMatch: "Dr. Jane Smith",
@@ -277,6 +285,31 @@ describe("DashboardDropZone — AI-prefilled combobox behavior in rxConfirm", ()
   beforeEach(() => {
     vi.clearAllMocks();
     mockApiFetch.mockImplementation(makeDefaultMock());
+  });
+
+  it("shows prominent labels associated with the clinical comboboxes", async () => {
+    const { container } = renderDropZone();
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    await reachRxConfirmState(container);
+
+    for (const { labelText, inputId } of [
+      { labelText: "Case Type", inputId: "rx-clinical-case-type" },
+      { labelText: "Case Material", inputId: "rx-clinical-material" },
+      { labelText: "Shade", inputId: "rx-clinical-shade" },
+    ]) {
+      const label = Array.from(container.querySelectorAll("label")).find(
+        (candidate) => candidate.htmlFor === inputId,
+      );
+      const input = container.querySelector<HTMLInputElement>(`#${inputId}`);
+
+      expect(label?.textContent?.trim()).toBe(labelText);
+      expect(label?.contains(input ?? null)).toBe(true);
+      expect(label?.querySelector("span")?.className).toContain("text-sm");
+      expect(label?.querySelector("span")?.className).toContain("font-semibold");
+    }
   });
 
   it("Material combobox shows all vocabulary options when opened after AI fill", async () => {
@@ -408,5 +441,127 @@ describe("DashboardDropZone — AI-prefilled combobox behavior in rxConfirm", ()
     const restorations: any[] = capturedCreateBody?.restorations ?? [];
     expect(restorations.length).toBeGreaterThan(0);
     expect(restorations.every((r: any) => r.material === "PFM")).toBe(true);
+  });
+
+  it("selecting Diagnostic Wax Up replaces material and shade, then allows manual edits", async () => {
+    const { container } = renderDropZone();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    await reachRxConfirmState(container);
+
+    const restorationTypeInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Restoration type"]',
+    )!;
+    fireEvent.focus(restorationTypeInput);
+    const diagnosticOption = Array.from(document.querySelectorAll('[role="option"]')).find(
+      (el) => el.textContent?.trim() === "Diagnostic Wax Up",
+    );
+    expect(diagnosticOption).toBeDefined();
+    fireEvent.mouseDown(diagnosticOption!);
+
+    await waitFor(() => {
+      expect(restorationTypeInput.value).toBe("Diagnostic Wax Up");
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Material"]')?.value)
+        .toBe("Diagnostic Wax Up");
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Shade"]')?.value)
+        .toBe("Diagnostic Wax Up");
+      expect(container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Restoration subtype"]',
+      )?.value).toBe("restorative/diagnostic_wax_up");
+    });
+
+    const materialInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Material"]',
+    )!;
+    const shadeInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Shade"]',
+    )!;
+    fireEvent.change(materialInput, { target: { value: "PFM" } });
+    fireEvent.change(shadeInput, { target: { value: "A3" } });
+    expect(materialInput.value).toBe("PFM");
+    expect(shadeInput.value).toBe("A3");
+  });
+
+  it("makes Diagnostic Wax Up directly selectable as the restoration subtype", async () => {
+    const { container } = renderDropZone();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    await reachRxConfirmState(container);
+
+    const subtypeSelect = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Restoration subtype"]',
+    )!;
+    expect(Array.from(subtypeSelect.options).some((option) =>
+      option.value === "restorative/diagnostic_wax_up" &&
+      option.textContent === "Diagnostic Wax Up",
+    )).toBe(true);
+    fireEvent.change(subtypeSelect, {
+      target: { value: "restorative/diagnostic_wax_up" },
+    });
+
+    await waitFor(() => {
+      expect(subtypeSelect.value).toBe("restorative/diagnostic_wax_up");
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Material"]')?.value)
+        .toBe("Diagnostic Wax Up");
+      expect(container.querySelector<HTMLInputElement>('input[placeholder="Shade"]')?.value)
+        .toBe("Diagnostic Wax Up");
+    });
+  });
+
+  it("carries Diagnostic Wax Up through invoice preview and saved case restorations", async () => {
+    let capturedPreviewBody: any = null;
+    let capturedCreateBody: any = null;
+    mockApiFetch.mockImplementation(makeSubmitMock({
+      previewBody: (body) => { capturedPreviewBody = body; },
+      createBody: (body) => { capturedCreateBody = body; },
+    }));
+
+    const { container } = renderDropZone();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    await reachRxConfirmState(container);
+
+    const restorationTypeInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Restoration type"]',
+    )!;
+    fireEvent.focus(restorationTypeInput);
+    const diagnosticOption = Array.from(document.querySelectorAll('[role="option"]')).find(
+      (el) => el.textContent?.trim() === "Diagnostic Wax Up",
+    );
+    expect(diagnosticOption).toBeDefined();
+    fireEvent.mouseDown(diagnosticOption!);
+
+    await waitFor(() => {
+      expect(capturedPreviewBody?.restorations).toEqual([
+        expect.objectContaining({
+          restorationType: "Crown",
+          restorationSubtype: "restorative/diagnostic_wax_up",
+          material: "Diagnostic Wax Up",
+          shade: "Diagnostic Wax Up",
+        }),
+      ]);
+    }, { timeout: 5000 });
+
+    const createBtn = Array.from(container.querySelectorAll("button")).find((button) =>
+      /create case/i.test(button.textContent ?? ""),
+    );
+    expect(createBtn).toBeDefined();
+    await act(async () => {
+      fireEvent.click(createBtn!);
+      await new Promise((r) => setTimeout(r, 700));
+    });
+    await waitFor(() => {
+      expect(capturedCreateBody?.restorations).toEqual([
+        expect.objectContaining({
+          restorationType: "Crown",
+          restorationSubtype: "restorative/diagnostic_wax_up",
+          material: "Diagnostic Wax Up",
+          shade: "Diagnostic Wax Up",
+        }),
+      ]);
+    }, { timeout: 5000 });
   });
 });

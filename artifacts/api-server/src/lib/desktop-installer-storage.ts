@@ -1,5 +1,8 @@
 import { Storage, type File } from "@google-cloud/storage";
 import type { ExternalAccountClientOptions } from "google-auth-library";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 
@@ -326,22 +329,182 @@ export async function deleteDesktopInstaller(
   return true;
 }
 
-const UPDATE_MANIFEST_KEY_SUFFIX = "desktop-installer/latest.yml";
+const UPDATE_MANIFEST_KEY_SUFFIX: Record<"windows" | "mac", string> = {
+  windows: "desktop-installer/latest.yml",
+  mac: "desktop-installer/latest-mac.yml",
+};
+const MAC_UPDATE_PAYLOAD_NAME = /^LabTrax-\d+\.\d+\.\d+-(?:arm64|x64|universal)-mac\.zip$/;
+
+function getPrivateObjectFile(objectKeySuffix: string): File {
+  const fullPath = `${getPrivateObjectDir()}/${objectKeySuffix}`;
+  const { bucketName, objectName } = parseObjectPath(fullPath);
+  return storageClient.bucket(bucketName).file(objectName);
+}
+
+export interface DesktopUpdatePayloadHandle {
+  size: number;
+  uploadedAt: string;
+  etag: string;
+  fileName: string;
+}
+
+export async function uploadDesktopUpdatePayloadFromPath(
+  filePath: string,
+  fileName: string,
+  expectedSize: number,
+): Promise<{ size: number; fileName: string }> {
+  if (!MAC_UPDATE_PAYLOAD_NAME.test(fileName)) {
+    throw new Error("Unsupported macOS update ZIP filename.");
+  }
+  if (!process.env.PRIVATE_OBJECT_DIR) throw new DesktopInstallerNotConfiguredError();
+  const file = getPrivateObjectFile(`desktop-installer/mac-update/${fileName}`);
+  await pipeline(createReadStream(filePath), file.createWriteStream({
+    contentType: "application/zip",
+    resumable: true,
+    metadata: { contentDisposition: `attachment; filename="${fileName}"` },
+  }));
+  const [metadata] = await file.getMetadata();
+  const rawSize = metadata.size;
+  const size = typeof rawSize === "string" ? Number.parseInt(rawSize, 10) : Number(rawSize ?? 0);
+  if (size !== expectedSize) {
+    throw new Error("Stored macOS update ZIP size does not match the verified upload.");
+  }
+  return { size, fileName };
+}
+
+export async function getDesktopUpdatePayloadHandle(
+  fileName: string,
+): Promise<DesktopUpdatePayloadHandle | null> {
+  if (!MAC_UPDATE_PAYLOAD_NAME.test(fileName) || !process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  const file = getPrivateObjectFile(`desktop-installer/mac-update/${fileName}`);
+  const [exists] = await file.exists();
+  if (!exists) return null;
+  const [metadata] = await file.getMetadata();
+  const rawSize = metadata.size;
+  const size = typeof rawSize === "string" ? Number.parseInt(rawSize, 10) : Number(rawSize ?? 0);
+  const uploadedAt =
+    (metadata.updated as string) || (metadata.timeCreated as string) || new Date().toISOString();
+  const uploadedAtMs = Date.parse(uploadedAt);
+  const etag = `"${(Number.isFinite(size) ? size : 0).toString(16)}-${
+    Number.isFinite(uploadedAtMs) ? uploadedAtMs.toString(16) : "0"
+  }"`;
+  return { size: Number.isFinite(size) ? size : 0, uploadedAt, etag, fileName };
+}
+
+export async function openDesktopUpdatePayloadStream(
+  fileName: string,
+  range?: DesktopInstallerRangeOptions,
+): Promise<{ stream: NodeJS.ReadableStream } | null> {
+  const handle = await getDesktopUpdatePayloadHandle(fileName);
+  if (!handle) return null;
+  const streamOpts: { start?: number; end?: number } = {};
+  if (typeof range?.start === "number") streamOpts.start = range.start;
+  if (typeof range?.end === "number") streamOpts.end = range.end;
+  return {
+    stream: getPrivateObjectFile(`desktop-installer/mac-update/${fileName}`).createReadStream(streamOpts),
+  };
+}
+
+export async function getSignedDesktopUpdatePayloadUrl(
+  fileName: string,
+): Promise<string | null> {
+  if (!MAC_UPDATE_PAYLOAD_NAME.test(fileName) || !process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  try {
+    const file = getPrivateObjectFile(`desktop-installer/mac-update/${fileName}`);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [urls] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 15 * 60 * 1000,
+    });
+    return urls ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getDirectDesktopUpdatePayloadUrl(
+  fileName: string,
+): Promise<string | null> {
+  if (!MAC_UPDATE_PAYLOAD_NAME.test(fileName) || !process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  try {
+    const file = getPrivateObjectFile(`desktop-installer/mac-update/${fileName}`);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const authClient = await storageClient.authClient.getClient();
+    const tokenResponse = await authClient.getAccessToken();
+    const accessToken =
+      typeof tokenResponse === "string" ? tokenResponse : tokenResponse?.token;
+    if (!accessToken) return null;
+    const fullPath = `${getPrivateObjectDir()}/desktop-installer/mac-update/${fileName}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    const encodedObject = objectName
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `https://storage.googleapis.com/${bucketName}/${encodedObject}?access_token=${encodeURIComponent(accessToken)}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Publish a validated manifest for a public release after its assets exist. */
+export async function uploadDesktopUpdateManifest(
+  buffer: Buffer,
+  platform: "windows" | "mac",
+): Promise<void> {
+  if (!process.env.PRIVATE_OBJECT_DIR) throw new DesktopInstallerNotConfiguredError();
+  const file = getPrivateObjectFile(UPDATE_MANIFEST_KEY_SUFFIX[platform]);
+  await file.save(buffer, {
+    contentType: "application/yaml",
+    resumable: false,
+    metadata: {
+      cacheControl: "no-cache",
+      contentDisposition: `inline; filename="${platform === "windows" ? "latest.yml" : "latest-mac.yml"}"`,
+    },
+  });
+}
+
+export async function verifyWindowsUpdatePayload(
+  expectedSha512: string,
+  expectedSize: number,
+): Promise<boolean> {
+  const installer = await openDesktopInstallerStream("exe");
+  if (!installer || !Number.isSafeInteger(expectedSize) || expectedSize !== installer.size) {
+    return false;
+  }
+  const digest = createHash("sha512");
+  let actualSize = 0;
+  await new Promise<void>((resolve, reject) => {
+    installer.stream.on("data", (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      actualSize += bytes.length;
+      digest.update(bytes);
+    });
+    installer.stream.on("error", reject);
+    installer.stream.on("end", resolve);
+  });
+  return actualSize === expectedSize && digest.digest("base64") === expectedSha512;
+}
 
 /**
- * Returns the contents of the auto-update manifest (`latest.yml`) stored in
- * App Storage, or null if it has not been published yet or storage is not
+ * Returns the contents of the platform-specific auto-update manifest stored
+ * in App Storage, or null if it has not been published yet or storage is not
  * configured.
  *
- * This is served at `GET /downloads/latest.yml` for electron-updater generic
- * provider clients.
+ * Windows clients request `latest.yml`; macOS clients request `latest-mac.yml`.
  */
-export async function readUpdateManifest(): Promise<Buffer | null> {
+export async function readUpdateManifest(
+  platform: "windows" | "mac" = "windows",
+): Promise<Buffer | null> {
   if (!process.env.PRIVATE_OBJECT_DIR) return null;
-  const privateDir = getPrivateObjectDir();
-  const fullPath = `${privateDir}/${UPDATE_MANIFEST_KEY_SUFFIX}`;
-  const { bucketName, objectName } = parseObjectPath(fullPath);
-  const file = storageClient.bucket(bucketName).file(objectName);
+  const file = getPrivateObjectFile(UPDATE_MANIFEST_KEY_SUFFIX[platform]);
   const [exists] = await file.exists();
   if (!exists) return null;
   const [contents] = await file.download();

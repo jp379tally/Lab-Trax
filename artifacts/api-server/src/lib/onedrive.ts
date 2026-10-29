@@ -1,3 +1,5 @@
+import { retryOneDriveUploadResponse } from "./onedrive-upload-retry";
+import { isDatabaseProtectionObjectName } from "./database-protection-object-name";
 /**
  * OneDrive (Microsoft Graph) backup destination.
  *
@@ -10,10 +12,14 @@
  * Replit workspace integration pane; this module only consumes the result.
  */
 import * as fs from "node:fs";
+import type { Readable } from "node:stream";
 import { logger } from "./logger";
 import { abortableBackupOperation, setBackupLiveProgress } from "./backup-phase";
+import { createVerifiedBackupDownloadStream } from "./backup-download-stream";
 
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
+const normalizedSha1 = (value: unknown): string | null =>
+  typeof value === "string" && /^[a-f0-9]{40}$/i.test(value) ? value.toLowerCase() : null;
 
 /** Folder inside the connected OneDrive where backups are written. */
 export const ONEDRIVE_BACKUP_FOLDER = "Apps/LabTrax Backups";
@@ -75,6 +81,8 @@ export type OneDriveFetch = (
   json(): Promise<unknown>;
   text(): Promise<string>;
   arrayBuffer?(): Promise<ArrayBuffer>;
+  body?: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array> | null;
+  headers?: { get(name: string): string | null };
 }>;
 
 let _fetchOverride: OneDriveFetch | null = null;
@@ -103,9 +111,19 @@ const GRAPH_UPLOAD_TIMEOUT_MS = 300_000;
 const GRAPH_DOWNLOAD_TIMEOUT_MS = 1_800_000;
 
 /**
- * Graph fetch with a hard deadline. On timeout the request is aborted and a
- * descriptive error is thrown instead of hanging indefinitely.
+ * Explain provider failures without copying response bodies or signed URLs.
  */
+function oneDriveFailureGuidance(status: number): string {
+  if (status === 401) return "Reconnect the OneDrive integration before retrying.";
+  if (status === 403) return "Confirm this OneDrive account permits access to the configured backup folder.";
+  if (status === 507) return "Check OneDrive storage capacity; no existing backups were deleted.";
+  if ([429, 500, 502, 503, 504].includes(status)) {
+    return "The provider is temporarily unavailable. Retry after the service recovers.";
+  }
+  return "Check the OneDrive connection and destination before retrying.";
+}
+
+/** Fetch with a hard deadline, aborting a hung request rather than waiting indefinitely. */
 async function gfetch(
   url: string,
   init?: Parameters<OneDriveFetch>[1],
@@ -126,13 +144,17 @@ async function gfetch(
     else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
   }
   try {
-    return await impl(url, { ...(init ?? {}), signal: controller.signal });
+    const request = () => impl(url, { ...(init ?? {}), signal: controller.signal });
+    return await ((init?.method ?? "GET") === "GET"
+      ? retryOneDriveUploadResponse(request, controller.signal)
+      : request());
   } catch (err: unknown) {
     const aborted =
       controller.signal.aborted ||
       (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError"));
     if (aborted) {
-      const where = new URL(url, "https://graph.microsoft.com").pathname;
+      const parsed = new URL(url, "https://graph.microsoft.com");
+      const where = parsed.hostname === "graph.microsoft.com" ? parsed.pathname : "upload session";
       if (callerSignal?.aborted) {
         throw new Error(
           `OneDrive request aborted (${where}) — the backup run exceeded its overall time budget.`,
@@ -321,13 +343,14 @@ function isTransientUploadTransportError(error: unknown): boolean {
 async function createOneDriveUploadSession(
   fileName: string,
   folder: string = getOneDriveBackupFolder(),
+  signal?: AbortSignal,
 ): Promise<string> {
   const token = await getOneDriveAccessToken();
   const itemPath = `${folder}/${fileName}`
     .split("/")
     .map(encodeURIComponent)
     .join("/");
-  const sessionResp = await gfetch(
+  const sessionResp = await retryOneDriveUploadResponse(() => gfetch(
     `${GRAPH_BASE}/me/drive/root:/${itemPath}:/createUploadSession`,
     {
       method: "POST",
@@ -338,12 +361,13 @@ async function createOneDriveUploadSession(
       body: JSON.stringify({
         item: { "@microsoft.graph.conflictBehavior": "rename", name: fileName },
       }),
+      signal,
     },
-  );
+  ), signal);
   if (!sessionResp.ok) {
-    const text = await sessionResp.text().catch(() => "");
+    await sessionResp.text().catch(() => "");
     throw new Error(
-      `OneDrive upload-session create failed (HTTP ${sessionResp.status}).${text ? ` ${text.slice(0, 300)}` : ""}`,
+      `OneDrive upload-session create failed (HTTP ${sessionResp.status}). ${oneDriveFailureGuidance(sessionResp.status)}`,
     );
   }
   const session = (await sessionResp.json()) as { uploadUrl?: string };
@@ -385,7 +409,7 @@ async function uploadSessionChunks(
     let resp: Awaited<ReturnType<typeof gfetch>>;
     for (let attempt = 0; ; attempt += 1) {
       try {
-        resp = await gfetch(
+        resp = await retryOneDriveUploadResponse(() => gfetch(
           uploadUrl,
           {
             method: "PUT",
@@ -397,7 +421,7 @@ async function uploadSessionChunks(
             signal,
           },
           GRAPH_UPLOAD_TIMEOUT_MS,
-        );
+        ), signal);
         break;
       } catch (error) {
         if (signal?.aborted || !isTransientUploadTransportError(error)) {
@@ -430,9 +454,9 @@ async function uploadSessionChunks(
       }
     }
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
+      await resp.text().catch(() => "");
       throw new Error(
-        `OneDrive chunk upload failed (HTTP ${resp.status}) at bytes ${offset}-${end - 1}.${text ? ` ${text.slice(0, 300)}` : ""}`,
+        `OneDrive chunk upload failed (HTTP ${resp.status}) at bytes ${offset}-${end - 1}. ${oneDriveFailureGuidance(resp.status)}`,
       );
     }
     if (resp.status === 200 || resp.status === 201) {
@@ -494,7 +518,7 @@ export async function uploadBackupToOneDrive(
   options: { folder?: string; signal?: AbortSignal } = {},
 ): Promise<OneDriveUploadResult> {
   const folder = options.folder ?? getOneDriveBackupFolder();
-  const uploadUrl = await createOneDriveUploadSession(fileName, folder);
+  const uploadUrl = await createOneDriveUploadSession(fileName, folder, options.signal);
   return uploadSessionChunks(
     uploadUrl,
     buffer.length,
@@ -519,7 +543,7 @@ export async function uploadBackupFileToOneDrive(
   const totalSize = fs.statSync(filePath).size;
   const fd = fs.openSync(filePath, "r");
   try {
-    const uploadUrl = await createOneDriveUploadSession(fileName, folder);
+    const uploadUrl = await createOneDriveUploadSession(fileName, folder, options.signal);
     return await uploadSessionChunks(uploadUrl, totalSize, fileName, (offset, length) => {
       const buf = Buffer.allocUnsafe(length);
       const bytesRead = fs.readSync(fd, buf, 0, length, offset);
@@ -551,7 +575,7 @@ export async function uploadBackupSourceToOneDrive(
   }
   options.signal?.throwIfAborted();
   const folder = options.folder ?? getOneDriveBackupFolder();
-  const uploadUrl = await createOneDriveUploadSession(fileName, folder);
+  const uploadUrl = await createOneDriveUploadSession(fileName, folder, options.signal);
   return uploadSessionChunks(uploadUrl, source.size, fileName,
     (offset, length) => source.readChunk(offset, length), folder, options.signal);
 }
@@ -562,6 +586,10 @@ export interface OneDriveBackupFile {
   size: number;
   createdDateTime: string;
   webUrl: string | null;
+  /** Graph's provider-calculated file checksum; absent for some items/accounts. */
+  sha1Hash?: string | null;
+  driveId?: string;
+  contentTag?: string;
 }
 
 /**
@@ -578,6 +606,7 @@ export interface OneDriveBackupFile {
  */
 export async function listOneDriveBackupFiles(
   folder: string = getOneDriveBackupFolder(),
+  options: { databaseProtection?: boolean } = {},
 ): Promise<OneDriveBackupFile[]> {
   const token = await getOneDriveAccessToken();
   const folderPath = folder.split("/").map(encodeURIComponent).join("/");
@@ -594,7 +623,7 @@ export async function listOneDriveBackupFiles(
   // would take every archive inside it along with it.
   let url: string | null =
     `${GRAPH_BASE}/me/drive/root:/${folderPath}:/children` +
-    `?$select=id,name,size,createdDateTime,webUrl,folder,file,remoteItem&$top=200`;
+    `?$select=id,name,size,createdDateTime,webUrl,folder,file,remoteItem,cTag,parentReference&$top=200`;
   const visited = new Set<string>();
 
   while (url) {
@@ -611,9 +640,9 @@ export async function listOneDriveBackupFiles(
       return [];
     }
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
+      await resp.text().catch(() => "");
       throw new Error(
-        `OneDrive folder list failed (HTTP ${resp.status}).${text ? ` ${text.slice(0, 300)}` : ""}`,
+        `OneDrive folder list failed (HTTP ${resp.status}). ${oneDriveFailureGuidance(resp.status)}`,
       );
     }
     const data = (await resp.json()) as {
@@ -624,8 +653,10 @@ export async function listOneDriveBackupFiles(
         createdDateTime?: string;
         webUrl?: string | null;
         folder?: { childCount?: number } | null;
-        file?: object | null;
+        file?: { hashes?: { sha1Hash?: string | null } | null } | null;
         remoteItem?: object | null;
+        cTag?: string | null;
+        parentReference?: { driveId?: string } | null;
       }>;
       "@odata.nextLink"?: string;
     };
@@ -635,13 +666,19 @@ export async function listOneDriveBackupFiles(
     for (const item of data.value) {
       if (!item || item.folder || item.remoteItem || !item.file ||
           typeof item.id !== "string" || !item.id ||
-          typeof item.name !== "string" || !isOneDriveArchiveName(item.name)) continue;
+          typeof item.name !== "string" ||
+          !(options.databaseProtection
+            ? isDatabaseProtectionObjectName(item.name)
+            : isOneDriveArchiveName(item.name))) continue;
       files.push({
         id: item.id,
         name: item.name,
         size: item.size ?? 0,
         createdDateTime: item.createdDateTime ?? "",
         webUrl: item.webUrl ?? null,
+        sha1Hash: normalizedSha1(item.file?.hashes?.sha1Hash),
+        ...(item.parentReference?.driveId ? {driveId:item.parentReference.driveId} : {}),
+        ...(typeof item.cTag==="string" ? {contentTag:item.cTag} : {}),
       });
     }
     const next = data["@odata.nextLink"];
@@ -675,15 +712,15 @@ export async function getOneDriveFileByName(
   const itemPath = `${folder}/${fileName}`.split("/").map(encodeURIComponent).join("/");
   const resp = await gfetch(
     itemId
-      ? `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}?$select=id,name,size,createdDateTime,webUrl`
-      : `${GRAPH_BASE}/me/drive/root:/${itemPath}?$select=id,name,size,createdDateTime,webUrl`,
-    { headers: { Authorization: `Bearer ${token}` } },
+      ? `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}?$select=id,name,size,createdDateTime,webUrl,file,parentReference,cTag`
+      : `${GRAPH_BASE}/me/drive/root:/${itemPath}?$select=id,name,size,createdDateTime,webUrl,file,parentReference,cTag`,
+    { headers: { Authorization: `Bearer ${token}`, "Cache-Control": "no-cache" } },
   );
   if (resp.status === 404) return null;
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
+    await resp.text().catch(() => "");
     throw new Error(
-      `OneDrive file lookup failed (HTTP ${resp.status}) for "${fileName}".${text ? ` ${text.slice(0, 300)}` : ""}`,
+      `OneDrive file lookup failed (HTTP ${resp.status}) for "${fileName}". ${oneDriveFailureGuidance(resp.status)}`,
     );
   }
   const item = (await resp.json()) as {
@@ -692,6 +729,9 @@ export async function getOneDriveFileByName(
     size?: number;
     createdDateTime?: string;
     webUrl?: string | null;
+    file?: { hashes?: { sha1Hash?: string | null } | null } | null;
+    cTag?: string;
+    parentReference?: { driveId?: string };
   };
   if (typeof item.id !== "string" || !item.id || typeof item.name !== "string" || !item.name ||
       typeof item.size !== "number" || !Number.isSafeInteger(item.size) || item.size < 0) {
@@ -703,6 +743,9 @@ export async function getOneDriveFileByName(
     size: item.size,
     createdDateTime: item.createdDateTime ?? new Date(0).toISOString(),
     webUrl: item.webUrl ?? null,
+    sha1Hash: normalizedSha1(item.file?.hashes?.sha1Hash),
+    ...(typeof item.cTag === "string" ? { contentTag: item.cTag } : {}),
+    ...(typeof item.parentReference?.driveId === "string" ? { driveId: item.parentReference.driveId } : {}),
   };
 }
 
@@ -981,31 +1024,62 @@ export function selectOneDriveBackupsToPrune(
  */
 export async function downloadFileFromOneDrive(
   fileName: string,
+  expectedSize: number,
   folder: string = getOneDriveBackupFolder(),
   itemId?: string,
-): Promise<Buffer> {
+  signal?: AbortSignal,
+): Promise<Readable> {
+  if (!fileName.trim() || !Number.isSafeInteger(expectedSize) || expectedSize <= 0) {
+    throw new Error("OneDrive archive download requires a file name and valid expected size.");
+  }
   const token = await getOneDriveAccessToken();
+  if (signal?.aborted) throw new Error("OneDrive archive download was cancelled.");
   const filePath = `${folder}/${fileName}`
     .split("/")
     .map(encodeURIComponent)
     .join("/");
-  const resp = await gfetch(
-    itemId
-      ? `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`
-      : `${GRAPH_BASE}/me/drive/root:/${filePath}:/content`,
-    { headers: { Authorization: `Bearer ${token}` } },
-    GRAPH_DOWNLOAD_TIMEOUT_MS,
-  );
-  if (!resp.ok) {
-    throw new Error(
-      `OneDrive download failed (HTTP ${resp.status}) for file "${fileName}".`,
+  const impl = _fetchOverride ?? (fetch as unknown as OneDriveFetch);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GRAPH_DOWNLOAD_TIMEOUT_MS);
+  timer.unref?.();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromCaller);
+  };
+  try {
+    const resp = await impl(
+      itemId
+        ? `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`
+        : `${GRAPH_BASE}/me/drive/root:/${filePath}:/content`,
+      { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal },
     );
+    if (!resp.ok) {
+      throw new Error(
+        `OneDrive download failed (HTTP ${resp.status}) for file "${fileName}".`,
+      );
+    }
+    const declaredSize = resp.headers?.get("Content-Length");
+    if (declaredSize !== null && declaredSize !== undefined && Number(declaredSize) !== expectedSize) {
+      throw new Error(
+        `OneDrive archive download reported ${declaredSize} bytes; expected ${expectedSize}.`,
+      );
+    }
+    if (!resp.body) throw new Error("OneDrive archive download returned no stream.");
+    return createVerifiedBackupDownloadStream(resp.body, expectedSize, "OneDrive", dispose);
+  } catch (error: unknown) {
+    dispose();
+    if (controller.signal.aborted) {
+      throw new Error("OneDrive archive download timed out or was cancelled.");
+    }
+    if (error instanceof Error && error.message.startsWith("OneDrive ")) throw error;
+    throw new Error("OneDrive archive download failed. Check the connection and try again.");
   }
-  if (typeof resp.arrayBuffer !== "function") {
-    throw new Error("OneDrive download: response does not support arrayBuffer().");
-  }
-  const ab = await resp.arrayBuffer();
-  return Buffer.from(ab);
 }
 
 /**
