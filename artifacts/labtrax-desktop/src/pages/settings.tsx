@@ -2947,8 +2947,9 @@ function PlatformBackupPanel() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   function backupSourceHeaders(): Record<string, string> {
-    return scheduleQuery.data?.sourceEnvironment
-      ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {};
+    // App users always request production. The server rejects a mismatched
+    // binding; changing destinations can never select a development database.
+    return { "X-LabTrax-Backup-Source": "production" };
   }
   const scheduledBackupProgress = useSyncExternalStore(
     subscribeScheduledLocalBackupProgress,
@@ -3576,6 +3577,10 @@ function PlatformBackupPanel() {
 
   const choosingBackupFile = useRef(false);
   async function runManualBackup() {
+    if (scheduleQuery.data?.sourceEnvironment !== "production") {
+      setBackupError("Production backups are unavailable on this server. Open the production LabTrax app before starting a backup.");
+      return;
+    }
     if (user?.id && !manualProgress.runId && loadManualBackupIdentity(user.id)) return;
     if (backupNowMutation.isPending || getManualBackupProgress().state === "running" ||
         choosingBackupFile.current || gate.blocked) return;
@@ -3620,11 +3625,13 @@ function PlatformBackupPanel() {
 
   const saveScheduleMutation = useMutation({
     mutationFn: () => {
+      if (scheduleQuery.data?.sourceEnvironment !== "production") {
+        throw new Error("Open the production LabTrax app to configure production backups.");
+      }
       const parsed = parseIntervalKey(schedIntervalKey) ?? { interval: 1, unit: "hours" as BackupIntervalUnit };
       return apiFetch("/admin/backup/schedule", {
         method: "PUT",
-        headers: scheduleQuery.data?.sourceEnvironment
-          ? { "X-LabTrax-Backup-Source": scheduleQuery.data.sourceEnvironment } : {},
+        headers: backupSourceHeaders(),
         body: JSON.stringify({
           interval: parsed.interval,
           unit: parsed.unit,
@@ -4237,9 +4244,9 @@ function PlatformBackupPanel() {
         </div>
         <p className="break-words text-xs text-muted-foreground" data-testid="backup-schedule-cadence-guidance">
           {scheduleQuery.data?.sourceEnvironment === "production"
-            ? "Choose the destination and interval for production backups. Google Drive and OneDrive run on the server and reuse verified encrypted records and media. Local folder / USB uses LabTrax Desktop on the selected computer; network server uses SFTP. A busy run finishes before one coalesced catch-up starts."
+            ? "Choose the destination and interval for production backups. Scheduled runs first verify the last saved recovery point, then upload only new or changed records and original files. Google Drive and OneDrive run on the server and reuse verified encrypted records and media. Local folder / USB uses LabTrax Desktop on the selected computer; network server uses SFTP. A busy run finishes before one coalesced catch-up starts."
             : scheduleQuery.data?.sourceEnvironment === "development"
-              ? "This schedule protects the Development database only. Choose its destination and interval independently of Production; Development files stay in their separate backup folder."
+              ? "Production backups are unavailable on this development server. Open the live production LabTrax app to configure backups; application code is saved separately in GitHub."
               : "The server has not confirmed which database this schedule would affect. Confirm the environment before changing its cadence."}
           {scheduleQuery.data?.sourceEnvironment === "production" && (
             <> Only a complete, authenticated database-and-media recovery point advances complete protection. Missing-file warnings remain visible.</>
@@ -4517,6 +4524,7 @@ function PlatformBackupPanel() {
             onClick={() => saveScheduleMutation.mutate()}
             disabled={
               saveScheduleMutation.isPending ||
+              scheduleQuery.data?.sourceEnvironment !== "production" ||
               scheduleQuery.isLoading ||
               gate.blocked ||
               (schedEnabled && needsPath(schedDest) && !schedPath.trim()) ||
@@ -4820,6 +4828,7 @@ function PlatformBackupPanel() {
           type="button"
           onClick={() => void runManualBackup()}
           disabled={
+            scheduleQuery.data?.sourceEnvironment !== "production" ||
             manualBackupRunning ||
             manualReconnectUnconfirmed ||
             (!!user?.id && !manualProgress.runId && !!loadManualBackupIdentity(user.id)) ||

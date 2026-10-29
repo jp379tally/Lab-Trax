@@ -360,7 +360,7 @@ async function buildPgDumpBuffer(deadline?: BackupDeadline, snapshot?: string, m
  * Stream a custom-format pg_dump with bounded stdout/stderr buffering. The
  * caller must consume the iterator while its exported snapshot is still open.
  */
-async function* buildPgDumpStream(
+export async function* buildPgDumpStream(
   deadline?: BackupDeadline,
   snapshot?: string,
   maxBytes = MAX_DATABASE_DUMP_BYTES,

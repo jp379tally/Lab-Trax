@@ -5,6 +5,7 @@ import {
   getAllowedBackupScheduleIntervalsMinutes,
   getBackupSourceEnvironment,
   requireMatchingBackupSource,
+  requireProductionApplicationBackup,
 } from "../lib/backup-source";
 import {
   startManualBackupJob,
@@ -8924,7 +8925,7 @@ Important rules:
   });
 
   // ── Admin Backup: run now ─────────────────────────────────────────────────
-  router.post("/admin/backup/run", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+  router.post("/admin/backup/run", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -9048,7 +9049,7 @@ Important rules:
   // (Electron or browser) can save the file locally. This is the correct path
   // for "Back up now → Local folder / USB" because the user's drive is on
   // their machine, not on the Linux server.
-  router.post("/admin/backup/generate", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+  router.post("/admin/backup/generate", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (req.query.archiveKind === "database-only") {
       res.status(400).json({ error: "In-app backups always include production records and original files. Records-only backups are not available." });
       return;
@@ -9314,7 +9315,7 @@ Important rules:
   });
 
   // ── Admin Backup: schedule save ───────────────────────────────────────────
-  router.put("/admin/backup/schedule", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+  router.put("/admin/backup/schedule", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -9501,7 +9502,7 @@ Important rules:
   // admins can verify their SFTP or OneDrive config without waiting for the
   // interval. Local-folder schedules run from the desktop app and return a
   // clear error here.
-  router.post("/admin/backup/schedule/run-now", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+  router.post("/admin/backup/schedule/run-now", platformAdminUserOrSecret, requireMatchingBackupSource, requireProductionApplicationBackup, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }

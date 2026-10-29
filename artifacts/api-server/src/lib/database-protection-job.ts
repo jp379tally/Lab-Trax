@@ -1,3 +1,4 @@
+import { assertExternalProductionBinding } from "./external-production-backup";
 import { createHash } from "node:crypto";
 import { db, pool, systemSettings } from "@workspace/db";
 import { lockMediaCheckpoint, unlockMediaCheckpoint } from "./production-media-mutation";
@@ -198,11 +199,11 @@ export function productionDatabaseStore(signal?: AbortSignal, destination: Produ
   const factory = destination === "google-drive" ? databaseGoogleDriveStore : databaseOneDriveStore;
   return factory(`${folder}/production-content-v1/${databaseProtectionSource()}`, signal);
 }
-export function productionContentStores(signal?: AbortSignal, destination: ProductionCloudDestination = "onedrive") {
-  const folder = destination === "google-drive" ? getGoogleDriveBackupFolder() : getOneDriveBackupFolder();
+export function productionContentStores(signal?: AbortSignal, destination: ProductionCloudDestination = "onedrive", externalProduction = false) {
+  const folder = externalProduction ? "Apps/LabTrax Backups" : destination === "google-drive" ? getGoogleDriveBackupFolder() : getOneDriveBackupFolder();
   const factory = destination === "google-drive" ? databaseGoogleDriveStore : databaseOneDriveStore;
   return {
-    store: productionDatabaseStore(signal, destination),
+    store: externalProduction ? factory(folder + "/production-content-v1/" + databaseProtectionSource(), signal) : productionDatabaseStore(signal, destination),
     databaseStore: factory(`${folder}/production-content-v1/${databaseProtectionSource()}/database`, signal),
   };
 }
@@ -388,6 +389,7 @@ export async function noteDatabaseProtectionBusy(): Promise<void> {
 }
 
 export async function runDatabaseProtectionJob(options: {
+  externalProductionSourceRevision?: string;
   codec: DatabaseCodec;
   capture: (snapshot: string, previousJournalPosition: string | null, onMediaPinned: () => Promise<void>,
     previousRecords?: RecordInventory | null) => Promise<DatabaseDumpSource | RecordDatabaseCapture> | DatabaseDumpSource | RecordDatabaseCapture;
@@ -397,7 +399,9 @@ export async function runDatabaseProtectionJob(options: {
   destination?: ProductionCloudDestination;
   intervalMinutes?: number;
 }): Promise<DatabaseProtectionStatus> {
-  if (!isProductionDeployment()) throw new Error("Routine database protection runs only on the connected production server.");
+  const externalProduction = assertExternalProductionBinding(options.externalProductionSourceRevision);
+  if (externalProduction && options.destination !== "onedrive") throw new Error("External production bootstrap requires OneDrive.");
+  if (!isProductionDeployment() && !externalProduction) throw new Error("Routine database protection runs only on the connected production server.");
   const lock = await pool.connect();
   const lease = guardProtectionClient(lock, options.signal);
   options = { ...options, signal: lease.signal };
@@ -445,7 +449,7 @@ export async function runDatabaseProtectionJob(options: {
     await save(status, lock);
     options.signal?.throwIfAborted();
     let lastProgress = 0;
-    const stores=productionContentStores(options.signal, destination);
+    const stores=productionContentStores(options.signal, destination, externalProduction);
     const verified = await protectProduction({
       ...stores, codec: options.codec, source: databaseProtectionSource(),
       captureMedia: options.captureMedia,
@@ -528,7 +532,7 @@ export async function runDatabaseProtectionJob(options: {
     await save(status, lock);
     attemptOutcome = status.state === "verified" ? "verified" : "partial";
     try {
-      if (destination === "onedrive") await runDatabaseProtectionRetention({ codec: options.codec, signal: options.signal });
+      if (destination === "onedrive" && !externalProduction) await runDatabaseProtectionRetention({ codec: options.codec, signal: options.signal });
     } catch (retentionError) {
       logger.warn({ err: retentionError instanceof Error ? retentionError.message : "retention failed" },
         "[backup] Database recovery retention did not finish; the verified recovery point remains intact.");

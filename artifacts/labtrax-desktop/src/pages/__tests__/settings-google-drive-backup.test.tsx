@@ -38,6 +38,7 @@ function jsonResponse(body: unknown): Response {
 
 function makeSchedule(enabled = false) {
   return {
+    sourceEnvironment: "production",
     interval: 24,
     unit: "hours",
     destination: null,
@@ -161,6 +162,8 @@ describe("Settings → Backup → Google Drive", () => {
     fireEvent.click(button);
     await waitFor(() => expect(manualRunBody).toMatchObject({ destination: "google-drive" }));
     expect(manualRunBody).not.toHaveProperty("archiveKind");
+    const request = vi.mocked(fetch).mock.calls.find(([input]) => String(input).includes("/admin/backup/run"));
+    expect(new Headers(request?.[1]?.headers).get("X-LabTrax-Backup-Source")).toBe("production");
   });
   it.each(["development", "production"] as const)("labels the connected %s database source", async (source) => {
     schedule.sourceEnvironment = source;

@@ -1,3 +1,4 @@
+import { assertExternalProductionBinding } from "./external-production-backup";
 import { pool } from "@workspace/db";
 import { capturePostgresRecordChanges, recordInventoryHash, recordInventoryReferences,
   type RecordCapture, type RecordInventory } from "./postgres-record-delta";
@@ -30,6 +31,10 @@ import {
 } from "./production-media-journal";
 
 export const COMPLETE_BACKUP_VERSION = 2;
+// Bump this contract only when recoveryReferences changes semantics. UI/code
+// releases must not force unchanged production records to be exported again.
+export const PRODUCTION_RECORD_REFERENCE_PROTOCOL = createHash("sha256")
+  .update("labtrax-production-record-references-v1").digest("hex");
 export const COMPLETE_PRODUCTION_KIND = "complete-production";
 export const COMPLETE_DEVELOPMENT_KIND = "complete-non-production";
 const DESKTOP_RELEASE_IDENTITY_PATH = "desktop-installer/release-identity.json";
@@ -428,6 +433,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
   dump: (snapshot: string) => Promise<DatabaseDumpSource> | DatabaseDumpSource,
   signal?: AbortSignal,
   options: {
+    externalProductionSourceRevision?: string;
     archiveDestination?: CompleteArchiveDestination;
     allowMissingReferences?: boolean;
     productionDataOnly?: boolean;
@@ -442,6 +448,10 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     records?: { previous: RecordInventory | null; schemaSql: (snapshot: string) => Promise<string> };
   } = {} as { streamDatabaseDump?: Stream },
 ): Promise<CompleteBackupCaptured<Stream>> {
+  const externalRevision = options.externalProductionSourceRevision;
+  const externalProduction = assertExternalProductionBinding(externalRevision);
+  const productionSource = isProductionDeployment() || externalProduction;
+  const captureRevision = () => externalRevision ? Promise.resolve(externalRevision) : readRunningSourceRevision();
   const client = await pool.connect();
   let dumpScratch: string | undefined;
   let ownMediaLock = false;
@@ -467,7 +477,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const snapshotToken = options.snapshot ?? boundary.snapshot;
     if (!snapshotToken) throw new Error("PostgreSQL did not provide a consistent backup snapshot.");
     let fingerprintSha256: string | null = null;
-    if (isProductionDeployment()) {
+    if (productionSource) {
       fingerprintSha256 = await verifyProductionBackupSource(client);
     }
     let productionMediaJournal: CompleteRecoveryManifest["productionMediaJournal"];
@@ -521,8 +531,8 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
             previous: options.records.previous, schemaSql: ()=>options.records!.schemaSql(snapshotToken), signal,
             references: (table, row) => [...recoveryReferences(table, row)],
             // Reconcile historical references when the deployed extractor changes.
-            referenceProtocol:createHash("sha256").update(`record-references-v1:${isProductionDeployment()
-              ? await readRunningSourceRevision() : "isolated-record-capture-v1"}`).digest("hex"),
+            referenceProtocol: productionSource ? PRODUCTION_RECORD_REFERENCE_PROTOCOL
+              : createHash("sha256").update("record-references-v1:isolated-record-capture-v1").digest("hex"),
           });
           const tables = recordCapture.inventory.tables.map(table => ({schema:table.schema,name:table.name,
             rows:table.rows.reduce((sum,row)=>sum+row.count,0)}));
@@ -658,9 +668,9 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     let sourceRevision: string | null = null;
     let releaseIdentity: DesktopReleaseIdentity | undefined;
     let releaseIdentityBytes: Buffer | undefined;
-    if (isProductionDeployment() && options.productionDataOnly) sourceRevision = await readRunningSourceRevision();
-    if (isProductionDeployment() && !options.productionDataOnly) {
-      sourceRevision = await readRunningSourceRevision();
+    if (productionSource && options.productionDataOnly) sourceRevision = await captureRevision();
+    if (productionSource && !options.productionDataOnly) {
+      sourceRevision = await captureRevision();
       const sidecar = objects.find(object => object.relativeName === DESKTOP_RELEASE_IDENTITY_PATH);
       if (!sidecar && !options.allowMissingReferences) {
         throw new Error("Production recovery capture requires a signed Desktop release identity sidecar.");
@@ -684,7 +694,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     } = await measureBackupPhase(
       "case-media inventory and reference validation",
       async () => {
-        if (isProductionDeployment() && !process.env.PRIVATE_OBJECT_DIR) {
+        if (productionSource && !process.env.PRIVATE_OBJECT_DIR) {
           throw new Error("Complete production backup requires access to private App Storage.");
         }
         const media = pinnedMedia, local = pinnedLocal, privateFiles = pinnedPrivate, legacyState = pinnedLegacy;
@@ -753,7 +763,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
     const databaseUrl = new URL(process.env.DATABASE_URL!);
     const manifest: CompleteRecoveryManifest = {
       coverageVersion: COMPLETE_BACKUP_VERSION,
-      sourceEnvironment: isProductionDeployment() ? "production" : "non-production",
+      sourceEnvironment: productionSource ? "production" : "non-production",
       sourceRevision,
       ...(options.productionDataOnly ? { backupScope: "production-data" as const } : {}),
       ...(releaseIdentity ? { releaseIdentity } : {}),
@@ -761,7 +771,7 @@ export async function captureCompleteBackup<Stream extends boolean = false>(
       sourceIdentitySha256: createHash("sha256").update(`${databaseUrl.hostname}:${databaseUrl.port}/${boundary.database}`).digest("hex"),
       storageNamespaceSha256: process.env.PRIVATE_OBJECT_DIR
         ? createHash("sha256").update(process.env.PRIVATE_OBJECT_DIR.trim().replace(/^\/+|\/+$/g, "")).digest("hex") : null,
-      provenance: { productionLineageVerified: isProductionDeployment(), fingerprintSha256 },
+      provenance: { productionLineageVerified: productionSource, fingerprintSha256 },
       snapshotAt: new Date(boundary.at).toISOString(),
       snapshot: snapshotToken,
       databaseSha256,

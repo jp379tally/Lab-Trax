@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getBackupSourceEnvironment, requireMatchingBackupSource } from "./backup-source";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getBackupSourceEnvironment, requireMatchingBackupSource, requireProductionApplicationBackup } from "./backup-source";
 
 const state = vi.hoisted(() => ({ production: false }));
 vi.mock("./onedrive", () => ({ isProductionDeployment: () => state.production }));
@@ -44,5 +44,32 @@ describe("connected backup source cannot rebind a database", () => {
     const app = express();
     app.post("/backup", requireMatchingBackupSource, (_req, res) => res.sendStatus(200));
     expect((await request(app).post("/backup")).status).toBe(200);
+  });
+});
+
+describe("interactive application backups are production-only", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  function fixture() {
+    const app = express();
+    const capture = vi.fn((_req, res) => res.json({ ok: true }));
+    app.post("/backup", requireProductionApplicationBackup, capture);
+    return { app, capture };
+  }
+  it("rejects development application capture before any work starts", async () => {
+    state.production = false; vi.stubEnv("PLATFORM_ADMIN_SECRET", "synthetic-operator-secret");
+    const { app, capture } = fixture();
+    expect((await request(app).post("/backup")).status).toBe(403);
+    expect(capture).not.toHaveBeenCalled();
+  });
+  it("accepts production application capture", async () => {
+    state.production = true; const { app, capture } = fixture();
+    expect((await request(app).post("/backup")).status).toBe(200);
+    expect(capture).toHaveBeenCalledOnce();
+  });
+  it("keeps explicit operator development exports separate from app-user backups", async () => {
+    state.production = false; vi.stubEnv("PLATFORM_ADMIN_SECRET", "synthetic-operator-secret");
+    const { app } = fixture();
+    expect((await request(app).post("/backup").set("X-Platform-Admin-Secret", "wrong")).status).toBe(403);
+    expect((await request(app).post("/backup").set("X-Platform-Admin-Secret", "synthetic-operator-secret")).status).toBe(200);
   });
 });
