@@ -1,3 +1,4 @@
+import { createBackupContinuation, getBackupContinuation, type BackupContinuation } from "@/lib/backup-continuation";
 import {
   followManualBackup,
   type ManualBackupStatus,
@@ -3157,8 +3158,9 @@ function PlatformBackupPanel() {
     runId: string,
     archiveKind: "full" | "database-only",
     browserSaveHandle?: BrowserBackupSaveHandle,
+    continuation?: BackupContinuation,
   ) {
-    const response = await apiFetchDownloadResponse(
+    const response = continuation ? await continuation.download() : await apiFetchDownloadResponse(
       `/admin/backup/download/${encodeURIComponent(runId)}`,
       { method: "GET", headers: backupSourceHeaders() },
     );
@@ -3195,7 +3197,10 @@ function PlatformBackupPanel() {
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       viaBrowser = true;
     }
-    const report = await apiFetch<{ rejected?: boolean; warning?: string; completedAt?: string }>(
+    const reportRequest = continuation
+      ? async (_path: string, options: RequestInit) => continuation.report<{ rejected?: boolean; warning?: string; completedAt?: string }>(JSON.parse(options.body as string))
+      : apiFetch<{ rejected?: boolean; warning?: string; completedAt?: string }>;
+    const report = await reportRequest(
       "/admin/backup/desktop-run-report",
       {
         method: "POST",
@@ -3236,6 +3241,14 @@ function PlatformBackupPanel() {
             ? "Preparing, uploading and verifying the encrypted archive in Google Drive"
             : "Generating and downloading the full archive";
       const runId = crypto.randomUUID();
+      let continuation: BackupContinuation | undefined;
+      const startRun = async (path: string, options: RequestInit) => {
+        const acknowledgement = await apiFetch<Awaited<ReturnType<Parameters<typeof followManualBackup>[1]>> & { continuationToken?: string }>(path, options);
+        if (acknowledgement.continuationToken) {
+          continuation = createBackupContinuation(runId, acknowledgement.continuationToken, backupSourceHeaders(), user?.id);
+        }
+        return acknowledgement;
+      };
       resetManualBackupProgress(runId, initialPhase, startedAt);
       if (user?.id) {
         saveManualBackupIdentity(user.id, {
@@ -3250,9 +3263,9 @@ function PlatformBackupPanel() {
       if (nowDest === "onedrive" || nowDest === "google-drive") {
         const provider = nowDest === "onedrive" ? "OneDrive" : "Google Drive";
         let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
-        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        const readStatus = () => pendingStatus ??= (continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
           `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
-        ).finally(() => { pendingStatus = null; });
+        )).finally(() => { pendingStatus = null; });
         const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
           ...status,
           state: status.state as LocalBackupLiveStatus["state"],
@@ -3265,7 +3278,7 @@ function PlatformBackupPanel() {
         try {
         const res = await followManualBackup(
           runId,
-          () => apiFetch("/admin/backup/run", {
+          () => startRun("/admin/backup/run", {
             method: "POST",
             headers: backupSourceHeaders(),
             body: JSON.stringify({ destination: nowDest, runId, respondAsync: true,
@@ -3287,9 +3300,9 @@ function PlatformBackupPanel() {
       }
       if (isNetworkSftp) {
         let pendingStatus: Promise<LocalBackupLiveStatus & ManualBackupStatus> | null = null;
-        const readStatus = () => pendingStatus ??= apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+        const readStatus = () => pendingStatus ??= (continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
           `/admin/backup/status/${encodeURIComponent(runId)}`, { headers: backupSourceHeaders() },
-        ).finally(() => { pendingStatus = null; });
+        )).finally(() => { pendingStatus = null; });
         const updateStatus = (status: ManualBackupStatus) => applyManualBackupLiveStatus({
           ...status,
           state: status.state as LocalBackupLiveStatus["state"],
@@ -3304,7 +3317,7 @@ function PlatformBackupPanel() {
         try {
           const res = await followManualBackup(
             runId,
-            () => apiFetch("/admin/backup/run", {
+            () => startRun("/admin/backup/run", {
               method: "POST",
               body: JSON.stringify({ destination: nowDest, path: nowPath.trim(), runId, respondAsync: true }),
               headers: backupSourceHeaders(),
@@ -3343,7 +3356,7 @@ function PlatformBackupPanel() {
         return { size: result.sizeBytes, completedAt: result.completedAt, fileName: result.fileName, savedTo: result.path, viaBrowser: false,
           partialFailure: result.partialFailure, warnings: result.warnings };
       }
-      const readStatus = (id: string) => apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
+      const readStatus = (id: string) => continuation ? continuation.status<LocalBackupLiveStatus & ManualBackupStatus>() : apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
         `/admin/backup/status/${encodeURIComponent(id)}`,
         { headers: backupSourceHeaders() },
       );
@@ -3355,7 +3368,7 @@ function PlatformBackupPanel() {
       });
       const stopWatching = watchBackupLiveStatus(runId, readStatus, updateStatus);
       try {
-        await apiFetch("/admin/backup/run", {
+        await startRun("/admin/backup/run", {
           method: "POST",
           headers: backupSourceHeaders(),
           body: JSON.stringify({
@@ -3369,7 +3382,7 @@ function PlatformBackupPanel() {
         while (Date.now() < until) {
           const status = await readStatus(runId);
           updateStatus(status);
-          if (status.delivery) return deliverStagedManualBackup(runId, nowArchiveKind, browserSaveHandle);
+          if (status.delivery) return deliverStagedManualBackup(runId, nowArchiveKind, browserSaveHandle, continuation);
           if (status.state === "cancelled") throw new Error(status.error ?? "Backup cancelled. Incomplete output was discarded.");
           if (status.state === "failed" || status.state === "stale") {
             throw new Error(status.error ?? "Backup generation failed. Check Recent backups.");
@@ -3439,7 +3452,7 @@ function PlatformBackupPanel() {
     if (manualProgress.state !== "running" || !manualProgress.runId || backupNowMutation.isPending) return;
     return watchBackupLiveStatus(
       manualProgress.runId,
-      (runId) => apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
+      (runId) => getBackupContinuation(runId, user?.id)?.status<LocalBackupLiveStatus>() ?? apiFetch<LocalBackupLiveStatus>(`/admin/backup/status/${encodeURIComponent(runId)}`, {
         headers: backupSourceHeaders(),
       }),
       (status) => {
@@ -3460,7 +3473,12 @@ function PlatformBackupPanel() {
     setResumeDeliveryPending(true);
     setBackupError(null);
     try {
-      const result = await deliverStagedManualBackup(manualProgress.runId, nowArchiveKind);
+      const authorization = await apiFetch<{ continuationToken: string }>(
+        "/admin/backup/continuation/" + encodeURIComponent(manualProgress.runId),
+        { method: "POST", headers: backupSourceHeaders() },
+      );
+      const continuation = createBackupContinuation(manualProgress.runId, authorization.continuationToken, backupSourceHeaders(), user?.id);
+      const result = await deliverStagedManualBackup(manualProgress.runId, nowArchiveKind, undefined, continuation);
       const completed = { ...result, databaseOnly: nowArchiveKind === "database-only" };
       setBackupResult(completed);
       updateManualBackupProgress({

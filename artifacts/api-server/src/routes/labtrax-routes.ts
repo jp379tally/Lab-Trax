@@ -1,3 +1,4 @@
+import { backupContinuationOrAdmin, issueBackupContinuation } from "../lib/backup-continuation";
 import { productionMediaDiskStorage } from "../lib/production-media-multipart";
 import { writeProductionUpload, copyProductionUpload } from "../lib/production-media-local-write";
 import {
@@ -463,6 +464,7 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
 }
 
 function getManualBackupSessionHash(req: any): string | null {
+  if (req._backupContinuationSessionHash) return req._backupContinuationSessionHash;
   const sessionId = req.auth?.sessionId;
   if (typeof sessionId === "string" && sessionId) {
     return createHash("sha256").update(`session:${sessionId}`).digest("hex");
@@ -8986,7 +8988,8 @@ Important rules:
             cleanup => registerManualBackupCleanup(requestedRunId, cleanup),
           );
         });
-        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running" });
+        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running",
+          continuationToken: await issueBackupContinuation(requestedRunId, ownerId, sessionHash) });
       }
       // Cloud and SFTP work belongs to the server once accepted. Reusing the
       // same claim/status contract lets the Desktop reconnect without keeping
@@ -9005,7 +9008,8 @@ Important rules:
           return runBackup(triggeredBy, destination, destPath,
             { archiveKind: body.archiveKind === "database-only" ? "database-only" : "full", cancellationSignal: signal });
         });
-        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running" });
+        return res.status(202).json({ ok: true, runId: requestedRunId, state: "running",
+          continuationToken: await issueBackupContinuation(requestedRunId, ownerId, sessionHash) });
       }
       if (requestedRunId && await getBackupLiveStatus(requestedRunId)) {
         return res.status(409).json({ error: "This backup run ID has already been used." });
@@ -9576,12 +9580,25 @@ Important rules:
     }
   });
 
+  // Reconnect/download recovery may authorize continuation only for the same
+  // run and authenticated owner/session, never for a new backup.
+  router.post("/admin/backup/continuation/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+    if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
+    const runId = String(req.params.runId);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) return res.status(400).json({ error: "Invalid backup run ID." });
+    try {
+      const continuationToken = await issueBackupContinuation(runId, typeof (req as any).user?.id === "string" ? (req as any).user.id : null, getManualBackupSessionHash(req));
+      if (!continuationToken) return res.status(404).json({ error: "Backup unavailable. Reconnect the existing backup first." });
+      return res.json({ continuationToken });
+    } catch { return res.status(503).json({ error: "Could not reconnect this backup. Retry the existing run." }); }
+  });
+
   // ── Admin Backup: desktop-executed run report ─────────────────────────────
   // The LabTrax Desktop app executes local-folder schedules (it downloads the
   // backup and writes it to the chosen folder while the app is open), then
   // reports the outcome here so the run lands in backup_runs and a success
   // feeds the staleness watermark/alerts.
-  router.post("/admin/backup/desktop-run-report", platformAdminUserOrSecret, async (req, res) => {
+  router.post("/admin/backup/desktop-run-report", backupContinuationOrAdmin("report", platformAdminUserOrSecret), async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
@@ -9790,7 +9807,7 @@ Important rules:
     return res.json({ ok: true, runId, state: "cancelled" });
   });
 
-  router.get("/admin/backup/download/:runId", platformAdminUserOrSecret, requireMatchingBackupSource, async (req, res) => {
+  router.get("/admin/backup/download/:runId", backupContinuationOrAdmin("download", platformAdminUserOrSecret), requireMatchingBackupSource, async (req, res) => {
     if (!isPlatformAdmin(req)) return res.status(403).json({ error: "Admin access required." });
     const runId = String(req.params.runId ?? "");
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) {
@@ -9832,7 +9849,7 @@ Important rules:
 
   // Live phase/progress is durable and keyed by the opaque run UUID created by
   // the initiating client, so a refreshed renderer can reconnect safely.
-  router.get("/admin/backup/status/:runId", platformAdminUserOrSecret, async (req, res) => {
+  router.get("/admin/backup/status/:runId", backupContinuationOrAdmin("status", platformAdminUserOrSecret), async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
