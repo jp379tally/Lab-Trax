@@ -124,5 +124,6 @@ export type SavedSelection = {
    * when the set was saved. Sets saved before scopes were kept have none;
    * those customers load with their default scope.
    */
-  customers: Array<{ id: string; name: string; scope?: CustomerScope }>;
+  /** Explicit account kind distinguishes new practice selections from legacy sets. */
+  customers: Array<{ id: string; name: string; scope?: CustomerScope; accountKind?: "practice" | "doctor" }>;
 };

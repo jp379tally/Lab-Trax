@@ -296,6 +296,44 @@ describe("payable customer rows", () => {
 });
 
 describe("doctor payment accounts", () => {
+  it.each([false, true])("preserves a saved entire-practice selection including unassigned invoices (picked=%s)", (picked) => {
+    const [practice] = buildPayableCustomers([], [{
+      providerOrganizationId: "saved-whole",
+      providerName: "Saved Whole Dental",
+      invoiceCount: 3,
+      currentBalanceDue: "90.00",
+      outstandingInvoices: [
+        { ...invoice("saved-known", "S-1", { total: "40.00", balance: "40.00", doctor: "Dr. Ada" }), doctorIdentity: "saved-ada" },
+        { ...invoice("saved-other", "S-2", { total: "30.00", balance: "30.00", doctor: "Dr. Ben" }), doctorIdentity: "saved-ben" },
+        invoice("saved-unassigned", "S-3", { total: "20.00", balance: "20.00" }),
+      ],
+    }], asOf);
+    const accounts = buildSelectablePayableCustomers([practice!]);
+    const whole = accounts.find((account) => !account.isDoctorAccount)!;
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    const selection = picked
+      ? pickInvoices(EMPTY_SELECTION, whole, ["saved-known", "saved-unassigned"], false)
+      : selectCustomers(EMPTY_SELECTION, [whole]);
+    const { storage } = memoryStorage();
+    const key = "entire-practice-roundtrip";
+    expect(writeSavedSelections(storage, key, [{
+      name: "Entire practice",
+      savedAt: "2026-10-29T12:00:00.000Z",
+      customers: savedSelectionCustomers(selection, byId),
+    }])).toBe(true);
+    const [saved] = readSavedSelections(storage, key);
+    expect(saved!.customers[0]!.accountKind).toBe("practice");
+    const restored = restoreSavedSelection(saved!, byId);
+    expect(restored.selection.ids).toEqual([whole.id]);
+    expect(scopeFor(restored.selection, whole)).toEqual(scopeFor(selection, whole));
+    expect(selectionTotals(selectedFigures(restored.selection, byId))).toMatchObject({
+      customers: 1, invoices: picked ? 2 : 3, amount: picked ? 60 : 90,
+    });
+    expect(restored.narrowed).toEqual([]);
+    expect(restored.unselected).toEqual([]);
+    expect(restored.missing).toEqual([]);
+  });
+
   it("creates separate doctor accounts alongside the whole-practice account", () => {
     const adaInvoice = { ...invoice("multi-a", "M-1", { total: "40.00", balance: "30.00", doctor: "Dr. Ada" }), doctorIdentity: "profile-ada" };
     const benInvoice = { ...invoice("multi-b", "M-2", { total: "25.00", balance: "25.00", doctor: "Dr. Ben" }), doctorIdentity: "profile-ben" };
@@ -851,9 +889,9 @@ describe("saved selections", () => {
     const selection = pickInvoices(pickInvoices(selectCustomers(EMPTY_SELECTION, [beta]), alpha, ["a1"], true), gamma, ["g1"], true);
     const customers = savedSelectionCustomers(selection, byId);
     expect(customers).toEqual([
-      { id: "beta", name: "Beta Smiles", scope: { mode: "invoices", invoiceIds: null } },
-      { id: "alpha", name: "Alpha Dental", scope: { mode: "statement", invoiceIds: ["a1"] } },
-      { id: "gamma", name: "Gamma Lab Partners", scope: { mode: "invoices", invoiceIds: ["g1"] } },
+      { id: "beta", name: "Beta Smiles", accountKind: "practice", scope: { mode: "invoices", invoiceIds: null } },
+      { id: "alpha", name: "Alpha Dental", accountKind: "practice", scope: { mode: "statement", invoiceIds: ["a1"] } },
+      { id: "gamma", name: "Gamma Lab Partners", accountKind: "practice", scope: { mode: "invoices", invoiceIds: ["g1"] } },
     ]);
     const sets: SavedSelection[] = [{ name: "Partial", savedAt: "2026-06-30T12:00:00.000Z", customers }];
     expect(writeSavedSelections(storage, key, sets)).toBe(true);
@@ -873,6 +911,14 @@ describe("saved selections", () => {
       values.set(key, JSON.stringify([sets[0], withScope(scope)]));
       expect(readSavedSelections(storage, key)).toEqual(sets);
     }
+  });
+
+  it.each([null, 7, "unknown"])("rejects an invalid saved account kind (%s)", (accountKind) => {
+    const { storage, values } = memoryStorage();
+    values.set("bad-kind", JSON.stringify([{
+      name: "Invalid", savedAt: "x", customers: [{ id: "alpha", name: "Alpha", accountKind }],
+    }]));
+    expect(readSavedSelections(storage, "bad-kind")).toEqual([]);
   });
 
   it("restore each saved scope in the saved order and name customers that are no longer payable", () => {

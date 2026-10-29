@@ -1167,6 +1167,7 @@ function isSavedSelection(value: unknown): value is SavedSelection {
         !!customer &&
         typeof customer.id === "string" &&
         typeof customer.name === "string" &&
+        (customer.accountKind === undefined || customer.accountKind === "practice" || customer.accountKind === "doctor") &&
         (customer.scope === undefined || isSavedScope(customer.scope)),
     )
   );
@@ -1217,6 +1218,7 @@ export function savedSelectionCustomers(
     return {
       id,
       name: customer?.name ?? id,
+      ...(customer ? { accountKind: customer.isDoctorAccount ? "doctor" as const : "practice" as const } : {}),
       scope: selection.scopes[id] ?? (customer ? defaultScope(customer) : { mode: "invoices", invoiceIds: null }),
     };
   });
@@ -1289,7 +1291,7 @@ export function restoreSavedSelection(
       scope = { mode: "invoices", invoiceIds: null };
     }
     const doctors = customer.isDoctorAccount ? [] : doctorAccountsForPractice([...customers.values()], customer);
-    if (doctors.length) {
+    if (doctors.length && entry.accountKind !== "practice") {
       // Older saved sets may contain the former practice-wide account. Expand
       // its saved invoice scope into the matching doctor accounts so loading
       // that set cannot silently create an overlapping practice payment.
