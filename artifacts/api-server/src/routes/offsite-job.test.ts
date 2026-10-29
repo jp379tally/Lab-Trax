@@ -63,6 +63,11 @@ const fake = vi.hoisted(() => ({
     { id: string; name: string; size: number; createdDateTime: string; webUrl: string | null }
   >(),
   archiveBytes: new Map<string, Buffer>(),
+  // Incremental baseline objects live in separate Graph folders from archives.
+  protectionObjects: new Map<string, {
+    id: string; name: string; size: number; createdDateTime: string;
+    webUrl: null; driveId: string; contentTag: string; bytes: Buffer;
+  }>(),
   mediaObjects: new Map<string, Buffer>(),
   privateObjects: new Map<string, Buffer>(),
   restoredObjects: new Map<string, Buffer>(),
@@ -156,6 +161,34 @@ vi.mock("../lib/onedrive.js", async (importOriginal) => {
   return {
     ...actual,
     isOneDriveConnectorAvailable: () => true,
+    uploadBackupToOneDrive: vi.fn(async (bytes: Buffer, name: string,
+      options: { folder?: string; signal?: AbortSignal } = {}) => {
+      options.signal?.throwIfAborted();
+      if (!options.folder?.includes("/production-content-v1/")) {
+        throw new Error("Unexpected synthetic protection upload namespace");
+      }
+      const key = `${options.folder}\0${name}`;
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const item = { id: createHash("sha256").update(key).digest("hex"), name,
+        size: bytes.length, createdDateTime: new Date().toISOString(), webUrl: null,
+        driveId: "synthetic-protection-drive", contentTag: digest, bytes: Buffer.from(bytes) };
+      fake.protectionObjects.set(key, item);
+      return { itemId: item.id, fileName: name, size: item.size, webUrl: null, folder: options.folder };
+    }),
+    downloadFileFromOneDrive: vi.fn(async (name: string, size: number, folder?: string,
+      itemId?: string, signal?: AbortSignal) => {
+      signal?.throwIfAborted();
+      const item = fake.protectionObjects.get(`${folder}\0${name}`);
+      if (!item || item.id !== itemId || item.size !== size) {
+        throw new Error("Synthetic protection download identity mismatch");
+      }
+      return Readable.from([Buffer.from(item.bytes)]);
+    }),
+    deleteOneDriveBackupFile: vi.fn(async (itemId: string) => {
+      const entry = [...fake.protectionObjects].find(([, item]) => item.id === itemId);
+      if (!entry) throw new Error("Unexpected synthetic protection deletion");
+      fake.protectionObjects.delete(entry[0]);
+    }),
     uploadBackupSourceToOneDrive: vi.fn(
       async (source: { size: number; readChunk(offset: number, length: number): Promise<Buffer> },
         fileName: string, options: { signal?: AbortSignal } = {}) => {
@@ -190,10 +223,17 @@ vi.mock("../lib/onedrive.js", async (importOriginal) => {
     ),
     // Verification reads the archive back by the identity the upload returned.
     getOneDriveFileByName: vi.fn(async (name: string, _folder?: string, itemId?: string) => {
+      if (_folder?.includes("/production-content-v1/")) {
+        const item = fake.protectionObjects.get(`${_folder}\0${name}`);
+        return item && (!itemId || item.id === itemId) ? item : null;
+      }
       if (itemId) return fake.stored.get(itemId) ?? null;
       return [...fake.stored.values()].find((f) => f.name === name) ?? null;
     }),
-    listOneDriveBackupFiles: vi.fn(async () => [...fake.stored.values()]),
+    listOneDriveBackupFiles: vi.fn(async (folder?: string) =>
+      folder?.includes("/production-content-v1/")
+        ? [...fake.protectionObjects].filter(([key]) => key.startsWith(`${folder}\0`)).map(([, item]) => item)
+        : [...fake.stored.values()]),
     pruneOneDriveBackups: vi.fn(async () => []),
   };
 });
@@ -286,10 +326,9 @@ async function assertLargeMediaRoundtrip(
         expect(recovery.coverageVersion).toBe(2);
         expect(recovery.sourceEnvironment).toBe("production");
         expect(recovery.sourceRevision).toBe(SYNTHETIC_SOURCE_REVISION);
-        expect(recovery.releaseIdentity).toEqual(SYNTHETIC_RELEASE_IDENTITY);
-        expect(archive.readFile("private-objects/desktop-installer/LabTrax-Setup.exe")?.equals(SYNTHETIC_INSTALLER)).toBe(true);
-        expect(JSON.parse(archive.readAsText("private-objects/desktop-installer/release-identity.json")))
-          .toEqual(SYNTHETIC_RELEASE_IDENTITY);
+        expect(recovery.backupScope).toBe("production-data");
+        expect(recovery.releaseIdentity).toBeUndefined();
+        expect(archive.getEntries().some(entry => entry.entryName.startsWith("private-objects/desktop-installer/"))).toBe(false);
         expect(recovery.tables.find((table: { name: string }) => table.name === "backup_all_table_probe")?.rows).toBe(1);
         expect(archive.getEntry("local-uploads/profile-photos/probe.jpg")!.getData().equals(recoveryBytes)).toBe(true);
         for (const name of recoveryClasses) {
@@ -596,7 +635,12 @@ maybe("off-site backup job (the production timer)", () => {
       const manifest = JSON.parse(zip.getEntry("manifest.json")!.getData().toString("utf8"));
       const recovery = JSON.parse(zip.readAsText("complete-recovery.json"));
       expect(recovery.sourceRevision).toBe(SYNTHETIC_SOURCE_REVISION);
-      expect(recovery.releaseIdentity).toEqual(SYNTHETIC_RELEASE_IDENTITY);
+      expect(recovery.backupScope).toBe("production-data");
+      expect(recovery.releaseIdentity).toBeUndefined();
+      expect(zip.getEntries().some(entry => entry.entryName.startsWith("private-objects/desktop-installer/"))).toBe(false);
+      expect(fake.protectionObjects.size).toBeGreaterThan(0);
+      const { getDatabaseProtectionStatus } = await import("../lib/database-protection-job.js");
+      expect((await getDatabaseProtectionStatus()).state).toBe("verified");
       expect(manifest.mediaFileCount).toBe(1);
       expect(manifest.mediaBytes).toBe(Buffer.byteLength("durable-object-copy"));
       expect(zip.getEntry(`media/${durableFileName}`)!.getData().toString()).toBe(
