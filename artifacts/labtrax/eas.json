@@ -40,6 +40,13 @@
         "ascApiKeyId": "RV23AJ8V62",
         "ascApiKeyIssuerId": "1d2faabc-3d66-4e64-b514-c234043e143a"
       }
+    },
+    "github": {
+      "ios": {
+        "ascAppId": "6760672646",
+        "appleTeamId": "2D9XT8L3D2",
+        "bundleIdentifier": "app.replit.labtrax"
+      }
     }
   }
 }
