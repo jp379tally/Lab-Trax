@@ -2975,6 +2975,9 @@ function PlatformBackupPanel() {
   const [resumeDeliveryPending, setResumeDeliveryPending] = useState(false);
   const [manualReconnectUnconfirmed, setManualReconnectUnconfirmed] = useState(false);
   const rehydratedManualRunRef = useRef<string | null>(null);
+  const reconnectingManualRunRef = useRef<string | null>(null);
+  const automaticReconnectRunRef = useRef<string | null>(null);
+  const manualStatusRevisionRef = useRef(0);
 
   const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(15, "minutes"));
   const [schedDest, setSchedDest] = useState<BackupDestinationType>("local");
@@ -3016,18 +3019,11 @@ function PlatformBackupPanel() {
     setNowDest(identity.destination);
     setNowPath(identity.path);
     resetManualBackupProgress(identity.runId, "Reconnecting to your manual backup", identity.startedAt);
-    void apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
-      `/admin/backup/status/${encodeURIComponent(identity.runId)}`,
-    ).then(status => {
-      if (status.runId !== identity.runId) throw new Error("The saved run identity did not match the server response.");
-      applyManualBackupLiveStatus(status);
-      setManualReconnectUnconfirmed(false);
-    }).catch(() => {
-      updateManualBackupProgress({
-        state: "running",
-        error: "Could not reconnect to this backup. Sign in again if needed and retry reconnection. Check Recent backups before starting another run.",
-      });
-    });
+    // A saved run may belong to an earlier sign-in. GET status alone cannot
+    // distinguish that session mismatch from an absent job. Rebind through the
+    // owner-validated endpoint before deciding whether its marker is obsolete.
+    automaticReconnectRunRef.current = identity.runId;
+    void retryManualBackupReconnect(identity.runId);
   }, [user?.id, manualProgress.runId]);
 
   // Where the server says archives are actually being written, which is not
@@ -3457,14 +3453,27 @@ function PlatformBackupPanel() {
         headers: backupSourceHeaders(),
       }),
       (status) => {
+        const current = getManualBackupProgress();
+        if (status.runId !== manualProgress.runId ||
+            current.runId !== manualProgress.runId || current.state !== "running") return;
+        manualStatusRevisionRef.current += 1;
         applyManualBackupLiveStatus(status);
         setManualReconnectUnconfirmed(false);
+        automaticReconnectRunRef.current = null;
       },
       1200,
       () => {
+        const current = getManualBackupProgress();
+        if (current.runId !== manualProgress.runId || current.state !== "running") return;
         setManualReconnectUnconfirmed(true);
         updateManualBackupProgress({ error:
           "Live progress is unavailable. Sign in again if needed, then retry backup reconnection. The backup may still be running; do not start a duplicate." });
+        // Reconnect once per interrupted polling episode. Further failures keep
+        // the existing run reserved and leave an explicit retry available.
+        if (automaticReconnectRunRef.current !== manualProgress.runId) {
+          automaticReconnectRunRef.current = manualProgress.runId;
+          void retryManualBackupReconnect(manualProgress.runId);
+        }
       },
     );
   }, [manualProgress.runId, manualProgress.state, backupNowMutation.isPending]);
@@ -3511,27 +3520,40 @@ function PlatformBackupPanel() {
     }
   }, [user?.id, manualProgress.state]);
 
-  async function retryManualBackupReconnect() {
-    const runId = manualProgress.runId;
-    if (!runId || !user?.id) return;
+  async function retryManualBackupReconnect(runId = getManualBackupProgress().runId) {
+    if (!runId || !user?.id || reconnectingManualRunRef.current === runId) return;
+    reconnectingManualRunRef.current = runId;
+    const revision = manualStatusRevisionRef.current;
+    const reconnectStillCurrent = () => {
+      const current = getManualBackupProgress();
+      return current.runId === runId && current.state === "running" &&
+        manualStatusRevisionRef.current === revision;
+    };
     setManualReconnectUnconfirmed(true);
     try {
       const reconnected = await apiFetch<{ runId: string; state: string }>(
         `/admin/backup/reconnect/${encodeURIComponent(runId)}`,
         { method: "POST", headers: backupSourceHeaders() },
       );
+      if (!reconnectStillCurrent()) return;
       if (reconnected.runId !== runId) throw new Error("The server returned a different backup run.");
       if (reconnected.state === "unavailable") { releaseUnavailableManualRun(); return; }
       const status = await apiFetch<LocalBackupLiveStatus & ManualBackupStatus>(
         `/admin/backup/status/${encodeURIComponent(runId)}`,
         { headers: backupSourceHeaders() },
       );
+      if (!reconnectStillCurrent()) return;
       if (status.runId !== runId) throw new Error("The saved run identity did not match the server response.");
+      manualStatusRevisionRef.current += 1;
       applyManualBackupLiveStatus(status);
       setManualReconnectUnconfirmed(false);
-      setBackupError(null);
+      automaticReconnectRunRef.current = null;
     } catch {
-      setBackupError("Could not reconnect to this backup. Check your connection and retry before starting another run.");
+      if (!reconnectStillCurrent()) return;
+      updateManualBackupProgress({ error:
+        "Could not reconnect to this backup. Sign in again if needed, then retry reconnection. The previous run may still be active; a new backup is blocked until its status is confirmed." });
+    } finally {
+      if (reconnectingManualRunRef.current === runId) reconnectingManualRunRef.current = null;
     }
   }
 
@@ -3605,11 +3627,11 @@ function PlatformBackupPanel() {
   }
 
   useEffect(() => {
-    if (manualProgress.state !== "running" || !manualProgress.startedAt) return;
+    if (manualProgress.state !== "running" || manualReconnectUnconfirmed || !manualProgress.startedAt) return;
     const timer = window.setInterval(() =>
       setBackupElapsedSeconds(Math.floor((Date.now() - manualProgress.startedAt) / 1000)), 1000);
     return () => window.clearInterval(timer);
-  }, [manualProgress.state, manualProgress.startedAt]);
+  }, [manualProgress.state, manualProgress.startedAt, manualReconnectUnconfirmed]);
 
   useEffect(() => {
     if (!scheduledBackupProgress) {
@@ -4659,7 +4681,13 @@ function PlatformBackupPanel() {
             Retry backup reconnection
           </button>
         )}
-        {manualBackupRunning && (
+        {manualBackupRunning && manualReconnectUnconfirmed && (
+          <div role="status" className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1" data-testid="backup-reconnect-status">
+            <p className="font-medium text-foreground">Backup status unknown</p>
+            <p>Waiting for server confirmation. The earlier run may still be active; no current progress or completion is confirmed.</p>
+          </div>
+        )}
+        {manualBackupRunning && !manualReconnectUnconfirmed && (
           <div role="status" className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1" data-testid="backup-live-progress">
             <div className="flex items-center justify-between font-medium text-foreground">
               <span>Overall progress</span>
@@ -4847,8 +4875,8 @@ function PlatformBackupPanel() {
           }
           className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
         >
-          {manualBackupRunning ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          {manualBackupRunning ? "Backing up…" : "Back up now"}
+          {manualReconnectUnconfirmed ? <Clock size={13} /> : manualBackupRunning ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {manualReconnectUnconfirmed ? "Backup status unknown" : manualBackupRunning ? "Backing up…" : "Back up now"}
         </button>
       </div>
 

@@ -71,7 +71,7 @@ export interface RecordDelta {
 }
 export interface RecordCapture {
   inventory: RecordInventory;
-  /** The selected row bodies, including all rows for a first/schema baseline. */
+  /** New row bodies; an explicit schema/reference baseline may reuse exact prior bodies. */
   bodies: RecordTableChanges[];
   /** Null requires an explicitly identified record/schema baseline. */
   delta: RecordDelta | null;
@@ -338,6 +338,27 @@ async function sequenceInventory(
   );
 }
 
+/** Plan one SQL body page without exceeding the remaining capture buffer. */
+export function recordBodyPageEnd(
+  lengths: readonly number[], start: number, retainedBytes: number,
+): number {
+  check(Number.isSafeInteger(start) && start >= 0 && start < lengths.length &&
+    Number.isSafeInteger(retainedBytes) && retainedBytes >= 0 && retainedBytes <= MAX_CHANGED_RECORD_BYTES,
+    "invalid record body page budget");
+  let end = start, selectedBytes = 0;
+  while (end < lengths.length && end - start < 128) {
+    const size = lengths[end]!;
+    check(Number.isSafeInteger(size) && size > 0 && size <= MAX_CHANGED_RECORD_BYTES,
+      "invalid record byte length");
+    if (end > start && (selectedBytes + size > 8 * 1024 * 1024 ||
+      retainedBytes + selectedBytes + size > MAX_CHANGED_RECORD_BYTES)) break;
+    check(retainedBytes + selectedBytes + size <= MAX_CHANGED_RECORD_BYTES,
+      "row-body page exceeds remaining capture capacity; no checkpoint was committed");
+    selectedBytes += size; end++;
+  }
+  return end;
+}
+
 export async function capturePostgresRecordChanges(
   client: RecordSqlClient,
   options: {
@@ -380,25 +401,35 @@ export async function capturePostgresRecordChanges(
   let fingerprintRows = 0,
     fingerprintMetadataBytes = 0,
     sourceRowBodyBytes = 0,
+    retainedRowBodyBytes = 0,
     changedRows = 0,
     deletedRows = 0;
   for (const table of catalog) {
     options.signal?.throwIfAborted();
     const expressions = fingerprintSql(table);
-    const old = compatible
-      ? previous!.tables.find(
-          (item) => tableIdentity(item) === tableIdentity(table),
-        )
-      : undefined;
+    const priorTable = previous?.tables.find(
+      (item) => tableIdentity(item) === tableIdentity(table),
+    );
+    const sameCatalog = priorTable &&
+      JSON.stringify(priorTable.columns) === JSON.stringify(table.columns) &&
+      JSON.stringify(priorTable.allColumns) === JSON.stringify(table.allColumns) &&
+      JSON.stringify(priorTable.primaryKey) === JSON.stringify(table.primaryKey);
+    const old = compatible ? priorTable : undefined;
     check(
       !compatible ||
-        (old &&
-          JSON.stringify(old.columns) === JSON.stringify(table.columns) &&
-          JSON.stringify(old.allColumns) === JSON.stringify(table.allColumns) &&
-          JSON.stringify(old.primaryKey) === JSON.stringify(table.primaryKey)),
+        sameCatalog,
       "catalog changed without a matching schema baseline",
     );
     const oldRows = new Map((old?.rows ?? []).map((row) => [row.key, row]));
+    // A schema/reference transition still reads every row and rebuilds every
+    // reference. Exact prior bytes need not remain buffered while doing so;
+    // protectRecordDatabase reauthenticates their stored proofs before reuse.
+    const reusableBodies = new Map((!compatible && sameCatalog ? priorTable!.rows : [])
+      .map((row) => [row.key, row]));
+    const canReuseBody = (row: RecordFingerprint) => {
+      const prior = reusableBodies.get(row.key);
+      return prior?.hash === row.hash && prior.count === row.count;
+    };
     const currentRows = new Map<string, RecordFingerprint>();
     const bodySizes = new Map<string, number>();
     const deletes: RecordTableChanges["deletes"] = [];
@@ -427,7 +458,7 @@ export async function capturePostgresRecordChanges(
             Buffer.byteLength(row.bytes);
           const bodyBytes = Number(row.bytes);
           check(
-            Number.isSafeInteger(bodyBytes) && bodyBytes > 0,
+            Number.isSafeInteger(bodyBytes) && bodyBytes > 0 && bodyBytes <= MAX_CHANGED_RECORD_BYTES,
             "invalid record byte length",
           );
           bodySizes.set(row.key, bodyBytes);
@@ -467,8 +498,8 @@ export async function capturePostgresRecordChanges(
       return !prior || prior.hash !== row.hash || prior.count !== row.count;
     });
     check(
-      sourceRowBodyBytes +
-        changed.reduce((sum, row) => sum + bodySizes.get(row.key)!, 0) <=
+      retainedRowBodyBytes +
+        changed.reduce((sum, row) => sum + (canReuseBody(row) ? 0 : bodySizes.get(row.key)!), 0) <=
         MAX_CHANGED_RECORD_BYTES,
       "changed record bodies exceed capacity; no checkpoint was committed",
     );
@@ -479,16 +510,10 @@ export async function capturePostgresRecordChanges(
         deletedRows += prior.count;
       }
     }
+    const changedBodySizes = changed.map(row => bodySizes.get(row.key)!);
     for (let start = 0; start < changed.length; ) {
       options.signal?.throwIfAborted();
-      let end = start,
-        selectedBytes = 0;
-      while (end < changed.length && end - start < 128) {
-        const size = bodySizes.get(changed[end]!.key)!;
-        if (end > start && selectedBytes + size > 8 * 1024 * 1024) break;
-        selectedBytes += size;
-        end++;
-      }
+      const end = recordBodyPageEnd(changedBodySizes, start, retainedRowBodyBytes);
       const selected = changed.slice(start, end);
       const bodies = await client.query<{
         key: string;
@@ -510,15 +535,11 @@ export async function capturePostgresRecordChanges(
             !returned.has(body.key) &&
             body.hash === expected.hash &&
             Number(body.count) === expected.count &&
-            digest(body.json) === body.hash,
+            digest(body.json) === body.hash && Buffer.byteLength(body.json) === bodySizes.get(body.key),
           "row body does not match its snapshot fingerprint",
         );
         returned.add(body.key);
         sourceRowBodyBytes += Buffer.byteLength(body.json);
-        check(
-          sourceRowBodyBytes <= MAX_CHANGED_RECORD_BYTES,
-          "changed row bodies exceed capacity; no checkpoint was committed",
-        );
         const value = JSON.parse(body.json);
         check(
           value &&
@@ -534,12 +555,19 @@ export async function capturePostgresRecordChanges(
           expected.references.every(safeReference),
           "invalid referenced media path",
         );
-        inserts.push({
-          key: body.key,
-          hash: body.hash,
-          count: expected.count,
-          json: body.json,
-        });
+        if (!canReuseBody(expected)) {
+          retainedRowBodyBytes += Buffer.byteLength(body.json);
+          check(
+            retainedRowBodyBytes <= MAX_CHANGED_RECORD_BYTES,
+            "changed row bodies exceed capacity; no checkpoint was committed",
+          );
+          inserts.push({
+            key: body.key,
+            hash: body.hash,
+            count: expected.count,
+            json: body.json,
+          });
+        }
         changedRows += expected.count;
       }
       check(

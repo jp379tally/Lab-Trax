@@ -122,7 +122,9 @@ beforeEach(() => {
       });
     }
     if (url.includes("/admin/backup/status/")) {
-      return jsonResponse(manualLiveStatus);
+      // The server echoes the requested run identity, including when progress
+      // arrives before the start request has returned its acknowledgement.
+      return jsonResponse({ ...manualLiveStatus, runId: manualLiveStatus.runId || url.split("/").at(-1) });
     }
     if (url.includes("/admin/backup/history") && !url.includes("history-retention")) {
       return jsonResponse({ ok: true, runs: historyRuns });
@@ -411,7 +413,7 @@ describe("Settings → Backup → Google Drive", () => {
 
 describe("recovering a saved manual backup after republishing", () => {
   const runId = "2cd9aedf-87cf-40f6-8d10-920db0a0aef7";
-  function installOldRun(options: { reconnect?: string; cancel?: string; denied?: boolean } = {}) {
+  function installOldRun(options: { reconnect?: string; cancel?: string; denied?: boolean; reconnectHttpStatus?: number } = {}) {
     window.localStorage.setItem("labtrax:manual-backup:u1", JSON.stringify({
       runId, destination: "onedrive", archiveKind: "full", path: "", startedAt: Date.now() - 11_462_000,
     }));
@@ -426,6 +428,9 @@ describe("recovering a saved manual backup after republishing", () => {
       if (url.includes("/admin/backup/reconnect/")) {
         calls.push("reconnect:" + init?.method);
         if (options.denied) return new Response(JSON.stringify({ error: "Not available to this administrator." }), { status: 404 });
+        if (options.reconnectHttpStatus && options.reconnectHttpStatus !== 200) {
+          return new Response(JSON.stringify({ error: "Reconnection is temporarily unavailable." }), { status: options.reconnectHttpStatus });
+        }
         attached = true;
         return jsonResponse({ ok: true, runId, state: options.reconnect ?? "unavailable" });
       }
@@ -445,19 +450,23 @@ describe("recovering a saved manual backup after republishing", () => {
     return calls;
   }
   it("Retry clears an unavailable old run and enables a new backup without starting one", async () => {
-    const calls = installOldRun();
+    const options = { reconnectHttpStatus: 503 };
+    const calls = installOldRun(options);
     await renderBackupSettings();
+    await screen.findByText(/Could not reconnect to this backup|Live progress is unavailable/);
+    options.reconnectHttpStatus = 200;
     fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
     await waitFor(() => expect(getManualBackupProgress().state).toBe("idle"));
-    expect(calls).toEqual(["reconnect:POST"]);
+    expect(calls).toEqual(["reconnect:POST", "reconnect:POST"]);
     expect(window.localStorage.getItem("labtrax:manual-backup:u1")).toBeNull();
     expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();
     expect(screen.getByText(/no completed backup is confirmed/)).toBeInTheDocument();
     expect(manualRunCount).toBe(0);
   });
   it("Cancel clears an already unavailable run instead of leaving Backing up stuck", async () => {
-    const calls = installOldRun();
+    const calls = installOldRun({ reconnectHttpStatus: 503 });
     await renderBackupSettings();
+    await screen.findByText(/Could not reconnect to this backup|Live progress is unavailable/);
     fireEvent.click(await screen.findByRole("button", { name: "Cancel backup" }));
     await waitFor(() => expect(getManualBackupProgress().state).toBe("idle"));
     expect(calls).toContain("cancel:POST");
@@ -468,27 +477,30 @@ describe("recovering a saved manual backup after republishing", () => {
   it("reconnects to the same active job without submitting another backup", async () => {
     const calls = installOldRun({ reconnect: "running" });
     await renderBackupSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
     await waitFor(() => expect(screen.getByTestId("backup-overall-percent")).toHaveTextContent("45%"));
     expect(calls).toEqual(["reconnect:POST"]);
     expect(getManualBackupProgress().runId).toBe(runId);
     expect(manualRunCount).toBe(0);
   });
   it("keeps the marker and blocks duplicates when reconnection is denied", async () => {
-    installOldRun({ denied: true });
+    const calls = installOldRun({ denied: true });
     await renderBackupSettings();
+    await screen.findByText(/Could not reconnect to this backup|Live progress is unavailable/);
     fireEvent.click(await screen.findByRole("button", { name: "Retry backup reconnection" }));
-    await screen.findByText(/Could not reconnect to this backup/);
+    await waitFor(() => expect(calls).toEqual(["reconnect:POST", "reconnect:POST"]));
+    await screen.findByText(/Could not reconnect to this backup|Live progress is unavailable/);
     expect(getManualBackupProgress().state).toBe("running");
     expect(window.localStorage.getItem("labtrax:manual-backup:u1")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Backing up…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Backup status unknown" })).toBeDisabled();
     expect(manualRunCount).toBe(0);
   });
   it("shows an already failed run truthfully when Cancel is clicked", async () => {
-    installOldRun({ cancel: "failed" });
+    const calls = installOldRun({ cancel: "failed", reconnectHttpStatus: 503 });
     await renderBackupSettings();
+    await screen.findByText(/Could not reconnect to this backup|Live progress is unavailable/);
     fireEvent.click(await screen.findByRole("button", { name: "Cancel backup" }));
     await waitFor(() => expect(getManualBackupProgress().state).toBe("failed"));
+    expect(calls).toContain("cancel:POST");
     expect(screen.getByText("Previous worker stopped; no backup was saved.")).toBeInTheDocument();
     expect(window.localStorage.getItem("labtrax:manual-backup:u1")).toBeNull();
     expect(screen.getByRole("button", { name: "Back up now" })).toBeEnabled();

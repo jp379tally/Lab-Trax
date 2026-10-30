@@ -38,18 +38,25 @@ describe("bounded full-media archive producer", () => {
     const archive = archiver("zip", { zlib: { level: 1 } });
     const output = path.join(root, "archive.zip");
     const sink = createWriteStream(output);
-    const flushed = finished(sink);
+    // Observe sink rejection immediately: append may still be removing its
+    // temporary files when a source error destroys the output. Retain the
+    // outcome and propagate any output failure on the normal completion path.
+    const flushed = finished(sink).then(
+      () => ({ ok: true as const }),
+      error => ({ ok: false as const, error }),
+    );
     archive.on("error", (error) => sink.destroy(error));
     archive.pipe(sink);
     try {
       await media.append(archive, maxConcurrentFiles);
       await archive.finalize();
-      await flushed;
+      const result = await flushed;
+      if (!result.ok) throw result.error;
       return { media, zip: new AdmZip(readFileSync(output)) };
     } catch (error) {
       archive.destroy();
       sink.destroy();
-      await flushed.catch(() => undefined);
+      await flushed;
       throw error;
     }
   }
@@ -235,6 +242,33 @@ describe("bounded full-media archive producer", () => {
     expect(completedEvidence).toHaveLength(0);
     expect(stagedPath).toBeDefined();
     await expect(readdir(path.dirname(stagedPath!))).rejects.toThrow();
+  });
+
+  it("preserves the source error that aborts the archive instead of replacing it with a generic abort", async () => {
+    const reason = new Error("Synthetic source access failure (HTTP 403).");
+    const failure = await build([{
+      relativeName: "source.bin", size: 3,
+      copyTo: async () => { throw new Error("Unexpected local-copy fallback"); },
+      openStream: () => new Readable({ read() { this.destroy(reason); } }),
+    }]).then(() => null, error => error);
+    expect(failure).toBe(reason);
+    expect(failure.message).toContain("case-media transfer into archive");
+    expect(failure.message).toContain("HTTP 403");
+  });
+
+  it("preserves an upstream cancellation reason when the source also fails during shutdown", async () => {
+    const controller = new AbortController();
+    const reason = new Error("Synthetic backup deadline exceeded.");
+    const failure = await build([{
+      relativeName: "source.bin", size: 3,
+      copyTo: async () => {
+        controller.abort(reason);
+        throw new Error("Secondary source shutdown failure.");
+      },
+    }], controller.signal).then(() => null, error => error);
+    expect(failure).toBe(reason);
+    expect(failure.message).toContain("Synthetic backup deadline exceeded");
+    expect(failure.message).not.toContain("Secondary source shutdown failure");
   });
 
   it("fails rather than silently skipping a local file that disappears after inventory", async () => {

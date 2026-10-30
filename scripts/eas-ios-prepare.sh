@@ -33,6 +33,12 @@ check() {
     exit "$result"
   fi
 }
+# Fail fast on account/configuration errors before an explicitly approved release.
+if [[ "$MODE" == --run-approved ]]; then
+  node scripts/eas-ios-readiness.mjs
+  assert_source
+fi
+
 check test-harness pnpm --filter @workspace/scripts run check-test-harness:collect
 check typecheck pnpm run typecheck
 check mobile-tests pnpm --filter @workspace/labtrax run test

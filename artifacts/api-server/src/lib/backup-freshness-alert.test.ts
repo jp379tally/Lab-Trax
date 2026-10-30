@@ -252,6 +252,7 @@ vi.mock("./onedrive", async (importOriginal) => ({
 // ── Imports (after the mocks) ───────────────────────────────────────────────
 
 import { sendBackupNotificationEmail } from "./mail";
+import { databaseProtectionSource, type DatabaseProtectionStatus } from "./database-protection-job";
 import {
   isOneDriveConnectorAvailable,
   listOneDriveBackupFiles,
@@ -482,6 +483,103 @@ describe("resolving off-site failure alerts", () => {
     expect(freshness.destinationUnreadable).toBe(true);
     expect(freshness.stale).toBe(true);
     expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+});
+
+describe("production verification failures", () => {
+  beforeEach(() => {
+    vi.stubEnv("REPLIT_DEPLOYMENT", "1");
+    vi.stubEnv("DATABASE_URL", "postgresql://synthetic.invalid/synthetic_source");
+    store.settings.set("backup_schedule_routing_version", "2");
+    store.settings.set("backup_schedule_enabled", "true");
+    store.settings.set("backup_schedule_destination", "onedrive");
+    store.settings.set("backup_schedule_interval_minutes", "15");
+  });
+
+  function saveProtection(overrides: Partial<DatabaseProtectionStatus> = {}): void {
+    const status: DatabaseProtectionStatus = {
+      destination: "onedrive",
+      source: databaseProtectionSource(),
+      mode: "incremental-records-and-media",
+      scope: "production-database-and-media",
+      state: "verified",
+      stage: "Production records and media read back and verified",
+      coverage: "complete",
+      mediaFiles: 4, mediaBytes: 2000, missingFiles: 0,
+      lastAttemptAt: minutesAgo(4), lastVerifiedAt: minutesAgo(3),
+      recoveryPointAt: minutesAgo(4), lastDestinationCheckAt: minutesAgo(3),
+      point: "synthetic-point", lastCompletePoint: "synthetic-point",
+      dumpBytes: 1000, newChunks: 2, newBytes: 3000, reusedChunks: 0,
+      error: null,
+      ...overrides,
+    };
+    const key = "backup_production_content_protection_v1" +
+      (status.destination === "google-drive" ? ":google-drive" : "");
+    store.settings.set(key, JSON.stringify(status));
+  }
+
+  it("reports a failed media capture without inventing a OneDrive folder-read error", async () => {
+    const error = "Capturing production media: case-media transfer into archive failed. Previous verified objects were preserved.";
+    saveProtection({
+      state: "failed", stage: "Capturing production media", error,
+      point: null, lastCompletePoint: null, recoveryPointAt: null, lastVerifiedAt: null,
+      lastDestinationCheckAt: null,
+    });
+
+    const freshness = await getOffsiteFreshness();
+
+    expect(freshness.stale).toBe(true);
+    expect(freshness.destinationUnreadable).toBe(false);
+    expect(freshness.listingError).toBeNull();
+    expect(freshness.verificationError).toBe(error);
+    expect(freshness.reason).toBe(error);
+    expect(freshness.newestArchive).toBeNull();
+    expect(listOneDriveBackupFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { state: "failed" as const, error: "Database destination verification: Required recovery objects could not be verified." },
+    { state: "partial" as const, coverage: "partial" as const, missingFiles: 2, error: null },
+    { lastDestinationCheckAt: minutesAgo(21) },
+  ])("preserves failure alerts despite a recent previous complete point (%j)", async (overrides) => {
+    store.notifications = [{ type: "backup_offsite_failure", readAt: null }];
+    saveProtection(overrides);
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(true);
+    expect(freshness.destinationUnreadable).toBe(false);
+    expect(freshness.listingError).toBeNull();
+    expect(freshness.reason).toBeTruthy();
+    expect(freshness.newestArchive).not.toBeNull();
+    expect(store.notifications[0]?.["readAt"]).toBeNull();
+  });
+
+  it("keeps the same failure classification for Google Drive", async () => {
+    store.settings.set("backup_schedule_destination", "google-drive");
+    const error = "Database destination verification: required recovery object is unreadable.";
+    saveProtection({ destination: "google-drive", state: "failed", error });
+
+    const freshness = await getOffsiteFreshness();
+
+    expect(freshness.stale).toBe(true);
+    expect(freshness.source).toBe("google-drive");
+    expect(freshness.reason).toBe(error);
+    expect(freshness.listingError).toBeNull();
+  });
+
+  it("clears alerts only after complete production protection and dependencies are current", async () => {
+    store.notifications = [{ type: "backup_offsite_failure", readAt: null }];
+    saveProtection();
+
+    const freshness = await getOffsiteFreshness();
+    await reconcileOffsiteBackupAlerts(freshness);
+
+    expect(freshness.stale).toBe(false);
+    expect(freshness.verificationError).toBeNull();
+    expect(freshness.reason).toBeNull();
+    expect(store.notifications[0]?.["readAt"]).toBeInstanceOf(Date);
   });
 });
 

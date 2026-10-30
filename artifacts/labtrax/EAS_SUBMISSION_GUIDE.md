@@ -9,6 +9,8 @@ Do not use either to bypass a failing release gate.
 
 Run `pnpm run ios:check` from the repository root to run and record all required source-bound checks. API and backup/restore tests use disposable local databases. Logs are retained under `.local/ios-release-checks/`.
 
+Run `pnpm run ios:ready` for a read-only live Expo/Apple account and bundle-identity check. It never starts a build or upload.
+
 Run `pnpm run ios:release` only to explicitly authorize one iOS build and its submission. It repeats verification, arms one build after every check passes, and invokes the existing exact-build upload path. Failed checks, source changes, concurrent preparation, and unresolved submissions block the release. `pnpm run ios:status` reports the current state.
 
 These commands do not use Replit Agent or require the hosted App Store publishing button. Check mode never starts a build. An accepted upload still requires Apple processing before TestFlight availability can be confirmed.
@@ -43,7 +45,7 @@ App Store review record for `1.0.13`.
    diagnostic `bash scripts/run-workspace-audit.sh` records checks in that order
    and continues after failures for investigation; its output is **not release
    approval**. Raw logs are private/ignored under `generated-artifacts/`.
-2. Complete the protected real-device/TestFlight checklist. Web screenshots,
+2. After distributing the exact artifact, complete the protected real-device/TestFlight checklist. Web screenshots,
    TypeScript, mocked tests and configuration introspection do not prove native
    camera, scanner, share extension, printing, depth or device authentication.
 3. Confirm current App Store Connect version/build history and choose the
@@ -82,10 +84,9 @@ Apple ID/password secrets are not used by this API-key upload route.
 Do not run these steps during an audit. Obtain explicit approval for both the
 paid cloud build and the upload first:
 
-1. Ensure all release gates and the protected device checklist pass.
-2. From the repository root, create the one-shot approval:
-   `touch .local/.eas-build-approved`.
-3. Restart **EAS iOS Build + Submit** in the workflow pane.
+From the repository root, run `pnpm run ios:release`. It verifies live Expo and Apple account access, runs every automated release check, arms one approval, and invokes the guarded build/upload script with `--run-approved`. Validate the exact artifact on a physical device after distribution.
+
+Do not just restart **EAS iOS Build + Submit**: its ordinary invocation stays idle on automatic restarts, including when an approval file exists. The hosted Replit Publish wizard is not required for this direct Expo path.
 
 The token is consumed once. The script serializes release operations, snapshots
 the current app configuration, increments the build number, builds the production
@@ -117,7 +118,7 @@ On successful upload, the helper clears pending retry metadata only if it belong
 to that same build ID. Failed uploads and different-build metadata are retained.
 
 Alternatively, save that UUID in `.local/.eas-submit-build-id`, create the
-one-shot `.local/.eas-submit-only` token, and restart **EAS iOS Build + Submit**.
+one-shot `.local/.eas-submit-only` token, and explicitly run `bash scripts/eas-ios-build.sh --submit-approved`.
 No build number is incremented in this mode. A failed attempt consumes its
 approval but retains the retry metadata. Re-approve only after inspecting the
 failure and checking whether Apple received the upload.

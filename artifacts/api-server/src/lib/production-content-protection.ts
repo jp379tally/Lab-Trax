@@ -3,7 +3,7 @@ import type { Readable } from "node:stream";
 import { z } from "zod";
 import { objectVersionSchema, sameObjectVersion, type ObjectVersion } from "./object-version-proof";
 import type { RecordInventory } from "./postgres-record-delta";
-import { isRecordDatabaseCapture, protectRecordDatabase, POSTGRES_RECORD_POINT_FORMAT,
+import { isRecordDatabaseCapture, latestRecordDatabasePoint, protectRecordDatabase, POSTGRES_RECORD_POINT_FORMAT,
   type RecordDatabaseCapture, type VerifiedRecordDatabasePoint } from "./postgres-record-protection";
 import {
   protectDatabase, verifyDatabasePoint, DatabaseProtectionError, type DatabaseCodec, type DatabaseObjectStore,
@@ -325,6 +325,13 @@ export async function protectProduction(options: ProductionOptions & ProductionC
   digest.parse(options.source);
   await options.onPhase?.("Verifying prior production database and media dependencies");
   const previous = await latestProductionPoint(options, true); // Broken or weakly evidenced newest point fails closed.
+  // A failed initial media capture may already have committed its record point.
+  // Authenticate that record-only seed before selecting changed rows. It is not
+  // a media baseline: the first media inventory/journal still starts from null.
+  const previousRecords = previous
+    ? previous.database.manifest.format === POSTGRES_RECORD_POINT_FORMAT
+      ? previous.database as VerifiedRecordDatabasePoint : null
+    : await latestRecordDatabasePoint({ ...options, store: options.databaseStore });
   const previousJournalPosition =
     typeof previous?.inventory.evidence.productionMediaJournal === "object" &&
     previous.inventory.evidence.productionMediaJournal !== null &&
@@ -332,12 +339,11 @@ export async function protectProduction(options: ProductionOptions & ProductionC
       ? (previous.inventory.evidence.productionMediaJournal as Record<string, string>).throughPosition!
       : null;
   await options.onPhase?.("Capturing a consistent snapshot and changed production records");
-  const capturedDatabase = await options.capture(previousJournalPosition, previous?.database.recordSnapshot?.records ?? null);
+  const capturedDatabase = await options.capture(previousJournalPosition, previousRecords?.recordSnapshot.records ?? null);
   if(isRecordDatabaseCapture(capturedDatabase))await options.onPhase?.("Storing changed records and verifying retained record dependencies");
   const database = isRecordDatabaseCapture(capturedDatabase)
     ? await protectRecordDatabase({ ...options, store: options.databaseStore, capture: capturedDatabase,
-      previous: previous?.database.manifest.format === POSTGRES_RECORD_POINT_FORMAT
-        ? previous.database as VerifiedRecordDatabasePoint : null })
+      previous: previousRecords })
     : await protectDatabase({ ...options, store: options.databaseStore, capture: () => capturedDatabase });
   let newBytes = 0, newChunks = 0, reusedChunks = 0;
   const changedFiles: ProductionFile[] = [];

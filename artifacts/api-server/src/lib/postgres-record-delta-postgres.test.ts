@@ -202,6 +202,10 @@ async function capture(
   client: pg.Client,
   url: string,
   previous?: RecordInventory | null,
+  referenceContract?: {
+    protocol: string;
+    extract: (table: string, row: Record<string, unknown>) => string[];
+  },
 ): Promise<RecordDatabaseCapture> {
   await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
@@ -214,8 +218,9 @@ async function capture(
       previous,
       schemaSql: async () =>
         (await dump(url, snapshot, "plain")).toString("utf8"),
-      references: (_table, row) =>
-        typeof row.reference === "string" ? [row.reference] : [],
+      references: referenceContract?.extract ?? ((_table, row) =>
+        typeof row.reference === "string" ? [row.reference] : []),
+      referenceProtocol: referenceContract?.protocol,
     });
     return {
       kind: "labtrax-postgresql-record-delta-v1",
@@ -426,6 +431,44 @@ UPDATE partitioned SET value='changed partition row' WHERE id=1;COMMIT;`);
       isolationAcknowledged: true,
     });
     await compare(client, await connect(target));
+  }, 120_000);
+  it.each([false, true])("restores an explicit reference baseline while omitting only exact prior bodies (schema changed: %s)", async schemaChanged => {
+    const url = await database(), client = await connect(url);
+    await client.query(ddl);
+    const store = memoryStore(), options = { store: store.store, codec, source: sourceIdentity };
+    const first = await capture(client, url, null, {
+      protocol: hash(Buffer.from("isolated-reference-extractor-v1")), extract: () => [],
+    });
+    const baseline = await protectRecordDatabase({ ...options, capture: first });
+    if (schemaChanged) await client.query("ALTER TABLE parent ADD COLUMN added text DEFAULT 'new'");
+    await client.query("UPDATE parent SET label='after reference transition' WHERE id=9007199254740993");
+    const next = await capture(client, url, first.records.inventory, {
+      protocol: hash(Buffer.from("isolated-reference-extractor-v2")),
+      extract: (_table, row) => typeof row.reference === "string" ? [row.reference] : [],
+    });
+    expect(next.records.delta).toBeNull();
+    expect(next.records.reason).toBe(schemaChanged ? "schema-changed" : "reference-protocol-changed");
+    expect(next.schemaDump).not.toBeNull();
+    const child = next.records.inventory.tables.find(table => table.name === "child")!;
+    expect(child.rows.flatMap(row => row.references).sort())
+      .toEqual(["case-media/document.pdf", "case-media/picture.png"]);
+    expect(next.records.bodies.find(table => table.name === "child")!.inserts).toHaveLength(0);
+    const retainedBytes = next.records.bodies.flatMap(table => table.inserts)
+      .reduce((sum, row) => sum + Buffer.byteLength(row.json), 0);
+    expect(next.records.metrics.sourceRowBodyBytes).toBeGreaterThan(retainedBytes);
+    const point = await protectRecordDatabase({ ...options, previous: baseline, capture: next });
+    expect(point.manifest.capture).toBe("postgresql-record-baseline");
+    const target = await database();
+    await restoreDatabasePointIsolated({
+      ...options, marker: point.marker, targetUrl: target, isolationAcknowledged: true,
+    });
+    await compare(client, await connect(target));
+    const originalParents: Array<{ label: string }> = [];
+    await readRecordBodies(options, baseline, async (table, json) => {
+      if (table.name === "parent") originalParents.push(JSON.parse(json));
+    });
+    expect(originalParents.some(row => row.label === "before")).toBe(true);
+    expect(originalParents.every(row => row.label !== "after reference transition")).toBe(true);
   }, 120_000);
   it("makes schema changes explicit and restores a new compatible baseline without losing older points", async () => {
     const url = await database(),
