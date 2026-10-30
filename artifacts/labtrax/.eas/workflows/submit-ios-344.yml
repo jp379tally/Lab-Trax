@@ -1,0 +1,70 @@
+name: Submit validated LabTrax build 344
+
+# One authorized existing artifact; this workflow never creates another build.
+# Remove this one-shot workflow after its submission is reconciled.
+on:
+  push:
+    branches:
+      - release/ios-344-2026-10-29
+    paths:
+      - artifacts/labtrax/.eas/workflows/submit-ios-344.yml
+      - .eas/workflows/submit-ios-344.yml
+
+concurrency:
+  group: labtrax-ios-344-upload
+  cancel_in_progress: false
+
+defaults:
+  tools:
+    node: 24.22.1
+    pnpm: 10.26.1
+
+jobs:
+  verify_source_ci:
+    name: Verify the exact binary source passed CI
+    steps:
+      - name: Require successful validation for the pinned source
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { setTimeout as sleep } from 'node:timers/promises';
+          const repository = 'jp379tally/Lab-Trax';
+          const expected = '815637aaef01200a75f9784fcccd9cf67a395ed1';
+          const pending = new Set([40987434442, 40987434416, 40987434344]);
+          const deadline = Date.now() + 20 * 60 * 1000;
+          while (pending.size) {
+            if (Date.now() > deadline) throw new Error('Pinned-source CI did not complete; no upload permitted.');
+            for (const id of [...pending]) {
+              const response = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${id}`, {
+                headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'LabTrax-iOS-344-release-verification' },
+                signal: AbortSignal.timeout(30000),
+              });
+              if (!response.ok) throw new Error(`Could not verify CI run ${id}: HTTP ${response.status}. No upload permitted.`);
+              const run = await response.json();
+              assert.equal(run.id, id);
+              assert.equal(run.repository.full_name, repository);
+              assert.equal(run.head_sha, expected, 'CI belongs to different source');
+              console.log(`${run.name}: ${run.status} / ${run.conclusion ?? 'pending'}`);
+              if (run.status === 'completed') {
+                assert.equal(run.conclusion, 'success', `Required CI run ${id} did not pass`);
+                pending.delete(id);
+              }
+            }
+            if (pending.size) await sleep(60000);
+          }
+          console.log(`Verified required CI for ${expected}; exact build 344 may be uploaded.`);
+          JS
+  testflight_344:
+    name: Upload signed build 344 to TestFlight
+    needs:
+      - verify_source_ci
+    type: testflight
+    params:
+      build_id: adc7aaec-4430-4957-9a19-af88f06526b4
+      profile: github
+      submit_beta_review: false
+      wait_processing_timeout_seconds: 1800
+      changelog: |
+        Build 344 from the reviewed October 29 LabTrax source.
+        Please verify sign-in, AI prescription intake, case creation and cross-device visibility, invoices and pricing, case location updates, remake creation, and photo/video attachments.
+        This build includes the validated dependency-security and iOS build-toolchain repairs.
