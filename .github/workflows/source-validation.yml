@@ -1,0 +1,57 @@
+name: Source validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-validation:
+    name: Source harness, scripts and isolated restore gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install disposable restore database tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-client-16 poppler-utils
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare owned workspace test scratch
+        run: bash scripts/with-workspace-test-scratch.sh --prepare-github
+
+      - name: Collect the protected test harness
+        run: pnpm --filter @workspace/scripts run check-test-harness:collect
+
+      - name: Run release and synchronization script regressions
+        run: pnpm --filter @workspace/scripts run test
+
+      - name: Check mobile legacy paths and protected tables
+        run: |
+          pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+          pnpm --filter @workspace/scripts run lint-protected-tables
+
+      - name: Verify backup and restore in a disposable database
+        run: bash scripts/run-isolated-backup-restore.sh
+
+      - name: Remove owned test scratch
+        if: always()
+        run: bash scripts/with-workspace-test-scratch.sh --cleanup-github
