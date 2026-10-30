@@ -21,11 +21,14 @@
       }
     },
     "production": {
+      "node": "24.22.1",
+      "pnpm": "10.26.1",
       "env": {
         "EXPO_DEBUG": "1"
       },
       "ios": {
-        "distribution": "store"
+        "distribution": "store",
+        "image": "macos-sequoia-15.6-xcode-26.0"
       },
       "android": {
         "buildType": "app-bundle"
