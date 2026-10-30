@@ -87,19 +87,25 @@ openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
 chmod 600 "$TMP_DIR/pgdata/server.key"
 cat >>"$TMP_DIR/pgdata/postgresql.conf" <<'EOF'
 ssl = on
+unix_socket_directories = ''
 ssl_cert_file = 'server.crt'
 ssl_key_file = 'server.key'
 EOF
 
 # Node's production pool requires verified TLS, even for the local test DB.
 PORT="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
-mkdir -p "$TMP_DIR/socket"
+# Keep startup independent of Unix socket path limits in deep CI workspaces.
 pg_ctl -D "$TMP_DIR/pgdata" \
-  -o "-k $TMP_DIR/socket -p $PORT -h 127.0.0.1" \
-  -l "$TMP_DIR/postgres.log" start >/dev/null
+  -o "-p $PORT -h 127.0.0.1" \
+  -l "$TMP_DIR/postgres.log" start >/dev/null || {
+    tail -40 "$TMP_DIR/postgres.log" >&2
+    exit 1
+  }
 SERVER_STARTED=1
 LOCAL_DB="labtrax_restore_test"
-createdb -U "$LOCAL_USER" -h "$TMP_DIR/socket" -p "$PORT" "$LOCAL_DB"
+PGPASSWORD="$LOCAL_PASSWORD" PGSSLMODE=verify-full \
+  PGSSLROOTCERT="$TMP_DIR/pgdata/server.crt" \
+  createdb -U "$LOCAL_USER" -h 127.0.0.1 -p "$PORT" "$LOCAL_DB"
 export DATABASE_URL="postgresql://${LOCAL_USER}:${LOCAL_PASSWORD}@127.0.0.1:${PORT}/${LOCAL_DB}?sslmode=verify-full&sslrootcert=${TMP_DIR}/pgdata/server.crt"
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -Atqc 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()' | grep -qx t
@@ -126,13 +132,11 @@ psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 --single-transaction \
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atqc \
   "SELECT to_regclass('provider_auto_pay_attempts_schedule_unique') IS NOT NULL" | grep -qx t
 # The checked-in pre-migration archive names this role as an object owner.
-psql -X -v ON_ERROR_STOP=1 -U "$LOCAL_USER" \
-  -h "$TMP_DIR/socket" -p "$PORT" -d "$LOCAL_DB" \
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -c 'CREATE ROLE postgres' >/dev/null
 
 # Exercise the idempotent Rx-history migration against the source-built schema.
-psql -X -v ON_ERROR_STOP=1 -U "$LOCAL_USER" \
-  -h "$TMP_DIR/socket" -p "$PORT" -d "$LOCAL_DB" \
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -f "$REPO_ROOT/lib/db/drizzle/0030_case_rx_note_history.sql" \
   >"$TMP_DIR/rx-history-migration.log" 2>&1 || {
     tail -40 "$TMP_DIR/rx-history-migration.log" >&2

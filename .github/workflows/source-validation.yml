@@ -41,6 +41,9 @@ jobs:
       - name: Collect the protected test harness
         run: pnpm --filter @workspace/scripts run check-test-harness:collect
 
+      - name: Regress deep-workspace restore startup
+        run: node --test scripts/isolated-restore-bootstrap.test.mjs
+
       - name: Run release and synchronization script regressions
         run: pnpm --filter @workspace/scripts run test
 
