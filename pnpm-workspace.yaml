@@ -125,7 +125,7 @@ overrides:
   "body-parser": "2.4.0"
   "browserslist": "4.29.0"
   "builder-util-runtime": "9.7.0"
-  "decode-uri-component": "0.5.0"
+  "decode-uri-component": "0.5.1"
   # twilio's axios range includes vulnerable versions; keep all resolved copies patched.
   "axios": "1.20.0"
   # Shadow-root template scrubbing, detached-hook cleanup, and XHTML SMIL guards.
