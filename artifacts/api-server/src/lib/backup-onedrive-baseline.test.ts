@@ -75,7 +75,9 @@ beforeEach(() => {
   fake.remote.mockImplementation(async (name, _folder, id) => ({ id, name, size: encrypted.length }));
   fake.job.mockImplementation(async options => {
     expect(options).toMatchObject({ trigger: "manual", destination: "onedrive" });
-    const records = await options.capture("synthetic-snapshot", null, async () => {}, null);
+    const captureSignal = AbortSignal.any([options.signal, new AbortController().signal]);
+    const records = await options.capture("synthetic-snapshot", null, async () => {}, null, captureSignal);
+    expect(fake.capture.mock.calls[0]?.[2]).toBe(captureSignal);
     expect(records.schemaDump.toString()).toContain("synthetic-schema-only");
     const media = await options.captureMedia(async (path: string, stream: Readable, sourceVersion: string) => {
       const pieces: Buffer[] = [];

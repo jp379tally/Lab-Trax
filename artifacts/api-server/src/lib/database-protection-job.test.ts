@@ -6,6 +6,8 @@ const fake = vi.hoisted(() => ({
   protect: vi.fn(), latest: vi.fn(), settings: new Map<string, string>(),
   clientErrors: [] as Array<(error: Error) => void>,
   providerSignals: [] as Array<AbortSignal | undefined>,
+  heartbeat: vi.fn(), nextClientId: 0,
+  clientQueries: [] as Array<{ clientId: number; sql: string }>,
 }));
 vi.mock("drizzle-orm", () => ({ eq: (_column: unknown, key: string) => key }));
 vi.mock("@workspace/db", () => ({
@@ -25,13 +27,18 @@ vi.mock("@workspace/db", () => ({
       },
     }) }),
   },
-  pool: { connect: async () => ({
+  pool: { connect: async () => {
+    const clientId = ++fake.nextClientId;
+    return {
     on: (event: string, listener: (error: Error) => void) => { if (event === "error") fake.clientErrors.push(listener); },
     removeListener: (event: string, listener: (error: Error) => void) => {
       if (event === "error") fake.clientErrors = fake.clientErrors.filter(value => value !== listener);
     },
-    query: async (sql: string, params?: unknown[]) => {
+    query: async (input: string | { text: string; query_timeout?: number }, params?: unknown[]) => {
+      const sql = typeof input === "string" ? input : input.text;
       fake.queries.push(sql);
+      fake.clientQueries.push({ clientId, sql });
+      if (sql === "SELECT 1") return fake.heartbeat(input);
       if (sql.startsWith("INSERT INTO system_settings")) {
         const key = String(params?.[0]);
         const value = String(params?.[1]);
@@ -61,7 +68,7 @@ vi.mock("@workspace/db", () => ({
       return { rows: sql.includes("try_advisory") ? [{ held: fake.held }] : sql.includes("export_snapshot") ? [{ snapshot: "synthetic-snapshot" }] : [] };
     },
     release: fake.release,
-  }) },
+  }; } },
 }));
 vi.mock("./onedrive", () => ({
   isProductionDeployment: () => fake.production,
@@ -100,10 +107,49 @@ import {
 import { protectDatabase, type DatabaseObjectStore } from "./database-protection";
 import { databaseOneDriveStore } from "./database-protection-onedrive";
 import { databaseGoogleDriveStore } from "./google-drive";
+import { RECORD_DELTA_FORMAT, RecordRecoveryError } from "./postgres-record-delta";
+import { isRecordDatabaseCapture, type RecordDatabaseCapture } from "./postgres-record-protection";
 const codec = { encrypt: (v: Buffer) => v, decrypt: (v: Buffer) => v };
 afterEach(()=>vi.useRealTimers());
 const runDatabaseProtectionJob = (options: Parameters<typeof runJob>[0] | { codec: typeof codec; capture: typeof fake.capture }) =>
   runJob({ captureMedia: async () => ({ sourceVersions: [], missingReferences: [], evidence: {} }), ...options });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+}
+
+/** Observe rejection immediately even when a test deliberately holds cleanup open. */
+function observe<T>(promise: Promise<T>) {
+  let settled = false;
+  const result = promise.then(
+    value => { settled = true; return { ok: true as const, value }; },
+    error => { settled = true; return { ok: false as const, error }; },
+  );
+  return { result, get settled() { return settled; } };
+}
+
+function aborted(signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) return Promise.resolve(signal.reason);
+  return new Promise(resolve => signal.addEventListener("abort", () => resolve(signal.reason), { once: true }));
+}
+
+function syntheticRecordCapture(): RecordDatabaseCapture {
+  return {
+    kind: RECORD_DELTA_FORMAT,
+    records: {
+      inventory: { format: RECORD_DELTA_FORMAT, schemaHash: "a".repeat(64),
+        referenceProtocol: "b".repeat(64), tables: [], sequences: [] },
+      bodies: [], delta: null, reason: "first-baseline",
+      metrics: { fingerprintRows: 0, fingerprintMetadataBytes: 0, schemaSqlBytes: 1,
+        sourceRowBodyBytes: 0, changedRows: 0, deletedRows: 0, durationMs: 0 },
+    },
+    schemaDump: Buffer.from("PGDMPsynthetic-schema"),
+  };
+}
+
 describe("production database job coordination (synthetic metadata)", () => {
   beforeEach(() => {
     vi.mocked(databaseGoogleDriveStore).mockClear();
@@ -113,11 +159,13 @@ describe("production database job coordination (synthetic metadata)", () => {
     fake.verify.mockReset().mockResolvedValue("verified-lineage");
     fake.capture.mockReset().mockResolvedValue(Buffer.from("PGDMPsynthetic"));
     fake.release.mockClear(); fake.clientErrors = []; fake.providerSignals = [];
+    fake.heartbeat.mockReset().mockResolvedValue({ rows: [] });
+    fake.nextClientId = 0; fake.clientQueries = [];
     fake.protect.mockReset().mockImplementation(async options => {
       await options.onPhase("Exporting a consistent production database snapshot");
       expect(options.captureMedia).toBeTypeOf("function");
       const source = await options.capture();
-      if (!Buffer.isBuffer(source)) {
+      if (!Buffer.isBuffer(source) && !isRecordDatabaseCapture(source)) {
         for await (const _chunk of source) { /* consume through snapshot rollback */ }
       }
       return { root: { point: "synthetic-point", createdAt: new Date().toISOString(),
@@ -267,7 +315,7 @@ describe("production database job coordination (synthetic metadata)", () => {
     const status = await runDatabaseProtectionJob({ codec, capture: fake.capture });
     expect(status.state).toBe("verified");
     expect(status.scope).toBe("production-database-and-media");
-    expect(fake.capture).toHaveBeenCalledWith("synthetic-snapshot", undefined, expect.any(Function), undefined);
+    expect(fake.capture).toHaveBeenCalledWith("synthetic-snapshot", undefined, expect.any(Function), undefined, expect.any(AbortSignal));
     expect(fake.verify).toHaveBeenCalledOnce();
     expect(fake.queries).toContain("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(fake.queries).toContain("SET LOCAL idle_in_transaction_session_timeout = '30min'");
@@ -290,6 +338,273 @@ describe("production database job coordination (synthetic metadata)", () => {
     expect(rollback).toBeGreaterThanOrEqual(0);
     expect(failedStatusWrite).toBeGreaterThan(rollback);
   });
+  it("keeps the same exported-snapshot owner active throughout a capture longer than thirty minutes", async () => {
+    vi.useFakeTimers();
+    const entered = deferred<AbortSignal>();
+    const captured = deferred<RecordDatabaseCapture>();
+    fake.capture.mockImplementationOnce(async (_snapshot, _position, onMediaPinned, _records, signal) => {
+      await onMediaPinned();
+      entered.resolve(signal);
+      return captured.promise;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture }));
+    const signal = await entered.promise;
+    const owner = fake.clientQueries.find(query => query.sql.includes("pg_export_snapshot"))!.clientId;
+
+    await vi.advanceTimersByTimeAsync(31 * 60_000);
+    expect(fake.heartbeat).toHaveBeenCalledTimes(62);
+    expect(fake.heartbeat).toHaveBeenLastCalledWith({ text: "SELECT 1", query_timeout: 30_000 });
+    expect(fake.clientQueries.filter(query => query.sql === "SELECT 1").every(query => query.clientId === owner)).toBe(true);
+    expect(fake.queries).toContain("SET LOCAL idle_in_transaction_session_timeout = '30min'");
+    expect(fake.queries).not.toContain("ROLLBACK");
+    expect(fake.release).not.toHaveBeenCalled();
+    expect(signal.aborted).toBe(false);
+    expect(run.settled).toBe(false);
+
+    captured.resolve(syntheticRecordCapture());
+    const outcome = await run.result;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value.state).toBe("verified");
+    expect(fake.queries).toContain("ROLLBACK");
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("allows only one heartbeat in flight and drains it before rollback or releasing the lock", async () => {
+    vi.useFakeTimers();
+    const entered = deferred<void>();
+    const captured = deferred<RecordDatabaseCapture>();
+    const heartbeat = deferred<{ rows: never[] }>();
+    fake.heartbeat.mockImplementationOnce(() => heartbeat.promise);
+    fake.capture.mockImplementationOnce(async (_snapshot, _position, onMediaPinned) => {
+      await onMediaPinned();
+      entered.resolve();
+      return captured.promise;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture }));
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fake.heartbeat).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fake.heartbeat).toHaveBeenCalledOnce();
+
+    captured.resolve(syntheticRecordCapture());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settled).toBe(false);
+    expect(fake.queries).not.toContain("ROLLBACK");
+    expect(fake.queries).not.toContain("SELECT pg_advisory_unlock(80451, 15001)");
+    expect(fake.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.heartbeat).toHaveBeenCalledOnce();
+
+    heartbeat.resolve({ rows: [] });
+    const outcome = await run.result;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value.state).toBe("verified");
+    expect(fake.queries.indexOf("ROLLBACK")).toBeLessThan(fake.queries.indexOf("SELECT pg_advisory_unlock(80451, 15001)"));
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("fences a rejected heartbeat and waits for capture cleanup without advancing prior freshness", async () => {
+    vi.useFakeTimers();
+    const prior = await runDatabaseProtectionJob({ codec, capture: fake.capture });
+    const priorFinishedAt = JSON.parse(fake.catchupSaved!).lastFinishedAt;
+    fake.release.mockClear();
+    fake.providerSignals = [];
+    const entered = deferred<AbortSignal>();
+    const captureAborted = deferred<unknown>();
+    const cleanup = deferred<void>();
+    const lost = new Error("Synthetic coordinator query read timeout");
+    fake.heartbeat.mockRejectedValueOnce(lost);
+    fake.capture.mockImplementationOnce(async (_snapshot, _position, onMediaPinned, _records, signal) => {
+      await onMediaPinned();
+      entered.resolve(signal);
+      const reason = await aborted(signal);
+      captureAborted.resolve(reason);
+      await cleanup.promise;
+      throw reason;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture, trigger: "manual" }));
+    const signal = await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await captureAborted.promise).toBe(lost);
+    expect(fake.providerSignals).toEqual([signal, signal]);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBe(lost);
+    expect(run.settled).toBe(false);
+    expect(fake.release).not.toHaveBeenCalled();
+    const queriesAtLoss = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtLoss);
+    expect(run.settled).toBe(false);
+
+    cleanup.resolve();
+    expect(await run.result).toEqual({ ok: false, error: lost });
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(fake.clientErrors).toHaveLength(0);
+    expect(fake.queries).toHaveLength(queriesAtLoss);
+    const saved = JSON.parse(fake.saved!);
+    expect(saved.state).toBe("running");
+    expect(saved.lastVerifiedAt).toBe(prior.lastVerifiedAt);
+    expect(saved.lastCompletePoint).toBe(prior.lastCompletePoint);
+    expect(saved.recoveryPointAt).toBe(prior.recoveryPointAt);
+    expect(JSON.parse(fake.catchupSaved!).active).toBe(true);
+    expect(JSON.parse(fake.catchupSaved!).lastFinishedAt).toBe(priorFinishedAt);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("preserves the capture failure if a pending heartbeat also fails during cleanup", async () => {
+    vi.useFakeTimers();
+    const entered = deferred<void>();
+    const captured = deferred<RecordDatabaseCapture>();
+    const heartbeat = deferred<{ rows: never[] }>();
+    const captureFailure = new RecordRecoveryError("Synthetic record capture deadline expired");
+    const heartbeatFailure = new Error("Synthetic heartbeat failed during drain");
+    fake.heartbeat.mockImplementationOnce(() => heartbeat.promise);
+    fake.capture.mockImplementationOnce(async (_snapshot, _position, onMediaPinned) => {
+      await onMediaPinned();
+      entered.resolve();
+      return captured.promise;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture }));
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    captured.reject(captureFailure);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settled).toBe(false);
+    expect(fake.release).not.toHaveBeenCalled();
+
+    heartbeat.reject(heartbeatFailure);
+    expect(await run.result).toEqual({ ok: false, error: captureFailure });
+    expect(fake.providerSignals.every(signal => signal?.reason === heartbeatFailure)).toBe(true);
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(fake.queries).not.toContain("ROLLBACK");
+    expect(JSON.parse(fake.saved!).lastCompletePoint).toBeNull();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+  });
+  it("passes upstream cancellation into capture and stops heartbeat work while capture unwinds", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const entered = deferred<AbortSignal>();
+    const captureAborted = deferred<unknown>();
+    const cleanup = deferred<void>();
+    const cancelled = new RecordRecoveryError("Synthetic capture cancelled by its original deadline");
+    fake.capture.mockImplementationOnce(async (_snapshot, _position, onMediaPinned, _records, signal) => {
+      await onMediaPinned();
+      entered.resolve(signal);
+      const reason = await aborted(signal);
+      captureAborted.resolve(reason);
+      await cleanup.promise;
+      throw reason;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture, signal: controller.signal }));
+    const signal = await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fake.heartbeat).toHaveBeenCalledOnce();
+    controller.abort(cancelled);
+    expect(await captureAborted.promise).toBe(cancelled);
+    expect(signal.reason).toBe(cancelled);
+    expect(fake.providerSignals).toEqual([signal, signal]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.heartbeat).toHaveBeenCalledOnce();
+    expect(run.settled).toBe(false);
+    expect(fake.release).not.toHaveBeenCalled();
+
+    cleanup.resolve();
+    const outcome = await run.result;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.value.state).toBe("failed");
+      expect(outcome.value.error).toContain(cancelled.message);
+      expect(outcome.value.lastCompletePoint).toBeNull();
+    }
+    expect(fake.queries).toContain("ROLLBACK");
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["success", "failure"] as const)("keeps a lazy dump snapshot alive until stream %s and then stops", async outcome => {
+    vi.useFakeTimers();
+    const reading = deferred<void>();
+    const streamed = deferred<void>();
+    const streamCleanup = vi.fn();
+    const failure = new RecordRecoveryError("Synthetic dump stream failed");
+    fake.capture.mockImplementationOnce(async () => (async function* () {
+      try {
+        yield Buffer.from("PGDMPsynthetic-first");
+        reading.resolve();
+        await streamed.promise;
+        yield Buffer.from("synthetic-last");
+      } finally { streamCleanup(); }
+    })());
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture }));
+    await reading.promise;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.heartbeat).toHaveBeenCalledTimes(2);
+    expect(fake.queries).not.toContain("ROLLBACK");
+    expect(fake.release).not.toHaveBeenCalled();
+    if (outcome === "success") streamed.resolve();
+    else streamed.reject(failure);
+    const result = await run.result;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.state).toBe(outcome === "success" ? "verified" : "failed");
+      if (outcome === "failure") expect(result.value.error).toContain(failure.message);
+    }
+    expect(streamCleanup).toHaveBeenCalledOnce();
+    expect(fake.queries).toContain("ROLLBACK");
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("stops the heartbeat when a dump consumer returns before reading the whole stream", async () => {
+    vi.useFakeTimers();
+    const reading = deferred<void>();
+    const stopReading = deferred<void>();
+    const streamCleanup = vi.fn();
+    const stopped = new RecordRecoveryError("Synthetic consumer stopped reading the dump");
+    fake.capture.mockImplementationOnce(async () => (async function* () {
+      try {
+        yield Buffer.from("PGDMPsynthetic-first");
+        yield Buffer.from("synthetic-unread");
+      } finally { streamCleanup(); }
+    })());
+    fake.protect.mockImplementationOnce(async options => {
+      const stream = await options.capture();
+      const iterator = stream[Symbol.asyncIterator]();
+      await iterator.next();
+      reading.resolve();
+      await stopReading.promise;
+      await iterator.return();
+      throw stopped;
+    });
+    const run = observe(runDatabaseProtectionJob({ codec, capture: fake.capture }));
+    await reading.promise;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.heartbeat).toHaveBeenCalledTimes(2);
+    expect(fake.queries).not.toContain("ROLLBACK");
+    stopReading.resolve();
+    const outcome = await run.result;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value.error).toContain(stopped.message);
+    expect(streamCleanup).toHaveBeenCalledOnce();
+    expect(fake.queries.filter(query => query === "ROLLBACK")).toHaveLength(1);
+    expect(fake.release).toHaveBeenCalledExactlyOnceWith();
+    const queriesAtRelease = fake.queries.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.queries).toHaveLength(queriesAtRelease);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("records the source snapshot time rather than upload completion as recovery freshness", async () => {
     vi.useFakeTimers({toFake:["Date"]});
     vi.setSystemTime(new Date("2026-10-26T12:00:00.000Z"));
@@ -306,18 +621,24 @@ describe("production database job coordination (synthetic metadata)", () => {
     expect(status.recoveryPointAt).not.toBe(status.lastVerifiedAt);
   });
   it("deduplicates a verified slot after restart using persisted state", async () => {
+    vi.useFakeTimers();
     await runDatabaseProtectionJob({ codec, capture: fake.capture });
     await runDatabaseProtectionJob({ codec, capture: fake.capture });
     expect(fake.protect).toHaveBeenCalledOnce();
     expect((await getDatabaseProtectionStatus()).state).toBe("verified");
+    expect(fake.heartbeat).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
   it("skips overlapping workers without writing a failure over their progress", async () => {
+    vi.useFakeTimers();
     fake.held = false;
     const status = await runDatabaseProtectionJob({ codec, capture: fake.capture });
     expect(status.state).toBe("skipped_busy");
     expect(JSON.parse(fake.saved!).state).toBe("skipped_busy");
     expect((await getDatabaseProtectionCatchupState()).pending).toBe(true);
     expect(fake.protect).not.toHaveBeenCalled();
+    expect(fake.heartbeat).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
   it("keeps a prior verified point on failure and retries a failed slot", async () => {
     await runDatabaseProtectionJob({ codec, capture: fake.capture });
@@ -351,12 +672,15 @@ describe("production database job coordination (synthetic metadata)", () => {
     expect(fake.capture).not.toHaveBeenCalled();
   });
   it("never captures when production lineage verification fails and rolls back", async () => {
+    vi.useFakeTimers();
     fake.verify.mockRejectedValueOnce(new Error("Production lineage mismatch"));
     const status = await runDatabaseProtectionJob({ codec, capture: fake.capture });
     expect(status.state).toBe("failed");
     expect(status.error).toContain("identity/lineage");
     expect(fake.capture).not.toHaveBeenCalled();
     expect(fake.queries).toContain("ROLLBACK");
+    expect(fake.heartbeat).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
   it("destination checks skip an active worker rather than clobbering progress", async () => {
     fake.held = false;

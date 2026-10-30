@@ -38,15 +38,16 @@ try {
   externalProductionSourceRevision: revision,
   trigger: "manual", destination: "onedrive", intervalMinutes: 15,
   codec: { encrypt: encryptBuffer, decrypt: decryptBuffer }, signal: deadline.signal,
-  capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords) => {
+  capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords, captureSignal) => {
+   const captureDeadline = { ...deadline, signal: captureSignal };
    captured = await captureCompleteBackup(path.resolve(process.cwd(), "uploads"),
-    snapshotToken => buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "custom"), deadline.signal, {
+    snapshotToken => buildPgDumpStream(captureDeadline, snapshotToken, 64 * 1024 * 1024, "custom"), captureSignal, {
      externalProductionSourceRevision: revision,
      archiveDestination: "direct", allowMissingReferences: true, productionDataOnly: true,
      productionJournalAfterPosition: previousJournalPosition, snapshot, onMediaPinned, streamDatabaseDump: true,
      records: { previous: previousRecords ?? null, schemaSql: async snapshotToken => {
       const parts: Buffer[] = [];
-      for await (const bytes of buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "plain")) parts.push(bytes);
+      for await (const bytes of buildPgDumpStream(captureDeadline, snapshotToken, 64 * 1024 * 1024, "plain")) parts.push(bytes);
       return Buffer.concat(parts).toString("utf8");
      } },
     });

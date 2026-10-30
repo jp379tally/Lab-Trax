@@ -2685,18 +2685,20 @@ export async function runOneDriveBackupWithBaseline(triggeredBy: string, deadlin
   let archive: CompleteBackupArchive | undefined;
   let captured: CompleteBackupCaptured | undefined;
   let result: BackupRunResult | undefined;
+  let captureDeadline = deadline;
   const status = await runDatabaseProtectionJob({
     trigger: "manual", destination: "onedrive", intervalMinutes: 15,
     codec: { encrypt: encryptBuffer, decrypt: decryptBuffer }, signal: deadline.signal,
-    capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords) => {
+    capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords, captureSignal) => {
+      captureDeadline = { ...deadline, signal: captureSignal };
       const seed = { snapshot, previousJournalPosition, previousRecords: previousRecords ?? null,
         onMediaPinned, captured: undefined as CompleteBackupCaptured | undefined };
-      archive = await prepareCompleteBackupArchive(triggeredBy, deadline, "cloud", seed);
+      archive = await prepareCompleteBackupArchive(triggeredBy, captureDeadline, "cloud", seed);
       captured = seed.captured;
       if (!captured?.recordCapture) throw new Error("Manual baseline record evidence is missing.");
       const schemaParts: Buffer[] = [];
       if (!captured.recordCapture.delta) {
-        for await (const bytes of buildPgDumpStream(deadline, snapshot, 64 * 1024 * 1024, "custom")) schemaParts.push(bytes);
+        for await (const bytes of buildPgDumpStream(captureDeadline, snapshot, 64 * 1024 * 1024, "custom")) schemaParts.push(bytes);
       }
       return { kind: RECORD_DELTA_FORMAT, records: captured.recordCapture,
         schemaDump: captured.recordCapture.delta ? null : Buffer.concat(schemaParts) };
@@ -2707,7 +2709,7 @@ export async function runOneDriveBackupWithBaseline(triggeredBy: string, deadlin
       archive.prepared.appendMedia = async zip => {
         evidence = await captureProductionMedia(captured!, write, selectPaths, zip);
       };
-      result = await runOneDriveBackup(triggeredBy, { deadline, preparedArchive: archive });
+      result = await runOneDriveBackup(triggeredBy, { deadline: captureDeadline, preparedArchive: archive });
       if (!evidence) throw new Error("Manual baseline media evidence is missing.");
       return evidence;
     },
@@ -5343,10 +5345,11 @@ export async function fireOffsiteBackup(
         destination: config.destination === "google-drive" ? "google-drive" : "onedrive",
         intervalMinutes: config.intervalMinutes,
         codec: { encrypt: encryptBuffer, decrypt: decryptBuffer },
-        capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords) => {
+        capture: async (snapshot, previousJournalPosition, onMediaPinned, previousRecords, captureSignal) => {
+          const captureDeadline = { ...deadline, signal: captureSignal };
           captured = await captureCompleteBackup(getUploadsRoot(),
-            snapshotToken => buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "custom"),
-            deadline.signal, {
+            snapshotToken => buildPgDumpStream(captureDeadline, snapshotToken, 64 * 1024 * 1024, "custom"),
+            captureSignal, {
               archiveDestination: "direct", allowMissingReferences: true, productionDataOnly: true,
               productionJournalAfterPosition: previousJournalPosition,
               snapshot,
@@ -5354,7 +5357,7 @@ export async function fireOffsiteBackup(
               streamDatabaseDump: true,
               records: { previous: previousRecords ?? null, schemaSql: async snapshotToken => {
                 const parts: Buffer[] = [];
-                for await (const bytes of buildPgDumpStream(deadline, snapshotToken, 64 * 1024 * 1024, "plain")) parts.push(bytes);
+                for await (const bytes of buildPgDumpStream(captureDeadline, snapshotToken, 64 * 1024 * 1024, "plain")) parts.push(bytes);
                 return Buffer.concat(parts).toString("utf8");
               } },
             });

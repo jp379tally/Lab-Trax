@@ -47,11 +47,54 @@ function guardProtectionClient(client: PoolClient, upstream?: AbortSignal) {
   return {
     signal,
     get failure() { return failure; },
+    fail: onError,
     assert() { signal.throwIfAborted(); },
     release() {
       try { if (failure) client.release(true); else client.release(); }
       finally { client.removeListener("error", onError); }
     },
+  };
+}
+
+/** Record/media capture uses other connections, so its progress does not keep
+ * the exported-snapshot owner active. Keep that session alive only while its
+ * snapshot is needed; the caller's deadline still bounds the capture itself. */
+function keepProtectionSnapshotAlive(client: PoolClient, lease: ReturnType<typeof guardProtectionClient>) {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let pending: Promise<void> = Promise.resolve();
+  const halt = () => {
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  const schedule = () => {
+    if (stopped || lease.signal.aborted) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped || lease.signal.aborted) return;
+      pending = Promise.resolve().then(async () => {
+        if (stopped || lease.signal.aborted) return;
+        // Match the coordinator pool's 30-second statement bound on the
+        // client too, so a lost transport cannot make cleanup wait forever.
+        const query = { text: "SELECT 1", query_timeout: 30_000 };
+        await client.query(query);
+      }).catch(error => {
+        // A rejected query need not emit a client error event. Fence provider
+        // writes and cancel capture through the same lost-lease signal.
+        lease.fail(error instanceof Error ? error : new Error("Production backup coordinator heartbeat failed."));
+      }).finally(schedule);
+    }, 30_000);
+    timer.unref?.();
+  };
+  lease.signal.addEventListener("abort", halt, { once: true });
+  schedule();
+  return async () => {
+    // Stop synchronously before draining: neither a queued tick nor the
+    // current query's completion may enqueue work after rollback/release.
+    halt();
+    lease.signal.removeEventListener("abort", halt);
+    await pending;
   };
 }
 
@@ -392,7 +435,7 @@ export async function runDatabaseProtectionJob(options: {
   externalProductionSourceRevision?: string;
   codec: DatabaseCodec;
   capture: (snapshot: string, previousJournalPosition: string | null, onMediaPinned: () => Promise<void>,
-    previousRecords?: RecordInventory | null) => Promise<DatabaseDumpSource | RecordDatabaseCapture> | DatabaseDumpSource | RecordDatabaseCapture;
+    previousRecords: RecordInventory | null | undefined, signal: AbortSignal) => Promise<DatabaseDumpSource | RecordDatabaseCapture> | DatabaseDumpSource | RecordDatabaseCapture;
   captureMedia: ProductionCapture["captureMedia"];
   signal?: AbortSignal;
   trigger?: DatabaseProtectionTrigger;
@@ -409,8 +452,12 @@ export async function runDatabaseProtectionJob(options: {
   let destination = options.destination ?? "onedrive";
   const intervalMinutes = options.intervalMinutes ?? 15;
   let held = false, transaction = false, attemptActive = false, mediaLocked = false;
+  let stopSnapshotHeartbeat = async () => {};
   const releaseMediaBoundary = async () => {
-    if (mediaLocked) { await unlockMediaCheckpoint(lock); mediaLocked = false; }
+    if (mediaLocked) {
+      if (lease.failure) throw lease.failure;
+      await unlockMediaCheckpoint(lock); mediaLocked = false;
+    }
   };
   let status = emptyStatus(destination);
   let attemptOutcome: "verified" | "partial" | "failed" | "skipped" = "skipped";
@@ -465,20 +512,24 @@ export async function runDatabaseProtectionJob(options: {
         await lockMediaCheckpoint(lock); mediaLocked = true;
         await lock.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
         transaction = true;
-        // Record fingerprinting and schema export use the exported snapshot on
-        // separate connections. Keep this otherwise-idle coordinator session
-        // alive long enough for those bounded capture steps, while retaining a
-        // finite timeout if capture stops making progress entirely.
+        // Keep the finite idle timeout as a fallback. Capture progress on its
+        // separate connection is covered by the scoped coordinator heartbeat.
         await lock.query("SET LOCAL idle_in_transaction_session_timeout = '30min'");
         // Same snapshot for lineage checks and pg_dump. No data or trigger
         // mutations are needed for this storage-incremental method.
         await verifyProductionBackupSource(lock);
         const snapshot = await lock.query<{ snapshot: string }>("SELECT pg_export_snapshot() AS snapshot");
-        const captured = await options.capture(snapshot.rows[0]!.snapshot, previousJournalPosition, releaseMediaBoundary, previousRecords);
+        stopSnapshotHeartbeat = keepProtectionSnapshotAlive(lock, lease);
+        // Await cooperative unwinding on lease loss; racing this promise would
+        // release the snapshot while its capture could still be using it.
+        const captured = await options.capture(snapshot.rows[0]!.snapshot, previousJournalPosition, releaseMediaBoundary, previousRecords, lease.signal);
+        lease.assert();
         await releaseMediaBoundary();
         if (isRecordDatabaseCapture(captured)) {
           // Complete capture has already read selected rows and staged any
           // schema-only export. Release the source snapshot before cloud I/O.
+          await stopSnapshotHeartbeat();
+          lease.assert();
           await lock.query("ROLLBACK"); transaction = false;
           return captured;
         }
@@ -491,11 +542,13 @@ export async function runDatabaseProtectionJob(options: {
           async *[Symbol.asyncIterator]() {
             try { yield* stream; }
             finally {
-              if (transaction) {
+              await stopSnapshotHeartbeat();
+              if (transaction && !lease.failure) {
                 await lock.query("ROLLBACK");
                 transaction = false;
               }
             }
+            lease.assert();
           },
         };
       },
@@ -548,7 +601,9 @@ export async function runDatabaseProtectionJob(options: {
       coverage: status.coverage }, "[backup] Production records/readable-media protection verified; coverage explicitly recorded.");
     return status;
   } catch (error) {
-    if (lease.failure) throw lease.failure;
+    const failure = lease.failure ?? error;
+    await stopSnapshotHeartbeat();
+    if (lease.failure) throw failure;
     if (transaction) {
       try { await lock.query("ROLLBACK"); }
       finally { transaction = false; }
@@ -563,6 +618,7 @@ export async function runDatabaseProtectionJob(options: {
     await save(status, lock);
     return status;
   } finally {
+    await stopSnapshotHeartbeat();
     try {
       if (lease.failure) {
         logger.error({ err: backupErrorMessage(lease.failure) }, "[backup] Protection database session lost; provider work aborted and prior freshness preserved");
