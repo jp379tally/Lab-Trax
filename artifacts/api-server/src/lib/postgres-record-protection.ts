@@ -459,6 +459,17 @@ export async function verifyRecordDatabasePoint(
   };
 }
 
+/** An independently committed record point can seed a first combined backup. */
+export async function latestRecordDatabasePoint(
+  options: Options,
+): Promise<VerifiedRecordDatabasePoint | null> {
+  const markers = (await options.store.list()).map((object) => object.name)
+    .filter((name) => /^records-verified-\d{13}-[a-f0-9-]{36}\.enc$/.test(name)).sort();
+  const newest = markers.at(-1);
+  // Never skip a broken newest point in favor of older, apparently healthy data.
+  return newest ? verifyRecordDatabasePoint(options, newest) : null;
+}
+
 export async function protectRecordDatabase(
   options: Options & {
     capture: RecordDatabaseCapture;

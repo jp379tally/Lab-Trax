@@ -4591,6 +4591,8 @@ export interface OffsiteFreshnessInput {
   newestArchiveAt: string | null;
   /** Why the destination could not be listed, when it could not. */
   listingError: string | null;
+  /** Capture/coverage or dependency-verification failure, not a folder listing error. */
+  verificationError?: string | null;
   /** Informational only; a history row cannot replace destination evidence. */
   lastVerifiedAt: string | null;
 }
@@ -4626,6 +4628,19 @@ export function evaluateOffsiteFreshness(
   };
 
   const archiveAge = ageOf(input.newestArchiveAt);
+  // A previous complete point remains useful history, but cannot clear an
+  // incomplete capture or failed/overdue dependency check. Preserve the actual
+  // diagnosis instead of claiming that the provider's folder was unreadable.
+  if (input.verificationError != null) {
+    return {
+      stale: true,
+      ageMinutes: archiveAge,
+      windowMinutes,
+      source: archiveAge === null ? "none" : "onedrive",
+      destinationUnreadable,
+      reason: input.verificationError,
+    };
+  }
   if (archiveAge !== null) {
     return {
       stale: archiveAge > windowMinutes,
@@ -4673,6 +4688,7 @@ export interface OffsiteFreshness extends OffsiteFreshnessVerdict {
   /** How many files the off-site folder holds, when it could be listed. */
   archiveCount: number | null;
   listingError: string | null;
+  verificationError?: string | null;
   lastVerifiedAt: string | null;
 }
 
@@ -4685,7 +4701,8 @@ export async function getOffsiteFreshness(now: Date = new Date()): Promise<Offsi
     const verificationError = databaseProtectionVerificationError(status, now.getTime(), config.intervalMinutes);
     const verdict = evaluateOffsiteFreshness({
       nowMs: now.getTime(), intervalMinutes: config.intervalMinutes, newestArchiveAt: status.recoveryPointAt,
-      listingError: verificationError,
+      listingError: null,
+      verificationError,
       lastVerifiedAt: null,
     });
     return {
@@ -4698,7 +4715,7 @@ export async function getOffsiteFreshness(now: Date = new Date()): Promise<Offsi
         sizeBytes: status.dumpBytes + status.mediaBytes,
         ageMinutes: Math.max(0, (now.getTime() - Date.parse(status.recoveryPointAt)) / 60_000),
       } : null,
-      archiveCount: null, listingError: verificationError,
+      archiveCount: null, listingError: null, verificationError,
       lastVerifiedAt: status.lastVerifiedAt,
     };
   }

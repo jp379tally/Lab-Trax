@@ -8,6 +8,7 @@ import {
 import { Readable } from "node:stream";
 import {
   protectRecordDatabase,
+  latestRecordDatabasePoint,
   verifyRecordDatabasePoint,
   readRecordBodies,
   readRecordSchema,
@@ -23,6 +24,7 @@ import {
 } from "./postgres-record-delta";
 import {
   protectProduction,
+  latestProductionPoint,
   verifyProductionPoint,
   readProductionFile,
 } from "./production-content-protection";
@@ -610,6 +612,126 @@ describe("changed-record immutable storage (synthetic provider; no cloud calls)"
       );
       expect(Buffer.concat(received)).toEqual(bytes);
     }
+  });
+  it.each([false, true])("resumes a failed first media capture from its verified records while recapturing all media (missing originals: %s)", async (missingOriginal) => {
+    const f = setup(), media = fixtureStore();
+    const options = { ...f.options, databaseStore: f.store, store: media.store };
+    const initial = capture([{ id: 1, value: "retained" }, { id: 2, value: "before" }]);
+    await expect(protectProduction({
+      ...options,
+      capture: async (journal, previous) => {
+        expect(journal).toBeNull();
+        expect(previous).toBeNull();
+        return recordCapture(initial);
+      },
+      captureMedia: async () => { throw new Error("Synthetic first-media interruption"); },
+    })).rejects.toThrow("first-media interruption");
+    expect(await latestProductionPoint(options)).toBeNull();
+    const seed = await latestRecordDatabasePoint(f.options);
+    expect(seed).not.toBeNull();
+    const files = new Map([
+      ["case-media/retained.png", Buffer.from("retained synthetic media")],
+      ["case-media/current.pdf", Buffer.from("%PDF current synthetic media")],
+    ]);
+    let current: RecordCapture;
+    const selectedMedia: string[] = [];
+    const result = await protectProduction({
+      ...options,
+      capture: async (journal, previous) => {
+        expect(journal).toBeNull();
+        expect(previous).toEqual(seed!.recordSnapshot.records);
+        current = capture([
+          { id: 1, value: "retained" }, { id: 2, value: "after" }, { id: 3, value: "new" },
+        ], previous!);
+        expect(current.reason).toBe("changed-rows");
+        expect(current.metrics.changedRows).toBe(2);
+        return recordCapture(current);
+      },
+      captureMedia: async (write, select) => {
+        const sourceVersions = [...files].map(([archivePath, bytes]) => ({
+          archivePath, size: bytes.length, sourceVersion: "synthetic:1",
+        }));
+        const selected = select(sourceVersions, { afterPosition: "47", throughPosition: "47", events: [] });
+        expect([...selected].sort()).toEqual([...files.keys()].sort());
+        for (const [path, bytes] of files) {
+          selectedMedia.push(path);
+          await write(path, Readable.from([bytes]), "synthetic:1");
+        }
+        return {
+          sourceVersions,
+          missingReferences: missingOriginal ? ["case-media/unavailable.png"] : [],
+          evidence: {
+            snapshotAt: new Date().toISOString(), databaseSha256: recordInventoryHash(current.inventory),
+            productionMediaJournal: { afterPosition: "47", throughPosition: "47", events: [] },
+          },
+        };
+      },
+    });
+    expect(selectedMedia.sort()).toEqual([...files.keys()].sort());
+    expect(result.root.previousPoint).toBeNull();
+    expect(result.root.coverage).toBe(missingOriginal ? "partial" : "complete");
+    expect(result.database.manifest.previousPoint).toBe(seed!.manifest.point);
+    expect(result.database.manifest.capture).toBe("changed-postgresql-rows");
+    await verifyProductionPoint(options, result.marker, true);
+    for (const file of result.inventory.files) {
+      const pieces: Buffer[] = [];
+      await readProductionFile(options, file, async bytes => { pieces.push(bytes); });
+      expect(Buffer.concat(pieces)).toEqual(files.get(file.path));
+    }
+  });
+  it.each(["newest marker", "manifest", "body", "body version", "ancestor", "source", "combined point"])(
+    "does not start capture or fall back to an older seed when the %s proof is broken", async (broken) => {
+      const f = setup(), media = fixtureStore();
+      const first = capture([{ id: 1, value: "retained" }]);
+      const older = await protectRecordDatabase({ ...f.options, capture: recordCapture(first) });
+      const newest = await protectRecordDatabase({
+        ...f.options, previous: older, capture: recordCapture(capture([
+          { id: 1, value: "retained" }, { id: 2, value: "current" },
+        ], first.inventory)),
+      });
+      const marker = JSON.parse(f.codec.decrypt(f.objects.get(newest.marker)!).toString("utf8"));
+      if (broken === "newest marker") f.objects.set(newest.marker, Buffer.from("tampered newest marker"));
+      if (broken === "manifest") f.objects.delete(marker.manifest);
+      if (broken === "body") f.objects.delete(`records-body-${newest.recordSnapshot.chunks[0]!.hash}.enc`);
+      if (broken === "body version") f.versions.set(`records-body-${newest.recordSnapshot.chunks[0]!.hash}.enc`, 2);
+      if (broken === "ancestor") f.objects.delete(older.marker);
+      if (broken === "source") {
+        marker.source = "f".repeat(64);
+        f.objects.set(newest.marker, f.codec.encrypt(Buffer.from(JSON.stringify(marker))));
+      }
+      if (broken === "combined point") media.objects.set(
+        "verified-1793360000000-00000000-0000-4000-8000-000000000001.enc", Buffer.from("tampered combined point"),
+      );
+      const databaseKeys = [...f.objects.keys()].sort(), mediaKeys = [...media.objects.keys()].sort();
+      let captures = 0;
+      await expect(protectProduction({
+        ...f.options, databaseStore: f.store, store: media.store,
+        capture: async () => { captures++; return recordCapture(first); },
+        captureMedia: async () => { throw new Error("Media capture must not start"); },
+      })).rejects.toThrow();
+      expect(captures).toBe(0);
+      expect([...f.objects.keys()].sort()).toEqual(databaseKeys);
+      expect([...media.objects.keys()].sort()).toEqual(mediaKeys);
+    },
+  );
+  it("still requires an explicit schema baseline after a verified record-only seed", async () => {
+    const f = setup(), media = fixtureStore();
+    const first = capture([{ id: 1, value: "retained" }]);
+    await protectRecordDatabase({ ...f.options, capture: recordCapture(first) });
+    let captured = false;
+    await expect(protectProduction({
+      ...f.options, databaseStore: f.store, store: media.store,
+      capture: async (_journal, previous) => {
+        expect(previous).toEqual(first.inventory);
+        captured = true;
+        const changedSchema = capture([{ id: 1, value: "current" }], previous!, sha("changed synthetic schema"));
+        expect(changedSchema.reason).toBe("schema-changed");
+        return { ...recordCapture(changedSchema), schemaDump: null };
+      },
+      captureMedia: async () => { throw new Error("Media capture must not start"); },
+    })).rejects.toThrow(/schema-only PostgreSQL export/);
+    expect(captured).toBe(true);
+    expect([...media.objects.keys()]).toHaveLength(0);
   });
   it("combines changed records with exact picture/PDF/video versions and preserves a coherent root across media interruption", async () => {
     const f = setup(),
