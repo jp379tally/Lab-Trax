@@ -514,7 +514,10 @@ export async function protectRecordDatabase(
       records.inventory.referenceProtocol
   )
     fail("reference baseline transition has no protocol change");
-  const oldLocations = new Map<string, Location>();
+  const oldRowsByKey = new Map<string, {
+    table: RecordInventory["tables"][number];
+    row: RecordInventory["tables"][number]["rows"][number];
+  }>();
   const oldBodies = new Map<string, Location>();
   const known = new Map<string, Proof>();
   if (previous) {
@@ -525,9 +528,9 @@ export async function protectRecordDatabase(
     for (const loc of previous.recordSnapshot.locations) {
       const table = previous.recordSnapshot.records.tables[loc.table]!;
       const row = rowsByTable[loc.table]!.get(loc.key)!;
-      oldLocations.set(
+      oldRowsByKey.set(
         JSON.stringify([table.schema, table.name, loc.key]),
-        loc,
+        { table, row },
       );
       oldBodies.set(row.hash, loc);
     }
@@ -570,12 +573,18 @@ export async function protectRecordDatabase(
       const key = JSON.stringify([table.schema, table.name, row.key]);
       const body = selected.get(key);
       const prior = oldBodies.get(row.hash);
-      const priorAtKey = oldLocations.get(key);
+      const priorAtKey = oldRowsByKey.get(key);
       if (body) {
         if (body.hash !== row.hash || body.count !== row.count)
           fail("selected body/checkpoint count differs");
         selectedUsed++;
-      } else if (!priorAtKey || !prior) fail("changed row body was omitted");
+      } else if (!priorAtKey || !prior || priorAtKey.row.hash !== row.hash ||
+        priorAtKey.row.count !== row.count ||
+        JSON.stringify(priorAtKey.table.columns) !== JSON.stringify(table.columns) ||
+        JSON.stringify(priorAtKey.table.allColumns) !== JSON.stringify(table.allColumns) ||
+        JSON.stringify(priorAtKey.table.primaryKey) !== JSON.stringify(table.primaryKey)) {
+        fail("changed row body or changed catalog body was omitted");
+      }
       const loc: Location = { table: tableIndex, key: row.key, parts: [] };
       if (prior) {
         loc.parts = prior.parts.map((p) => ({ ...p }));

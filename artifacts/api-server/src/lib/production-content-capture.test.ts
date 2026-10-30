@@ -81,6 +81,53 @@ describe("production streaming capture uses the real pinned media producer", () 
       expect(result.sourceVersions).toHaveLength(1);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+  it("preserves a sanitized provider failure from the real media producer without recording a completed file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "labtrax-content-error-"));
+    try {
+      await writeFile(join(root, "photo.png"), "synthetic media");
+      const files: BackupFileEvidence[] = [];
+      const planned = await planBackupMedia(root, [], undefined, { onFile: file => files.push(file) });
+      const append: typeof planned.append = (archive, maxConcurrentFiles, includeArchivePaths) =>
+        planned.append(archive, maxConcurrentFiles, includeArchivePaths
+          ? new Set([...includeArchivePaths].map(name =>
+            name.startsWith("case-media/") ? `media/${name.slice("case-media/".length)}` : name))
+          : undefined);
+      const captured = {
+        append,
+        productionMediaSources: planned.sourceVersions.map(source => ({
+          ...source, archivePath: `case-media/${source.relativeName}`,
+        })),
+        manifest: { files, missingReferences: [] },
+      } as unknown as Awaited<ReturnType<typeof captureCompleteBackup>>;
+      const failure = await captureProductionMedia(captured, async (_path, stream) => {
+        for await (const _part of stream) { /* Consume the pinned source before failing provider delivery. */ }
+        throw new Error("OneDrive request failed (HTTP 503). https://synthetic.invalid/private?token=synthetic-secret");
+      }, sources => new Set(sources.map(source => source.archivePath))).then(() => null, error => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toContain("Provider returned HTTP 503");
+      expect(failure.message).toContain("No recovery point committed");
+      expect(failure.message).not.toContain("synthetic.invalid");
+      expect(failure.message).not.toContain("synthetic-secret");
+      expect(files).toHaveLength(0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("prefers the first safe sink failure over a later generic append rejection", async () => {
+    const reason = new Error("Provider returned HTTP 429. No recovery point committed.");
+    const captured = {
+      append: async (sink: { emit: (event: string, error: Error) => void }) => {
+        sink.emit("error", reason);
+        throw new Error("Case-media archive transfer was aborted.");
+      },
+      productionMediaSources: [],
+      manifest: { files: [], missingReferences: [] },
+    } as unknown as Awaited<ReturnType<typeof captureCompleteBackup>>;
+    await expect(captureProductionMedia(captured,
+      async () => { throw new Error("No media write should begin"); },
+      () => new Set(),
+    )).rejects.toBe(reason);
+  });
+
   it("rejects sources changed after inventory instead of committing a mixed point", async () => {
     const root = await mkdtemp(join(tmpdir(), "labtrax-content-producer-"));
     try {

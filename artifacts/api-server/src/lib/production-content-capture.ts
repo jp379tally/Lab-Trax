@@ -74,7 +74,13 @@ export async function captureProductionMedia(
     });
     return sink;
   };
-  await captured.append(sink as unknown as Archiver, undefined, mirror ? undefined : included);
+  try {
+    await captured.append(sink as unknown as Archiver, undefined, mirror ? undefined : included);
+  } catch (error) {
+    // The producer may reject with a secondary abort after the sink has
+    // already recorded the safe provider/source failure that caused it.
+    throw failure ?? error;
+  }
   if (failure) throw failure;
   const { files, ...evidence } = captured.manifest;
   // The producer independently hashes pinned bytes. Never accept an entry from

@@ -484,6 +484,54 @@ describe("changed-record immutable storage (synthetic provider; no cloud calls)"
       ).toThrow();
     }
   });
+  it("stores an explicit reference baseline with exact prior bodies omitted and preserves all current rows", async () => {
+    const f = setup();
+    const rows = [{ id: 1, value: "retained" }, { id: 2, value: "before" }];
+    const first = capture(rows);
+    const baseline = await protectRecordDatabase({ ...f.options, capture: recordCapture(first) });
+    const currentRows = [rows[0]!, { id: 2, value: "after" }, { id: 3, value: "new" }];
+    const current = capture(currentRows, first.inventory);
+    current.delta = null;
+    current.reason = "reference-protocol-changed";
+    current.inventory.referenceProtocol = sha("current-reference-protocol");
+    for (const row of current.inventory.tables[0]!.rows) row.references = ["case-media/current.png"];
+    expect(current.bodies[0]!.inserts).toHaveLength(2);
+    const point = await protectRecordDatabase({
+      ...f.options, previous: baseline, capture: recordCapture(current),
+    });
+    expect(point.manifest.capture).toBe("postgresql-record-baseline");
+    expect(point.manifest.previousPoint).toBe(baseline.manifest.point);
+    expect(point.recordSnapshot.records.referenceProtocol).toBe(sha("current-reference-protocol"));
+    const restored: Array<{ id: number; value: string }> = [];
+    await readRecordBodies(f.options, point, async (_table, json) => { restored.push(JSON.parse(json)); });
+    expect(restored.sort((a, b) => a.id - b.id)).toEqual(currentRows);
+    await verifyRecordDatabasePoint(f.options, baseline.marker);
+  });
+  it.each(["key", "hash", "count", "catalog"])("rejects an omitted baseline body whose authenticated prior %s differs", async change => {
+    const f = setup();
+    const first = capture([{ id: 1, value: "one" }, { id: 2, value: "two" }]);
+    // A bag table permits repeated identical rows; the omission gate must bind their count too.
+    first.inventory.tables[0]!.primaryKey = [];
+    const baseline = await protectRecordDatabase({ ...f.options, capture: recordCapture(first) });
+    const current = structuredClone(first);
+    current.delta = null; current.reason = "reference-protocol-changed";
+    current.inventory.referenceProtocol = sha("new-reference-contract");
+    current.bodies = current.bodies.map(table => ({ ...table, inserts: [] }));
+    const table = current.inventory.tables[0]!, row = table.rows[0]!;
+    if (change === "key") {
+      row.key = sha("different synthetic record key");
+      table.rows.sort((a, b) => a.key < b.key ? -1 : 1);
+    }
+    if (change === "hash") row.hash = table.rows[1]!.hash;
+    if (change === "count") row.count = 2;
+    if (change === "catalog") table.columns.reverse();
+    const before = [...f.objects.keys()].sort();
+    await expect(protectRecordDatabase({
+      ...f.options, previous: baseline, capture: recordCapture(current),
+    })).rejects.toThrow(/body.*omitted/);
+    expect([...f.objects.keys()].sort()).toEqual(before);
+    await verifyRecordDatabasePoint(f.options, baseline.marker);
+  });
   it("retains the prior schema baseline and requires explicit new schema bytes on a schema transition", async () => {
     const f = setup(),
       first = capture([{ id: 1, value: "before" }]),

@@ -124,7 +124,11 @@ export async function planBackupMedia(
     const controller = new AbortController();
     setMaxListeners(32, controller.signal);
     archive.setMaxListeners(Math.max(32, archive.getMaxListeners()));
-    const abort = () => controller.abort(new Error("Case-media archive transfer was aborted."));
+    const abort = (reason?: unknown) => controller.abort(
+      reason instanceof Error ? reason
+        : signal?.reason instanceof Error ? signal.reason
+          : new Error("Case-media archive transfer was aborted."),
+    );
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     archive.once("error", abort);
