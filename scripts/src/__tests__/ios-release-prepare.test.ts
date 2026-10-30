@@ -10,6 +10,7 @@ function fixture() {
   mkdirSync(join(root, "scripts")); mkdirSync(join(root, "bin"));
   copyFileSync(resolve(import.meta.dirname, "../../eas-ios-prepare.sh"), join(root, "scripts/eas-ios-prepare.sh"));
   writeFileSync(join(root, ".gitignore"), ".local/\n");
+  writeFileSync(join(root, "scripts/eas-ios-readiness.mjs"), "process.exit(process.env.READINESS_FAIL ? 19 : 0);");
   writeFileSync(join(root, "marker"), "original");
   writeFileSync(join(root, "bin/pnpm"), '#!/bin/bash\nif [[ -n "$MUTATE" ]]; then echo changed >> marker; fi\nif [[ -n "$FAIL_MATCH" && "$*" == *"$FAIL_MATCH"* ]]; then echo intentional-test-failure; exit 17; fi\n');
   execFileSync("chmod", ["+x", join(root, "bin/pnpm")]);
@@ -43,6 +44,12 @@ describe("direct iOS release preparation", () => {
     const f = fixture(); const r = f.run("--run-approved", { MUTATE: "1" });
     expect(r.status).toBe(2); expect(r.stderr).toContain("Source changed"); expect(f.launched()).toBe(false);
     expect(existsSync(join(f.root, ".local/calls"))).toBe(false);
+  });
+  it("stops before checks or approval when release account readiness fails", () => {
+    const f = fixture(); const r = f.run("--run-approved", { READINESS_FAIL: "1" });
+    expect(r.status).toBe(19); expect(f.launched()).toBe(false);
+    expect(existsSync(join(f.root, ".local/calls"))).toBe(false);
+    expect(existsSync(join(f.root, ".local/.eas-build-approved"))).toBe(false);
   });
   it("preserves a pending submission and refuses another build", () => {
     const f = fixture(); mkdirSync(join(f.root, ".local")); writeFileSync(join(f.root, ".local/.eas-submit-only"), "pending");

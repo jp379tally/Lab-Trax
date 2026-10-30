@@ -16,7 +16,8 @@
     "test:e2e:provider-isolation": "playwright test e2e/provider-practice-isolation.spec.ts",
     "ios:check": "bash scripts/eas-ios-prepare.sh --check",
     "ios:release": "bash scripts/eas-ios-prepare.sh --run-approved",
-    "ios:status": "bash scripts/eas-ios-build.sh --status"
+    "ios:status": "bash scripts/eas-ios-build.sh --status",
+    "ios:ready": "node scripts/eas-ios-readiness.mjs"
   },
   "private": true,
   "devDependencies": {
