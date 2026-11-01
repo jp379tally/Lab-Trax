@@ -320,19 +320,19 @@
 .lab-dash [data-testid="dashboard-summary"] > button,
 .lab-dash [data-testid="dashboard-today-sales"].bg-card.border {
   box-sizing: border-box;
-  border: 2px solid #64748b;
+  border: 3px solid #334155;
   border-radius: 0.5rem;
-  box-shadow: 0 2px 5px rgb(15 23 42 / 8%);
+  box-shadow: 0 3px 8px rgb(15 23 42 / 10%);
 }
 
 .lab-dash .dash-section-danger,
 .lab-dash [data-testid="dashboard-summary"] > .border-red-200 {
-  border-color: #f87171;
+  border-color: #dc2626;
 }
 
 .lab-dash .dash-section-info,
 .lab-dash [data-testid="dashboard-summary"] > .border-blue-200 {
-  border-color: #3b82f6;
+  border-color: #2563eb;
 }
 
 .lab-dash [data-testid="dashboard-summary"] > button:hover {
@@ -343,7 +343,7 @@
 
 .lab-dash .dash-section > header {
   background-color: hsl(var(--secondary) / 0.7);
-  border-bottom: 1px solid #94a3b8;
+  border-bottom: 2px solid #64748b;
   padding-top: 0.625rem;
   padding-bottom: 0.625rem;
   border-top-left-radius: 0.375rem;
@@ -351,9 +351,9 @@
 }
 
 .lab-dash .dash-section > header:hover { background-color: hsl(var(--secondary)); }
-.lab-dash .dash-section-danger > header { border-color: #fca5a5; background-color: hsl(var(--destructive) / 0.06); }
+.lab-dash .dash-section-danger > header { border-color: #ef4444; background-color: hsl(var(--destructive) / 0.06); }
 .lab-dash .dash-section-danger > header:hover { background-color: hsl(var(--destructive) / 0.1); }
-.lab-dash .dash-section-info > header { border-color: #93c5fd; background-color: rgb(59 130 246 / 6%); }
+.lab-dash .dash-section-info > header { border-color: #3b82f6; background-color: rgb(59 130 246 / 6%); }
 .lab-dash .dash-section-info > header:hover { background-color: rgb(59 130 246 / 10%); }
 
 .lab-dash .dash-section > header h2,
@@ -367,19 +367,19 @@
   margin: -0.75rem -0.75rem 0.75rem;
   padding: 0.625rem 0.75rem;
   background-color: hsl(var(--secondary) / 0.7);
-  border-bottom: 1px solid #94a3b8;
+  border-bottom: 2px solid #64748b;
   border-radius: 0.375rem 0.375rem 0 0;
 }
 
 .lab-dash [data-testid="exception-cases-card"] ul > li > button {
-  border: 1px solid #94a3b8;
+  border: 2px solid #64748b;
   border-radius: 0.375rem;
 }
 
 /* Keep the upload zones' drag, success, and error colors in control. */
 .lab-dash [data-testid="rx-drop-zone"][data-idle="true"],
 .lab-dash [data-testid="unassigned-documents-card"] .border-dashed:not(.border-primary) {
-  border: 2px dashed #94a3b8;
+  border: 2px dashed #64748b;
   border-radius: 0.375rem;
   background-color: hsl(var(--muted));
 }
@@ -455,3 +455,4 @@
     grid-column: 1 / -1;
   }
 }
+
