@@ -249,6 +249,50 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     ]);
   });
 
+  it("reports invalid provider credentials without repeating the same failure across models", async () => {
+    mockCreate.mockRejectedValue({ status: 401, code: "invalid_api_key", message: "SYNTHETIC_PRIVATE_PROVIDER_MESSAGE" });
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(result.status).toBe(503);
+    expect(result.body.code).toBe("AI_CONFIGURATION_ERROR");
+    expect(result.body.error).toMatch(/administrator/);
+    expect(JSON.stringify(result.body)).not.toContain("SYNTHETIC_PRIVATE_PROVIDER_MESSAGE");
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports exhausted quota without retrying other models", async () => {
+    mockCreate.mockRejectedValue({ status: 429, error: { code: "insufficient_quota" } });
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(result.status).toBe(503);
+    expect(result.body.code).toBe("AI_QUOTA_UNAVAILABLE");
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hide a credential failure behind an earlier model timeout", async () => {
+    mockCreate.mockRejectedValueOnce(Object.assign(new Error("timeout"), { name: "APIConnectionTimeoutError" }));
+    mockCreate.mockRejectedValueOnce({ status: 401 });
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(result.status).toBe(503);
+    expect(result.body.code).toBe("AI_CONFIGURATION_ERROR");
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains model fallback for a model-specific permission failure", async () => {
+    mockCreate.mockRejectedValueOnce({ status: 403 });
+    mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Synthetic Fixture" }));
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(result.status).toBe(200);
+    expect(result.body.data.patientName).toBe("Synthetic Fixture");
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("distinguishes unavailable models after exhausting the existing fallback chain", async () => {
+    mockCreate.mockRejectedValue({ status: 404, code: "model_not_found" });
+    const result = await postAsUser("/api/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(result.status).toBe(503);
+    expect(result.body.code).toBe("AI_MODEL_UNAVAILABLE");
+    expect(mockCreate.mock.calls.map(([params]) => params.model)).toEqual(["gpt-5.4", "gpt-5", "gpt-5-mini"]);
+  });
+
   it("returns 500 when every model in the chain fails", async () => {
     mockCreate.mockRejectedValue(new Error("proxy down"));
 

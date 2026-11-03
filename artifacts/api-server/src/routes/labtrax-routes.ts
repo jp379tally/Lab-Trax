@@ -92,6 +92,7 @@ import {
 import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
 import { PdfConversionError, MAX_RX_PDF_PAGES } from "../lib/prescription-limits";
 import { boundedOperation } from "../lib/bounded-operation";
+import { prescriptionAiFailure } from "../lib/prescription-ai-error";
 import { timeRequestStage } from "../middlewares/request-performance";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -4341,7 +4342,7 @@ export async function registerRoutes(): Promise<IRouter> {
     res.once("close", disconnect);
     try {
       const openai = getOpenAIClient();
-      if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
+      if (!openai) return res.status(503).json({ success: false, code: "AI_NOT_CONFIGURED", error: "AI integrations are not configured." });
 
       const requestStartedAt = Date.now();
       const { imageBase64, additionalImages, fast } = req.body;
@@ -4621,14 +4622,16 @@ Important rules:
         } catch (modelErr: any) {
           if (controller.signal.aborted) throw controller.signal.reason;
           lastModelErr = modelErr;
+          const failure = prescriptionAiFailure(modelErr);
           modelTimedOut =
             modelTimedOut ||
             modelErr?.name === "APIConnectionTimeoutError" ||
             /timed?\s*out|timeout|aborted/i.test(String(modelErr?.message ?? ""));
           req.log.warn(
-            { model, fast, durationMs: Date.now() - modelStartedAt, errorType: modelErr?.name ?? "Error" },
-            "AI analyze-prescription: model failed, trying next"
+            { model, fast, durationMs: Date.now() - modelStartedAt, ...failure.diagnostics, tryNextModel: failure.tryNextModel },
+            "AI analyze-prescription: model failed"
           );
+          if (!failure.tryNextModel) return res.status(failure.status).json(failure.body);
         }
       }
       if (!response) {
@@ -4754,8 +4757,9 @@ Important rules:
       if (controller.signal.aborted) {
         return res.status(504).json({ success: false, error: "AI analysis timed out. Try again or enter the details manually. No case was created by this analysis." });
       }
-      req.log.error({ errorType: err?.name ?? "Error" }, "AI analyze-prescription error");
-      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again." });
+      const failure = prescriptionAiFailure(err);
+      req.log.error(failure.diagnostics, "AI analyze-prescription error");
+      return res.status(failure.status).json(failure.body);
     } finally {
       clearTimeout(deadline);
       res.off("close", disconnect);
