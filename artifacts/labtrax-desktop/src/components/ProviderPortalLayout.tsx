@@ -6,6 +6,7 @@ import { ProviderMyAccount } from "@/components/provider/ProviderMyAccount";
 import { ProviderBilling } from "@/components/provider/ProviderBilling";
 import { ProviderMessageLab } from "@/components/provider/ProviderMessageLab";
 import { ProviderStats } from "@/components/provider/ProviderStats";
+import { ProviderSupportAssistant } from "@/components/provider/ProviderSupportAssistant";
 import { apiFetch, setProviderOrganizationId } from "@/lib/api";
 import { providerStartupRequest } from "@/lib/provider-startup-request";
 import { ProviderContentBoundary } from "@/components/provider/ProviderContentBoundary";
@@ -26,7 +27,7 @@ type ProviderCase = LabCase & {
   openInvoiceAmount?: number | null;
 };
 
-type Tab = "dashboard" | "account" | "billing" | "message" | "stats" | "settings";
+type Tab = "dashboard" | "account" | "billing" | "message" | "stats" | "settings" | "support";
 
 interface NavItemProps {
   tab: Tab;
@@ -94,6 +95,14 @@ export function ProviderPortalLayout({
   onProviderSwitch,
 }: ProviderPortalLayoutProps) {
   const { user, logout } = useAuth();
+  const [supportEnabled, setSupportEnabled] = useState(false);
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ enabled: boolean }>("/support-assistant/config")
+      .then(config => { if (active) setSupportEnabled(config.enabled === true); })
+      .catch(() => { /* Feature stays hidden until enabled by the server. */ });
+    return () => { active = false; };
+  }, []);
   const creator = useCreatorAccess();
   const [providerOrganizations, setProviderOrganizations] = useState<ProviderOrganization[]>([]);
   const [providerMembershipRoles, setProviderMembershipRoles] = useState<Record<string, string>>({});
@@ -423,6 +432,7 @@ export function ProviderPortalLayout({
     { tab: "billing", icon: "💳", label: "View and Pay My Bill" },
     { tab: "message", icon: "✉️", label: "Message My Lab" },
     { tab: "stats", icon: "📊", label: "Stats" },
+    ...(supportEnabled ? [{ tab: "support" as const, icon: "💬", label: "AI Support" }] : []),
   ];
 
   return (
@@ -611,6 +621,9 @@ export function ProviderPortalLayout({
             <ProviderMessageLab cases={cases} casesError={casesError} />
           )}
           {activeTab === "stats" && selectedProviderId && <ProviderStats />}
+          {activeTab === "support" && supportEnabled && selectedProviderId && (
+            <ProviderSupportAssistant key={`${user?.id}:${selectedProviderId}`} providerOrganizationId={selectedProviderId} />
+          )}
           {!selectedProviderId && activeTab !== "settings" && (
             <div role="status" className="rounded-md border border-border bg-card p-6 text-sm space-y-3">
               <h2 className="font-semibold">{navItems.find((item) => item.tab === activeTab)?.label}</h2>
