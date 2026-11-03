@@ -31,6 +31,7 @@ import {
 import { ToothActionDialog, type ToothActionPayload } from "./ToothActionDialog";
 import { apiFetch, ApiError } from "@/lib/api";
 import { runPrescriptionAnalysis, validatePrescriptionPageCount } from "@/lib/prescription-analysis";
+import { createRetryableResource } from "@/lib/retryable-resource";
 import { prescriptionSourceIdentity } from "@/lib/prescription-source-identity";
 import { prescriptionReviewContext } from "@/lib/prescription-review-context";
 import type {
@@ -494,23 +495,17 @@ export async function imageToAnalysisDataUrl(file: File): Promise<string> {
   }
 }
 
-let pdfjsReady: Promise<typeof import("pdfjs-dist")> | null = null;
-async function getPdfjs() {
-  if (!pdfjsReady) {
-    pdfjsReady = (async () => {
-      const pdfjs = await import("pdfjs-dist");
-      // Vite must serve the worker through its worker pipeline in development;
-      // a plain ?url import points at the raw @fs asset and can fail in previews.
-      const workerModule = import.meta.env.DEV
-        ? await import("pdfjs-dist/build/pdf.worker.min.mjs?worker&url")
-        : await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
-      const worker = workerModule.default;
-      pdfjs.GlobalWorkerOptions.workerSrc = worker;
-      return pdfjs;
-    })();
-  }
-  return pdfjsReady;
-}
+const getPdfjs = createRetryableResource(async () => {
+  const pdfjs = await import("pdfjs-dist");
+  // Vite must serve the worker through its worker pipeline in development;
+  // a plain ?url import points at the raw @fs asset and can fail in previews.
+  const workerModule = import.meta.env.DEV
+    ? await import("pdfjs-dist/build/pdf.worker.min.mjs?worker&url")
+    : await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+  const worker = workerModule.default;
+  pdfjs.GlobalWorkerOptions.workerSrc = worker;
+  return pdfjs;
+});
 
 async function pdfToJpegDataUrls(
   file: File,
