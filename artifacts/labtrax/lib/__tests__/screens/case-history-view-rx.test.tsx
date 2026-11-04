@@ -190,9 +190,16 @@ describe("CaseDetailScreen — View Rx on returned-case history entries", () => 
     expect(getAllByText(/08\/14\/2026/).length).toBeGreaterThan(0);
     const separators = queryAllByTestId("history-date-separator");
     expect(separators).toHaveLength(2);
-    expect(flatten(separators[0].props.style)).toMatchObject({
-      borderTopWidth: 2,
-    });
+    for (const separator of separators) {
+      expect(flatten(separator.props.style)).toMatchObject({
+        height: 3,
+        borderRadius: 1.5,
+        shadowOffset: { width: 0, height: 5 },
+        shadowOpacity: 0.3,
+        shadowRadius: 6,
+        elevation: 6,
+      });
+    }
   });
 
   it("shows actor and time only in event metadata, including around local midnight", async () => {
