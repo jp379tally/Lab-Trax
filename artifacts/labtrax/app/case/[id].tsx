@@ -1323,6 +1323,7 @@ function SelectRow({
   colors,
   testID,
   valueTextStyle,
+  labelTextStyle,
   disabled = false,
   stacked = false,
 }: {
@@ -1334,12 +1335,20 @@ function SelectRow({
   colors: ThemeColors;
   testID?: string;
   valueTextStyle?: React.ComponentProps<typeof Text>["style"];
+  labelTextStyle?: React.ComponentProps<typeof Text>["style"];
   disabled?: boolean;
   stacked?: boolean;
 }) {
   return (
     <View style={styles.editRow}>
-      <Text style={stacked ? [caseDetailFieldStyles.heading, { color: colors.text }] : styles.editLabel}>{label}</Text>
+      <Text
+        style={[
+          stacked ? [caseDetailFieldStyles.heading, { color: colors.text }] : styles.editLabel,
+          labelTextStyle,
+        ]}
+      >
+        {label}
+      </Text>
       <Pressable
         style={[styles.selectValue, stacked && caseDetailFieldStyles.control]}
         onPress={onPress}
@@ -2008,8 +2017,8 @@ export default function CaseDetailScreen() {
       ? (Array.isArray(recordPaymentInvoiceId) ? recordPaymentInvoiceId[0] : recordPaymentInvoiceId) || null
       : null;
   const insets = useSafeAreaInsets();
-  const { colors } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [active, setActive] = useState<SectionKey>(payDeepLinkInvoiceId ? "invoice" : "overview");
   const [presentedCaseId, setPresentedCaseId] = useState(id);
@@ -3005,20 +3014,24 @@ export default function CaseDetailScreen() {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.tabsRow}
         >
-          {SECTIONS.map((s) => {
+          {SECTIONS.map((s, index) => {
             const on = s.key === active;
             return (
               <Pressable
                 key={s.key}
                 onPress={() => setActive(s.key)}
-                style={[styles.tab, on && styles.tabActive]}
+                style={[
+                  styles.tab,
+                  index > 0 && styles.tabJoined,
+                  on && styles.tabActive,
+                ]}
                 testID={`section-tab-${s.key}`}
                 accessibilityState={{ selected: on }}
               >
                 <Ionicons
                   name={s.icon}
                   size={15}
-                  color={on ? colors.textInverse : colors.textSecondary}
+                  color={on ? colors.tint : colors.textSecondary}
                 />
                 <Text style={[styles.tabLabel, on && styles.tabLabelActive]}>
                   {s.label}
@@ -4695,6 +4708,7 @@ function CaseHeaderLocator({
               <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: 170, minWidth: 0 }}>
                 <SelectRow
                   label="Move to station"
+                  labelTextStyle={styles.locateSelectLabel}
                   valueLabel={locateTargetLabel ?? "Select station…"}
                   valueTextStyle={{ flexShrink: 1, minWidth: 0 }}
                   onPress={() => {
@@ -11366,7 +11380,8 @@ function EmptyState({
 
 type Styles = ReturnType<typeof makeStyles>;
 
-function makeStyles(c: ThemeColors) {
+function makeStyles(c: ThemeColors, isDark = false) {
+  const sectionOutline = isDark ? c.sectionBorder : c.casesHeader;
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
     caseBodyWithActionBar: { flex: 1 },
@@ -11421,13 +11436,13 @@ function makeStyles(c: ThemeColors) {
     },
     sharedSaveBannerText: { ...Typography.caption, color: c.textSecondary },
     tabsWrap: {
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: c.border,
+      borderBottomWidth: 2,
+      borderBottomColor: sectionOutline,
     },
     tabsRow: {
       paddingHorizontal: Spacing.md,
-      paddingBottom: Spacing.sm,
-      gap: Spacing.sm,
+      paddingBottom: 0,
+      gap: 0,
     },
     tab: {
       flexDirection: "row",
@@ -11435,12 +11450,25 @@ function makeStyles(c: ThemeColors) {
       gap: Spacing.xs,
       paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.sm,
-      borderRadius: Radius.full,
+      minHeight: 44,
+      justifyContent: "center",
+      borderWidth: 2,
+      borderColor: sectionOutline,
+      borderTopLeftRadius: Radius.md,
+      borderTopRightRadius: Radius.md,
+      borderBottomLeftRadius: 0,
+      borderBottomRightRadius: 0,
       backgroundColor: c.surfaceAlt,
     },
-    tabActive: { backgroundColor: c.tint },
+    // Share the adjoining edge without adding a gutter or doubling its weight.
+    tabJoined: { marginLeft: -2 },
+    tabActive: {
+      backgroundColor: c.surface,
+      borderColor: c.tint,
+      zIndex: 1,
+    },
     tabLabel: { ...Typography.captionMedium, color: c.textSecondary },
-    tabLabelActive: { color: c.textInverse },
+    tabLabelActive: { color: c.tint },
     body: { padding: Spacing.lg, paddingBottom: Spacing.huge, gap: Spacing.md },
     sectionGap: { gap: Spacing.md },
     caseActionRow: {
@@ -11721,10 +11749,16 @@ function makeStyles(c: ThemeColors) {
       borderTopColor: c.border,
     },
     historyDateSeparator: {
-      borderTopWidth: 2,
-      borderTopColor: c.border,
+      height: 3,
+      borderRadius: 1.5,
+      backgroundColor: sectionOutline,
       marginHorizontal: Spacing.lg,
       marginTop: Spacing.md,
+      shadowColor: c.casesHeader,
+      shadowOffset: { width: 0, height: 5 },
+      shadowOpacity: 0.3,
+      shadowRadius: 6,
+      elevation: 6,
     },
     historyDayHeader: {
       ...Typography.h3,
@@ -11821,6 +11855,7 @@ function makeStyles(c: ThemeColors) {
     editBtnText: { ...Typography.captionSemibold, color: c.tint },
     editRow: { paddingVertical: Spacing.xs + 2, gap: Spacing.xs },
     editLabel: { ...Typography.caption, color: c.textSecondary },
+    locateSelectLabel: { alignSelf: "stretch", textAlign: "center" },
     dueTimeSection: { paddingVertical: Spacing.xs + 2, gap: Spacing.sm },
     checkboxRow: {
       flexDirection: "row",
