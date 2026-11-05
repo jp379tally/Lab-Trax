@@ -19,6 +19,7 @@ import {
   inspectHarnessFile,
   parseHarnessSource,
   summarizeCollectOutput,
+  collectProjectTests,
 } from "../check-test-harness.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +37,31 @@ afterEach(() => {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
   }
 });
+
+it.skipIf(process.platform === "win32")("collection timeout terminates descendant workers and closes their output pipes", async () => {
+  const root = tempDir();
+  mkdirSync(join(root, COLLECT_PROJECT.dir), { recursive: true });
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  // A pnpm-shaped launcher with a long-lived descendant sharing its pipes.
+  // Killing only the launcher leaves that worker running and delays close.
+  writeFileSync(join(bin, "pnpm"), `#!${process.execPath}\n` + `
+    const { spawn } = require('node:child_process');
+    spawn(process.execPath, ['-e', 'setInterval(() => {}, 50); setTimeout(() => process.exit(), 4000)'], { stdio: 'inherit' });
+    setInterval(() => {}, 50);
+  `, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = `${bin}:${previousPath}`;
+    const started = performance.now();
+    const result = await collectProjectTests(root, 1000);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/timed out/);
+    expect(performance.now() - started).toBeLessThan(2500);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+}, 10000);
 
 const CLEAN_SETUP = `import { vi } from "vitest";
 

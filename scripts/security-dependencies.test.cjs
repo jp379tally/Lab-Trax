@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createRequire } = require("node:module");
 const { generateKeyPairSync } = require("node:crypto");
-const { readFileSync, readdirSync } = require("node:fs");
+const fs = require("node:fs");
+const { readFileSync, readdirSync } = fs;
 const { join } = require("node:path");
 const { createServer, get } = require("node:http");
 const { once } = require("node:events");
@@ -10,6 +11,8 @@ const { spawnSync } = require("node:child_process");
 const { runInNewContext } = require("node:vm");
 const { pathToFileURL } = require("node:url");
 const { EventEmitter } = require("node:events");
+const { tmpdir } = require("node:os");
+const { setTimeout: delay } = require("node:timers/promises");
 
 // Exercise installed transitive packages, not the temporary patch sources.
 const root = join(__dirname, "..");
@@ -50,7 +53,7 @@ test("node-forge audit exception cannot accept failed or incomplete audit comman
   }), true);
 });
 
-test("audit policy accepts only the installed, regression-tested node-forge source patch", () => {
+test("audit policy rejects the obsolete node-forge exception now that upstream fixes exist", () => {
   const advisory = {
     github_advisory_id: "GHSA-86w9-cpqp-85rv",
     module_name: "node-forge",
@@ -65,7 +68,7 @@ test("audit policy accepts only the installed, regression-tested node-forge sour
     patch: "synthetic source patch",
     regressions: "node-forge rejects extra DigestAlgorithm elements and invalid NULL parameters",
   };
-  assert.equal(evaluateAuditReport({ advisories: { accepted: advisory } }, evidence).ok, true);
+  assert.equal(evaluateAuditReport({ advisories: { accepted: advisory } }, evidence).ok, false);
   assert.equal(evaluateAuditReport({
     advisories: {
       accepted: advisory,
@@ -136,7 +139,7 @@ test("compressed JSON with trailing bytes cannot crash the request parser", { ti
 });
 const patchedVersions = {
   braces: "3.0.3",
-  "node-forge": "1.4.0",
+  "node-forge": "1.4.1",
   "sprintf-js": "1.1.3",
   "http-cache-semantics": "4.3.0",
 };
@@ -275,12 +278,12 @@ test("lockfile retains patched releases, native binaries, and all source patches
     sharp: "0.35.5",
     "fast-copy": "4.1.2",
     "postcss-selector-parser": "7.1.6",
-    "follow-redirects": "1.16.1",
+    "follow-redirects": "1.16.2",
     "markdown-it": "14.3.3",
   })) {
     assert.ok(lockfile.includes(`  ${name}@${version}:`), `${name} patched version`);
   }
-  for (const name of ["braces@3.0.3", "node-forge@1.4.0", "sprintf-js@1.1.3", "http-cache-semantics@4.3.0"]) {
+  for (const name of ["braces@3.0.3", "node-forge@1.4.1", "sprintf-js@1.1.3", "http-cache-semantics@4.3.0"]) {
     assert.ok(lockfile.includes(`path: patches/${name}.patch`), `${name} tracked patch`);
     assert.ok(lockfile.includes(`${name}(patch_hash=`), `${name} patched dependency edge`);
   }
@@ -291,12 +294,12 @@ test("lockfile retains patched releases, native binaries, and all source patches
   assert.match(lockfile, /'@img\/sharp-libvips-linux-x64': 1\.3\.4/);
 });
 
-test("follow-redirects strips credentials across origins with object and array headers", { timeout: 10000 }, async (t) => {
+test("follow-redirects strips credentials across origins with object, array and cross-realm options", { timeout: 10000 }, async (t) => {
   // Resolve through axios, the API's actual redirect consumer.
   const twilioRequire = createRequire(requireApi.resolve("twilio"));
   const axiosRequire = createRequire(twilioRequire.resolve("axios"));
   const redirects = axiosRequire("follow-redirects");
-  assert.equal(axiosRequire("follow-redirects/package.json").version, "1.16.1");
+  assert.equal(axiosRequire("follow-redirects/package.json").version, "1.16.2");
   const collector = createServer((req, res) => res.end(JSON.stringify(req.headers)));
   collector.listen(0, "127.0.0.1");
   await once(collector, "listening");
@@ -326,12 +329,17 @@ test("follow-redirects strips credentials across origins with object and array h
     "X-Token": "public-value",
     Secret: "public-value",
   };
-  for (const input of [headers, Object.entries(headers).flat()]) {
+  for (const [input, sensitiveHeaders] of [
+    [headers, ["X-Api^Key", "X-Token|Secret", "X-Control-Key"]],
+    [Object.entries(headers).flat(), ["X-Api^Key", "X-Token|Secret", "X-Control-Key"]],
+    [headers, runInNewContext('["X-Api^Key", "X-Token|Secret", "X-Control-Key"]')],
+    [Object.entries(headers).flat(), runInNewContext('["X-Api^Key", "X-Token|Secret", "X-Control-Key"]')],
+  ]) {
     const received = await new Promise((resolve, reject) => {
       const request = redirects.http.get({
         hostname: "127.0.0.1", port: origin.address().port, path: "/",
         headers: Array.isArray(input) ? [...input] : { ...input },
-        sensitiveHeaders: ["X-Api^Key", "X-Token|Secret", "X-Control-Key"],
+        sensitiveHeaders,
       }, async (res) => {
         try {
           const chunks = [];
@@ -356,6 +364,70 @@ test("follow-redirects strips credentials across origins with object and array h
     assert.equal(received["x-token"], "public-value", "regex alternatives must not strip unrelated headers");
     assert.equal(received.secret, "public-value");
   }
+});
+
+function archiveGlobDependencies() {
+  const archiveRequire = createRequire(requireApi.resolve("archiver"));
+  const utilsRequire = createRequire(archiveRequire.resolve("archiver-utils"));
+  const glob = utilsRequire("glob");
+  const globRequire = createRequire(utilsRequire.resolve("glob"));
+  return { glob, minimatch: globRequire("minimatch") };
+}
+
+test("archive glob cancellation stops promise and stream directory traversal", { timeout: 10000 }, async () => {
+  const { glob } = archiveGlobDependencies();
+  const fixture = fs.mkdtempSync(join(tmpdir(), "security-glob-cancel-"));
+  try {
+    const expected = [];
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) {
+      fs.mkdirSync(join(fixture, String(a), String(b)), { recursive: true });
+      expected.push(`${a}/${b}`);
+    }
+    for (const mode of ["promise", "stream"]) {
+      const controller = new AbortController();
+      let readsAfterAbort = 0;
+      const options = {
+        cwd: fixture, signal: controller.signal,
+        fs: { ...fs, readdir(path, options, callback) {
+          if (controller.signal.aborted) readsAfterAbort++;
+          fs.readdir(path, options, (error, entries) => {
+            controller.abort(new Error("synthetic glob cancellation"));
+            callback(error, entries);
+          });
+        } },
+      };
+      if (mode === "promise") {
+        await assert.rejects(glob.glob("**/*", options), /synthetic glob cancellation/);
+      } else {
+        await new Promise((resolve, reject) => {
+          const stream = glob.globStream("**/*", options);
+          stream.on("error", error => {
+            try { assert.match(error.message, /synthetic glob cancellation/); resolve(); }
+            catch (error) { reject(error); }
+          });
+          stream.on("data", () => {});
+          stream.on("end", () => reject(new Error("cancelled stream did not reject")));
+        });
+      }
+      // Let already-scheduled callbacks run: no new directory work may start.
+      await delay(100);
+      assert.equal(readsAfterAbort, 0, `${mode} traversal must stop after cancellation`);
+    }
+    assert.deepEqual((await glob.glob("*/*", { cwd: fixture })).sort(), expected);
+    assert.deepEqual(glob.globSync("*/*", { cwd: fixture }).sort(), expected);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("archive minimatch bounds parent-globstar preprocessing amplification", () => {
+  const { minimatch: { Minimatch } } = archiveGlobDependencies();
+  const options = { optimizationLevel: 2, braceExpandMax: 64 };
+  const matcher = new Minimatch("x/**/../y/".repeat(8) + "z", options);
+  assert.ok(matcher.globParts.length <= 64, "preprocessing must honor the expansion limit");
+  const ordinary = new Minimatch("reports/**/*.pdf", options);
+  assert.equal(ordinary.match("reports/2026/summary.pdf"), true);
+  assert.equal(ordinary.match("reports/2026/summary.txt"), false);
 });
 
 test("markdown-it bounds all reported pathological scans and preserves normal rendering", () => {
@@ -852,7 +924,7 @@ test("node-forge rejects forged DigestAlgorithm signatures through every install
     const dependency = entry.dependencies?.["node-forge"] ||
       entry.optionalDependencies?.["node-forge"];
     if (!dependency) continue;
-    assert.match(dependency, /^1\.4\.0\(patch_hash=[a-f0-9]+\)$/);
+    assert.match(dependency, /^1\.4\.1\(patch_hash=[a-f0-9]+\)$/);
     const [, name, version] = snapshot.match(/^(@[^/]+\/[^@]+|[^@]+)@([^(:]+)/);
     const prefix = `${name.replace("/", "+")}@${version}`;
     const directories = installed.filter(dir => dir === prefix || dir.startsWith(`${prefix}_`));
