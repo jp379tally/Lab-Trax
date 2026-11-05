@@ -341,6 +341,9 @@ export async function collectProjectTests(
       cwd,
       env: { ...process.env, CI: "1" },
       stdio: ["ignore", "pipe", "pipe"],
+      // pnpm starts Vitest and its workers as descendants. Give collection its
+      // own POSIX process group so a timeout stops the whole test run.
+      detached: process.platform !== "win32",
     });
 
     let output = "";
@@ -353,7 +356,17 @@ export async function collectProjectTests(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      if (process.platform !== "win32" && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+            child.kill("SIGKILL");
+          }
+        }
+      } else {
+        child.kill("SIGKILL");
+      }
     }, timeoutMs);
 
     child.on("error", (error) => {

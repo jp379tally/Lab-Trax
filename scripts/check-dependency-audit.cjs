@@ -3,13 +3,6 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const ACCEPTED_SOURCE_PATCH = {
-  advisoryId: "GHSA-86w9-cpqp-85rv",
-  packageName: "node-forge",
-  packageVersion: "1.4.0",
-  regressionName: "node-forge rejects extra DigestAlgorithm elements and invalid NULL parameters",
-};
-
 const ACCEPTED_DEEPMERGE_PATCH = {
   advisoryId: "GHSA-gcqx-w48m-w2h4", packageName: "deepmerge", packageVersion: "4.3.1",
   regressionName: "deepmerge preserves own data keys without poisoning result prototypes",
@@ -23,15 +16,13 @@ function evaluateAuditReport(report, evidence) {
   const rejected = [];
   for (const advisory of advisories) {
     const findings = advisory.findings ?? [];
-    const policy = advisory.github_advisory_id === ACCEPTED_DEEPMERGE_PATCH.advisoryId
-      ? ACCEPTED_DEEPMERGE_PATCH : ACCEPTED_SOURCE_PATCH;
-    const isForge = policy === ACCEPTED_SOURCE_PATCH;
-    const patch = isForge ? evidence.patch : evidence.deepmergePatch;
+    const policy = ACCEPTED_DEEPMERGE_PATCH;
+    const patch = evidence.deepmergePatch;
     const isVerifiedSourcePatch =
       advisory.github_advisory_id === policy.advisoryId &&
       advisory.module_name === policy.packageName &&
-      advisory.severity === (isForge ? "high" : "low") &&
-      advisory.vulnerable_versions === (isForge ? "<=1.4.0" : ">=4.2.0 <=4.3.1") &&
+      advisory.severity === "low" &&
+      advisory.vulnerable_versions === ">=4.2.0 <=4.3.1" &&
       advisory.patched_versions === "<0.0.0" && findings.length > 0 &&
       findings.every(finding => finding.version === policy.packageVersion) &&
       evidence.workspace.includes(`${policy.packageName}@${policy.packageVersion}: patches/${policy.packageName}@${policy.packageVersion}.patch`) &&
@@ -86,10 +77,6 @@ function main() {
   const evidence = {
     workspace: readFileSync(path.join(ROOT, "pnpm-workspace.yaml"), "utf8"),
     lockfile: readFileSync(path.join(ROOT, "pnpm-lock.yaml"), "utf8"),
-    patch: readFileSync(
-      path.join(ROOT, "patches/node-forge@1.4.0.patch"),
-      "utf8",
-    ),
     regressions: readFileSync(
       path.join(ROOT, "scripts/security-dependencies.test.cjs"),
       "utf8",
