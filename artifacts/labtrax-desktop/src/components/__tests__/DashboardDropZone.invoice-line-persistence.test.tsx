@@ -26,8 +26,11 @@ import type { SessionUser } from "@/lib/api";
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
 const mockApiFetch = vi.fn();
+const mockAuthedMediaFetch = vi.fn();
 vi.mock("@/lib/api", () => ({
   apiFetch: (...args: any[]) => mockApiFetch(...args),
+  apiUrl:(path:string)=>`/api${path}`,
+  authedMediaFetch:(...args:any[])=>mockAuthedMediaFetch(...args),
   createUploadSession: vi.fn(),
   sendUploadChunk: vi.fn(),
   ApiError: class ApiError extends Error {
@@ -393,6 +396,35 @@ async function changeDoctor(container: HTMLElement, name: string) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("DashboardDropZone — hand-added invoice lines across a doctor change", () => {
+  it("keeps the saved case when inbox linking fails and retries only those original document IDs",async()=>{
+    installHandlers();const baseline=mockApiFetch.getMockImplementation()!;let linkAttempts=0;
+    mockApiFetch.mockImplementation((path:string,init?:any)=>{
+      if(path==="/lab-inbox/prepare-intake")return Promise.resolve({labOrganizationId:"lab1",prescriptionDocumentId:"rx",documents:[{id:"rx",fileName:"signed-rx.jpg",mimeType:"image/jpeg",sizeBytes:100},{id:"upper",fileName:"upper.stl",mimeType:"model/stl",sizeBytes:200},{id:"lower",fileName:"lower.ply",mimeType:"model/ply",sizeBytes:300}]});
+      if(path==="/lab-inbox/assign-batch"){
+        linkAttempts++;if(linkAttempts===1)return Promise.reject(new Error("Link response was lost"));
+        return Promise.resolve({caseId:"case-new-1",attachmentIds:["attachment-rx","attachment-upper","attachment-lower"]});
+      }
+      return baseline(path,init);
+    });
+    mockAuthedMediaFetch.mockReset();mockAuthedMediaFetch.mockResolvedValue({ok:true,blob:async()=>new Blob(["synthetic-rx"],{type:"image/jpeg"})});
+    const {container}=renderDropZone();await act(async()=>{await new Promise(resolve=>setTimeout(resolve,100));});
+    await act(async()=>{window.dispatchEvent(new CustomEvent("labtrax:inbox-intake",{detail:{labOrganizationId:"lab1",documentIds:["upper"]}}));});
+    await waitFor(()=>expect(container.querySelector('[data-testid="rx-review-container"]')).toBeTruthy(),{timeout:6000});
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,600));fireEvent.click(findButtonByText(container,/Create case/i));});
+    await waitFor(()=>expect(container.querySelector('[data-testid="inbox-link-retry"]')).toBeTruthy(),{timeout:6000});
+    expect(container.textContent).toContain("Case 25-1000 is saved.");
+    expect(container.querySelector('[data-testid="create-case-btn"]')).toBeNull();
+    await act(async()=>{fireEvent.click(findButtonByText(container,/Retry linking documents/i));});
+    await waitFor(()=>expect(container.textContent).toMatch(/3 existing originals linked/),{timeout:6000});
+    const creates=mockApiFetch.mock.calls.filter(([url,init])=>url==="/cases"&&init?.method==="POST");
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(creates[0][1].body)).toMatchObject({patientFirstName:"Bob",patientLastName:"Anderson",labOrganizationId:"lab1",providerOrganizationId:"provB"});
+    const links=mockApiFetch.mock.calls.filter(([url])=>url==="/lab-inbox/assign-batch");expect(links).toHaveLength(2);
+    for(const [,init] of links)expect(JSON.parse(init.body)).toEqual({caseId:"case-new-1",labOrganizationId:"lab1",documentIds:["rx","upper","lower"]});
+    expect(mockAuthedMediaFetch).toHaveBeenCalledTimes(1);
+    expect(mockApiFetch.mock.calls.some(([url])=>url==="/media/upload"||/\/attachments$|generate-invoice/.test(url))).toBe(false);
+  },20000);
+
   beforeEach(() => {
     installHandlers();
   });

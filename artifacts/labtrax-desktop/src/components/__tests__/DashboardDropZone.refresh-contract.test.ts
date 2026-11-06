@@ -13,9 +13,16 @@ const manualSource = readFileSync(
 );
 
 describe("desktop AI intake post-create refresh contract", () => {
-  it("uses the shared helper in the iTero, ZIP, and Rx success paths", () => {
-    expect(source.match(/await refreshCaseFinanceQueries\(qc\)/g)).toHaveLength(3);
+  it("uses the shared helper in the iTero, ZIP, Rx, and inbox success paths", () => {
+    expect(source.match(/await refreshCaseFinanceQueries\(qc\)/g)).toHaveLength(4);
     expect(source).toMatch(/POST \/api\/cases[\s\S]*?await refreshCaseFinanceQueries\(qc\)/);
+    const inboxStart=source.indexOf("async function finishInboxTransfer(");
+    const inboxEnd=source.indexOf("async function retryInboxLinks(",inboxStart);
+    expect(inboxStart).toBeGreaterThan(-1);
+    expect(inboxEnd).toBeGreaterThan(inboxStart);
+    const inboxPath=source.slice(inboxStart,inboxEnd);
+    expect(inboxPath).toContain("getListLabInboxFilesQueryKey");
+    expect(inboxPath.match(/await refreshCaseFinanceQueries\(qc\)/g)).toHaveLength(1);
     expect(manualSource).toContain("await refreshCaseFinanceQueries(qc)");
     expect(manualSource.indexOf("await refreshCaseFinanceQueries(qc)"))
       .toBeLessThan(manualSource.indexOf("setDuplicateMatches(null)", manualSource.indexOf("onSuccess: async")));
