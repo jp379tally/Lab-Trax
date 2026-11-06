@@ -81,4 +81,25 @@ describe("isolated SDR website receiving route",()=>{
     const h=harness();h.dependencies.ready=vi.fn(async()=>{throw new Error("not ready");});
     expect((await h.send(await payload())).status).toBe(503);expect(h.rows).toHaveLength(0);expect(h.scan).not.toHaveBeenCalled();
   });
+  it("does not hold a database transaction open during scanning or cloud transfer",async()=>{
+    const h=harness();const original=h.dependencies.transaction;let inside=false;
+    h.dependencies.transaction=async(lab,id,work)=>original(lab,id,async tx=>{inside=true;try{return await work(tx);}finally{inside=false;}});
+    h.scan.mockImplementation(async()=>{expect(inside).toBe(false);});
+    h.store.mockImplementation(async()=>{expect(inside).toBe(false);});
+    expect((await h.send(await payload())).status).toBe(201);expect(h.rows).toHaveLength(3);
+  });
+  it("accepts twelve originals and a prescription, without an off-by-one multipart limit",async()=>{
+    const h=harness();const p=await payload();let send=request(h.app).post("/api/lab-inbox/public-intake").set("X-Forwarded-Proto","https").set("Authorization",`Bearer ${token}`).set("Idempotency-Key",p.submissionId).field("payload",JSON.stringify(p)).field("labOrganizationId","lab-test").field("source","sdrdl.com").attach("prescription",pdf,"signed.pdf");
+    for(let i=0;i<12;i++)send=send.attach(`files[${i}]`,stl,`scan-${i}.stl`);
+    const result=await send;expect(result.status).toBe(201);expect(result.body.supportingDocumentIds).toHaveLength(12);expect(h.rows).toHaveLength(13);
+  });
+  it("refuses thirteen originals without accepting a partial group",async()=>{
+    const h=harness();const p=await payload();let send=request(h.app).post("/api/lab-inbox/public-intake").set("X-Forwarded-Proto","https").set("Authorization",`Bearer ${token}`).set("Idempotency-Key",p.submissionId).field("payload",JSON.stringify(p)).field("labOrganizationId","lab-test").field("source","sdrdl.com").attach("prescription",pdf,"signed.pdf");
+    for(let i=0;i<13;i++)send=send.attach(`files[${i}]`,stl,`scan-${i}.stl`);
+    expect((await send).status).toBe(413);expect(h.rows).toHaveLength(0);expect(h.store).not.toHaveBeenCalled();
+  });
+  it("allows a signed prescription with no optional originals",async()=>{
+    const h=harness();const p=await payload();const result=await request(h.app).post("/api/lab-inbox/public-intake").set("X-Forwarded-Proto","https").set("Authorization",`Bearer ${token}`).set("Idempotency-Key",p.submissionId).field("payload",JSON.stringify(p)).field("labOrganizationId","lab-test").field("source","sdrdl.com").attach("prescription",pdf,"signed.pdf");
+    expect(result.status).toBe(201);expect(result.body.supportingDocumentIds).toEqual([]);expect(h.rows).toHaveLength(1);
+  });
 });
