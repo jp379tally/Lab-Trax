@@ -26,8 +26,11 @@ import type { SessionUser } from "@/lib/api";
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
 const mockApiFetch = vi.fn();
+const mockAuthedMediaFetch = vi.fn();
 vi.mock("@/lib/api", () => ({
   apiFetch: (...args: any[]) => mockApiFetch(...args),
+  apiUrl: (path:string)=>`/api${path}`,
+  authedMediaFetch: (...args:any[])=>mockAuthedMediaFetch(...args),
   createUploadSession: vi.fn(),
   sendUploadChunk: vi.fn(),
   ApiError: class ApiError extends Error {
@@ -252,6 +255,32 @@ describe("DashboardDropZone — AI analyze path", () => {
   });
 
   // ── Smoke test ──────────────────────────────────────────────────────────────
+
+  it("reads only the authenticated prescription from an inbox group and lists the untouched scans", async () => {
+    const baseline=mockApiFetch.getMockImplementation()!;
+    mockApiFetch.mockImplementation((path:string,opts?:any)=>{
+      if(path==="/lab-inbox/prepare-intake")return Promise.resolve({labOrganizationId:"lab1",prescriptionDocumentId:"rx",documents:[{id:"rx",fileName:"signed-rx.jpg",mimeType:"image/jpeg",sizeBytes:100},{id:"upper",fileName:"upper.stl",mimeType:"model/stl",sizeBytes:200},{id:"lower",fileName:"lower.ply",mimeType:"model/ply",sizeBytes:300}]});
+      if(path==="/analyze-prescription")return Promise.resolve(VALID_RX_RESPONSE);
+      return baseline(path,opts);
+    });
+    mockAuthedMediaFetch.mockResolvedValue({ok:true,blob:async()=>new Blob(["synthetic-rx"],{type:"image/jpeg"})});
+    const view=renderDropZone();await act(async()=>{await new Promise(r=>setTimeout(r,100));});
+    const zone=view.container.querySelector('[data-testid="rx-drop-zone"]')!;
+    await act(async()=>{fireEvent.drop(zone,{dataTransfer:{files:[],types:["application/x-labtrax-inbox+json"],getData:()=>JSON.stringify({labOrganizationId:"lab1",documentIds:["upper"]})}});});
+    await waitFor(()=>expect(view.container.querySelector('[data-testid="rx-review-container"]')).toBeTruthy(),{timeout:6000});
+    expect(mockAuthedMediaFetch).toHaveBeenCalledTimes(1);expect(mockAuthedMediaFetch).toHaveBeenCalledWith("/api/lab-inbox/rx/file");
+    expect(view.container.textContent).toContain("upper.stl");expect(view.container.textContent).toContain("lower.ply");
+    expect(view.container.textContent).toMatch(/originals.*linked|link.*originals/i);
+    expect(Array.from(view.container.querySelectorAll<HTMLInputElement>("input")).some(input=>input.value.includes("Bob Anderson"))).toBe(true);
+  });
+
+  it("refuses an inbox event from another lab without fetching document bytes", async () => {
+    const view=renderDropZone();await act(async()=>{await new Promise(r=>setTimeout(r,100));});
+    await act(async()=>{window.dispatchEvent(new CustomEvent("labtrax:inbox-intake",{detail:{labOrganizationId:"another-lab",documentIds:["rx"]}}));});
+    expect(mockAuthedMediaFetch).not.toHaveBeenCalled();
+    expect(mockApiFetch.mock.calls.some(call=>call[0]==="/lab-inbox/prepare-intake")).toBe(false);
+    expect(view.container.textContent).toMatch(/same lab|different lab/i);
+  });
 
   it("renders the idle drop zone without crashing", async () => {
     const { container } = renderDropZone();

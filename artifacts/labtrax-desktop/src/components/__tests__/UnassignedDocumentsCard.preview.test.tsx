@@ -195,6 +195,26 @@ async function clickView(filename: string) {
 }
 
 describe("UnassignedDocumentsCard — View opens an in-app preview window", () => {
+  it("offers an accessible new-case action carrying only inbox IDs, not private URLs", async () => {
+    const file=makeFile({});inboxFiles=[file];const listener=vi.fn();
+    window.addEventListener("labtrax:inbox-intake",listener);
+    try {
+      renderCard();fireEvent.click(await screen.findByRole("button",{name:"Use in new case"}));
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].detail).toEqual({labOrganizationId:LAB_ORG_ID,documentIds:[file.id]});
+      expect(authedMediaFetch).not.toHaveBeenCalled();
+    }finally{window.removeEventListener("labtrax:inbox-intake",listener);}
+  });
+
+  it("makes an unassigned file draggable with an ID-only LabTrax payload", async () => {
+    const file=makeFile({});inboxFiles=[file];const {container}=renderCard();
+    await screen.findByText(file.originalFilename!);
+    const row=container.querySelector('[draggable="true"]');expect(row).toBeTruthy();
+    const setData=vi.fn();fireEvent.dragStart(row!,{dataTransfer:{setData,effectAllowed:""}});
+    expect(setData).toHaveBeenCalledWith("application/x-labtrax-inbox+json",JSON.stringify({labOrganizationId:LAB_ORG_ID,documentIds:[file.id]}));
+    expect(setData.mock.calls.some(call=>/https?:|storagePath|objectStorageKey/.test(String(call[1])))).toBe(false);
+  });
+
   it("fetches the file via the authenticated media API and opens a preview window", async () => {
     const file = makeFile({ mimeType: "application/pdf" });
     inboxFiles = [file];
