@@ -1261,7 +1261,7 @@ export default function NewCaseScreen() {
               </Pressable>
             </View>}
           </View>
-          <ToothActionSheet allowMarkMissing={false} toothId={assignmentTooth} labOrganizationId={selectedLabId ?? undefined} submitting={submitting}
+          <ToothActionSheet allowMarkMissing={true} toothId={assignmentTooth} labOrganizationId={selectedLabId ?? undefined} submitting={submitting}
             existingLabel={assignmentMultiMode ? undefined : restorations.find((row) => row.assignmentRole && parseChartTeeth(row.toothNumber).has(assignmentTooth ?? ""))?.assignmentRole}
             existingRestorationId={restorations.find((row) => row.assignmentRole && parseChartTeeth(row.toothNumber).has(assignmentTooth ?? ""))?.key}
             existingAssignment={(() => { const row = restorations.find((unit) => unit.assignmentRole && parseChartTeeth(unit.toothNumber).has(assignmentTooth ?? ""));
