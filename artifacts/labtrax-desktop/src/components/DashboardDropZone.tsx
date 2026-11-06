@@ -29,7 +29,8 @@ import {
   resolveAiIntakePrescriptionDueDate,
 } from "@workspace/calendar-date";
 import { ToothActionDialog, type ToothActionPayload } from "./ToothActionDialog";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, ApiError, apiUrl, authedMediaFetch } from "@/lib/api";
+import { createInboxCaseTransfer, INBOX_DRAG_MIME, INBOX_INTAKE_EVENT, parseInboxDragPayload, type InboxDragPayload, type PreparedInboxIntake } from "@/lib/inbox-case-transfer";
 import { runPrescriptionAnalysis, validatePrescriptionPageCount } from "@/lib/prescription-analysis";
 import { prescriptionSourceIdentity } from "@/lib/prescription-source-identity";
 import { prescriptionReviewContext } from "@/lib/prescription-review-context";
@@ -38,7 +39,7 @@ import type {
   PreviewDraftInvoiceInput,
   PreviewDraftInvoiceResultData,
 } from "@workspace/api-client-react";
-import { useGetCatalogTree, getGetCatalogTreeQueryKey } from "@workspace/api-client-react";
+import { useGetCatalogTree, getGetCatalogTreeQueryKey, getListLabInboxFilesQueryKey } from "@workspace/api-client-react";
 import { getCatalogMaterialsForRestoration } from "./CatalogRestorationPicker";
 import type { DoctorMatchCandidate } from "@/lib/types";
 import { uploadMediaFile } from "@/lib/upload-media-file";
@@ -459,6 +460,7 @@ type Phase =
       patientName: string;
     }
   | { kind: "uploading"; message?: string }
+  | { kind: "inboxLinkRetry"; caseId:string; caseNumber:string; message:string }
   | { kind: "done"; message: string }
   | { kind: "error"; message: string };
 
@@ -1172,6 +1174,10 @@ export function DashboardDropZone() {
   }
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [inboxSource,setInboxSource]=useState<PreparedInboxIntake|null>(null);
+  const inboxSourceRef=useRef<PreparedInboxIntake|null>(null);
+  const inboxPreparing=useRef(false);
+  const inboxTransferRef=useRef(createInboxCaseTransfer());
   // Multi-file AI ingestion queue. When 2+ AI-readable files are dropped at
   // once, we walk through each one's Rx-confirm UI in order. `queueRef`
   // holds the files yet to process AFTER the current one; `queueProgress`
@@ -2446,7 +2452,7 @@ export function DashboardDropZone() {
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     dragCounter.current++;
-    if (Array.from(e.dataTransfer.types).includes("Files")) {
+    if (Array.from(e.dataTransfer.types).some(type=>type==="Files"||type===INBOX_DRAG_MIME)) {
       setPhase((p) => (p.kind === "idle" ? { kind: "draggingFile" } : p));
     }
   }, []);
@@ -2822,6 +2828,9 @@ export function DashboardDropZone() {
     queueActiveRef.current = false;
     setQueueProgress(null);
     setZipSource(null);
+    inboxSourceRef.current=null;
+    setInboxSource(null);
+    inboxTransferRef.current=createInboxCaseTransfer();
     setPhase({ kind: "idle" });
     setRxPracticeError(false);
     setRxBarcode("");
@@ -2857,8 +2866,12 @@ export function DashboardDropZone() {
 
   const handleFiles = useCallback(
     (rawFiles: FileList | File[]) => {
+      if(inboxPreparing.current || (inboxSourceRef.current&&!["idle","done","error"].includes(phase.kind)))return;
       const files = Array.from(rawFiles);
       if (files.length === 0) return;
+      inboxSourceRef.current=null;
+      setInboxSource(null);
+      inboxTransferRef.current=createInboxCaseTransfer();
       // Any new user-initiated drop/select supersedes any stale idle
       // timer left over from a previous file's done/error toast.
       clearIdleResetTimer();
@@ -2901,20 +2914,57 @@ export function DashboardDropZone() {
       setZipSource(null);
       setPhase({ kind: "picking", files });
     },
-    [clearIdleResetTimer, dispatchAiFile, runRxAnalyze, runZipAnalyze],
+    [clearIdleResetTimer, dispatchAiFile, runRxAnalyze, runZipAnalyze,phase.kind],
   );
+
+  const startInboxIntake=useCallback(async(payload:InboxDragPayload)=>{
+    if(inboxPreparing.current||rxAnalysisInFlight.current||!["idle","draggingFile","done","error"].includes(phase.kind))return;
+    if(!labOrg?.id||payload.labOrganizationId!==labOrg.id){setPhase({kind:"error",message:"Use documents from the same lab. This selection belongs to a different lab."});return;}
+    inboxPreparing.current=true;clearIdleResetTimer();setZipSource(null);
+    queueRef.current=[];queueActiveRef.current=false;setQueueProgress(null);
+    inboxTransferRef.current=createInboxCaseTransfer();inboxSourceRef.current=null;setInboxSource(null);
+    setPhase({kind:"uploading",message:"Preparing your existing unassigned documents…"});
+    try {
+      const prepared=await apiFetch<PreparedInboxIntake>("/lab-inbox/prepare-intake",{method:"POST",body:JSON.stringify(payload)});
+      if(prepared.labOrganizationId!==payload.labOrganizationId||!prepared.prescriptionDocumentId)throw new Error("This group needs a readable prescription PDF or photo before using AI intake.");
+      const prescription=prepared.documents.find(d=>d.id===prepared.prescriptionDocumentId);
+      if(!prescription || prescription.sizeBytes>15*1024*1024)throw new Error("Choose a prescription PDF or photo up to 15 MB for review.");
+      inboxSourceRef.current=prepared;setInboxSource(prepared);setRxLabOrgId(prepared.labOrganizationId);
+      // Only the prescription is fetched for editable AI review. Scans,
+      // photographs and videos stay in their existing private storage.
+      const response=await authedMediaFetch(apiUrl(`/lab-inbox/${encodeURIComponent(prescription.id)}/file`));
+      if(!response.ok)throw new Error("Could not open the prescription. The originals remain unassigned.");
+      const blob=await response.blob();if(blob.size>15*1024*1024)throw new Error("This prescription is too large for AI review.");
+      await runRxAnalyze(new File([blob],prescription.fileName,{type:prescription.mimeType}));
+    }catch(error){setPhase({kind:"error",message:error instanceof Error?error.message:"Could not prepare these documents. Nothing was assigned."});}
+    finally{inboxPreparing.current=false;}
+  },[phase.kind,labOrg?.id,clearIdleResetTimer,runRxAnalyze]);
+
+  useEffect(()=>{
+    const listener=(event:Event)=>{
+      if(!(event instanceof CustomEvent))return;
+      const payload=parseInboxDragPayload(JSON.stringify(event.detail));
+      if(payload)void startInboxIntake(payload);
+    };
+    window.addEventListener(INBOX_INTAKE_EVENT,listener);
+    return()=>window.removeEventListener(INBOX_INTAKE_EVENT,listener);
+  },[startInboxIntake]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       dragCounter.current = 0;
-      if (e.dataTransfer.files?.length > 0) {
+      if(Array.from(e.dataTransfer.types).includes(INBOX_DRAG_MIME)){
+        const payload=parseInboxDragPayload(e.dataTransfer.getData(INBOX_DRAG_MIME));
+        if(payload)void startInboxIntake(payload);
+        else setPhase({kind:"error",message:"This document drag is not valid. Use the document’s Use in new case button instead."});
+      }else if (e.dataTransfer.files?.length > 0) {
         handleFiles(e.dataTransfer.files);
       } else {
         setPhase({ kind: "idle" });
       }
     },
-    [handleFiles],
+    [handleFiles,startInboxIntake],
   );
 
   const handleFileInput = useCallback(
@@ -3231,6 +3281,29 @@ export function DashboardDropZone() {
       gate.doctorNameOverride,
       gate.confirmNewDoctor,
     );
+  }
+
+  async function linkInboxOriginals(caseId:string) {
+    const source=inboxSourceRef.current;
+    if(!source)throw new Error("The original document group is unavailable. Nothing was linked.");
+    return apiFetch("/lab-inbox/assign-batch",{method:"POST",body:JSON.stringify({labOrganizationId:source.labOrganizationId,documentIds:source.documents.map(d=>d.id),caseId})});
+  }
+
+  async function finishInboxTransfer(created:{id:string;caseNumber:string}) {
+    const source=inboxSourceRef.current;
+    if(source)await qc.invalidateQueries({queryKey:getListLabInboxFilesQueryKey({labOrganizationId:source.labOrganizationId})});
+    await refreshCaseFinanceQueries(qc);
+    setPhase({kind:"done",message:`Case ${created.caseNumber} created · ${source?.documents.length??0} existing originals linked · draft invoice ready.`});
+    scheduleIdleReset(5000);
+  }
+
+  async function retryInboxLinks() {
+    const created=inboxTransferRef.current.created();if(!created)return;
+    setPhase({kind:"uploading",message:`Linking existing documents to case ${created.caseNumber}…`});
+    try {
+      await inboxTransferRef.current.complete(async()=>{throw new Error("Retry must not create another case.");},linkInboxOriginals);
+      await finishInboxTransfer(created);
+    }catch(error){setPhase({kind:"inboxLinkRetry",caseId:created.id,caseNumber:created.caseNumber,message:error instanceof Error?error.message:"The files could not be linked yet."});}
   }
 
   async function proceedCreateCase(
@@ -3670,6 +3743,9 @@ export function DashboardDropZone() {
         unitPrice: 0,
       }));
 
+      const inbox=inboxSourceRef.current;
+      if(inbox&&inbox.labOrganizationId!==rxLabOrgId)throw new Error("Keep the prescription and case in the same lab.");
+
       // Start both concurrently.
       const caseNumberPromise: Promise<string> = remake
         ? Promise.resolve(requestedCaseNumber)
@@ -3680,7 +3756,7 @@ export function DashboardDropZone() {
             .catch(() => requestedCaseNumber);
 
       const uploadPromise: Promise<{ url: string; filename?: string } | null> =
-        uploadMediaFile(file).catch(() => null);
+        inbox?Promise.resolve(null):uploadMediaFile(file).catch(() => null);
 
       const [caseNumber, uploadResult] = await Promise.all([
         caseNumberPromise,
@@ -3689,7 +3765,7 @@ export function DashboardDropZone() {
       retryCaseNumber = caseNumber;
 
       // 4. Create the case via the modern /api/cases endpoint.
-      const created = await apiFetch<{ id: string; caseNumber: string }>(
+      const createReviewedCase = () => apiFetch<{ id: string; caseNumber: string }>(
         "/cases",
         {
           method: "POST",
@@ -3736,6 +3812,11 @@ export function DashboardDropZone() {
         },
       );
 
+      const created=inbox
+        ?await inboxTransferRef.current.complete(createReviewedCase,linkInboxOriginals)
+        :await createReviewedCase();
+      if(inbox){await finishInboxTransfer(created);return;}
+
       // 5. Attach the already-uploaded Rx file (upload ran in parallel above).
       let rxAttached = false;
       try {
@@ -3778,6 +3859,11 @@ export function DashboardDropZone() {
       });
       scheduleIdleReset(5000);
     } catch (e: any) {
+      const created=inboxSourceRef.current?inboxTransferRef.current.created():null;
+      if(created){setPhase({kind:"inboxLinkRetry",caseId:created.id,caseNumber:created.caseNumber,message:e?.message||"The case is saved, but documents still need to be linked."});return;}
+      // A definite API rejection did not create a case. A timeout/5xx is
+      // ambiguous and keeps its rejected promise so a retry cannot POST twice.
+      if(e instanceof ApiError&&e.status>=400&&e.status<500&&e.status!==408)inboxTransferRef.current.resetRejectedCreation();
       if (reopenDoctorResolution(e)) return;
       setPhase({
         kind: "error",
@@ -3825,6 +3911,15 @@ export function DashboardDropZone() {
       }}
     />
   ) : null;
+
+  if(phase.kind==="inboxLinkRetry")return(
+    <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3 text-amber-950" data-testid="inbox-link-retry">
+      <p className="font-semibold">Case {phase.caseNumber} is saved.</p>
+      <p className="text-sm">The original files still need to be linked. {phase.message}</p>
+      <p className="text-xs">Retrying links these same documents to the saved case. It will not create another case or invoice.</p>
+      <button type="button" onClick={()=>void retryInboxLinks()} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Retry linking documents</button>
+    </div>
+  );
 
   // ── Duplicate-patient prompt ──
   if (phase.kind === "duplicatePrompt") {
@@ -3878,6 +3973,12 @@ export function DashboardDropZone() {
       normalizeDoctorMemoryKey(r.doctorName) === doctorMemoryKey;
     return (
       <div className="rx-confirm-panel rounded-xl border border-border bg-card p-4 space-y-3" data-testid="rx-review-container">
+        {inboxSource&&(
+          <section className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs" aria-label="Existing unassigned originals">
+            <p className="font-semibold">Existing originals will be linked, not uploaded again.</p>
+            <ul className="mt-2 space-y-1">{inboxSource.documents.map(document=><li key={document.id}>{document.fileName}</li>)}</ul>
+          </section>
+        )}
         {rxMatchWarning && (
           <p role="alert" className="rounded-md border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-950">
             Prescription data was read, but doctor or practice matching did not finish. Confirm the doctor, practice and office pricing before saving.
@@ -3939,6 +4040,7 @@ export function DashboardDropZone() {
             <select
               className={inputCls + " w-full"}
               value={rxLabOrgId}
+              disabled={!!inboxSource}
               onChange={(e) => setRxLabOrgId(e.target.value)}
             >
               <option value="">Select a lab…</option>
@@ -5584,7 +5686,7 @@ export function DashboardDropZone() {
               Skip this file
             </button>
           )}
-          {!zipSource && !queueProgress && (
+          {!zipSource && !queueProgress && !inboxSource && (
             <button
               type="button"
               onClick={() =>

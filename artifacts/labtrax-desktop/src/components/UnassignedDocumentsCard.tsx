@@ -36,6 +36,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { relativeTime } from "@/lib/format";
 import { openFilePreviewWindow } from "@/lib/file-preview";
+import { INBOX_DRAG_MIME, INBOX_INTAKE_EVENT } from "@/lib/inbox-case-transfer";
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const SIZE_ERROR = "File is too large. Max upload size is 200 MB.";
@@ -246,7 +247,15 @@ function InboxFileRow({
       : file.uploaderUsername ?? "Unknown";
 
   return (
-    <div className="flex items-start gap-2.5 py-2.5 border-b border-border/40 last:border-0 group">
+    <div
+      className="flex items-start gap-2.5 py-2.5 border-b border-border/40 last:border-0 group"
+      draggable={!isNoteOnly&&!assigned&&!selectMode&&!isEditingNote}
+      onDragStart={(event)=>{
+        if(isNoteOnly||assigned||selectMode||isEditingNote){event.preventDefault();return;}
+        event.dataTransfer.effectAllowed="copy";
+        event.dataTransfer.setData(INBOX_DRAG_MIME,JSON.stringify({labOrganizationId,documentIds:[file.id]}));
+      }}
+    >
       {/* Checkbox (select mode) or file icon */}
       {selectMode ? (
         <button
@@ -296,6 +305,12 @@ function InboxFileRow({
           {file.sizeBytes != null ? `${formatBytes(file.sizeBytes)} · ` : ""}{uploaderName} ·{" "}
           {relativeTime(file.createdAt)}
         </p>
+        {!isNoteOnly&&!assigned&&!selectMode&&(
+          <button type="button" className="mt-1 text-[10px] font-medium text-primary underline underline-offset-2"
+            onClick={()=>window.dispatchEvent(new CustomEvent(INBOX_INTAKE_EVENT,{detail:{labOrganizationId,documentIds:[file.id]}}))}>
+            Use in new case
+          </button>
+        )}
 
         {/* Provider note — shown when the upload came from the provider portal */}
         {isEditingNote ? (
