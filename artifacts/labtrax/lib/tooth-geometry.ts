@@ -162,7 +162,7 @@ const REF_POS: Record<string, [number, number]> = {"1":[61,236.2],"2":[67.9,198.
 /** Reference-sized upper teeth; the shorter lower arch uses slightly smaller crops at the same contact spacing. */
 export const ATLAS = { cols: 8, rows: 4, cell: 104, size: 62, prefix: "tooth-atlas" } as const;
 export function atlasDrawSize(id: string | number) {
-  return ATLAS.size * (Number(id) > 16 ? 0.9 : 1);
+  return ATLAS.size * (Number(id) > 16 ? 0.78 : 1);
 }
 /** Static per-role atlas file name (neutral, crown, pontic, veneer, missing). */
 export function atlasFile(role: string) {

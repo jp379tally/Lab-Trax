@@ -228,7 +228,7 @@ export function ToothChart({
               accessibilityState={Platform.OS !== "web" && interactive ? { selected: isSelected } : undefined}
               onPress={interactive ? () => onToothClick!(id) : undefined}
             >
-              {interactive && <Circle cx={g.x} cy={g.y} r={half} fill="transparent" />}
+              {interactive && <Circle cx={g.x} cy={g.y} r={Math.min(14, spriteSize / 2)} fill="transparent" />}
               <G testID={`tooth-body-${id}`} opacity={role === "missing" ? 0.7 : 1}>
                 {isSelected && <Ellipse testID={`tooth-selection-${id}`} cx={g.x} cy={g.y} rx={half + 3} ry={half + 3} fill="none" stroke={SELECT_COLOR} strokeWidth={3} />}
                 <Svg x={g.x - spriteSize / 2} y={g.y - spriteSize / 2} width={spriteSize} height={spriteSize}
