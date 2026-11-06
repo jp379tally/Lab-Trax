@@ -3901,6 +3901,19 @@ export const aiMemory = pgTable(
  * assigns them. On assignment the row is marked (assigned_at is set) and a
  * caseAttachments row is created.
  */
+export const websiteIntakeSubmissions = pgTable("website_intake_submissions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  labOrganizationId: varchar("lab_organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  submissionId: uuid("submission_id").notNull(),
+  fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+  documentIds: text("document_ids").array().notNull(),
+  receipt: jsonb("receipt").$type<{ok:true;submissionId:string;prescriptionDocumentId:string;supportingDocumentIds:string[]}>().notNull(),
+  createdAt: createdAt(),
+}, (table) => ({
+  websiteIntakeLabSubmissionUnique: uniqueIndex("website_intake_lab_submission_unique").on(table.labOrganizationId, table.submissionId),
+  websiteIntakeDocumentIdsIdx: index("website_intake_document_ids_idx").using("gin", table.documentIds),
+}));
+
 export const labInboxFiles = pgTable(
   "lab_inbox_files",
   {

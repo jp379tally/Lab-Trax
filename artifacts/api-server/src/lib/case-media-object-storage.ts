@@ -8,7 +8,7 @@
  * caller can fall through to local-disk behaviour transparently.
  */
 
-import { createWriteStream, promises as fsp } from "node:fs";
+import { createReadStream, createWriteStream, promises as fsp } from "node:fs";
 import { writeProductionObject, writeProductionObjectStream, deleteProductionObject,
   openPinnedProductionObject, MEDIA_HISTORY_DIRECTORY } from "./production-media-object-write";
 import * as path from "node:path";
@@ -263,6 +263,19 @@ export async function writeCaseMediaToObjectStorage(
 export interface CaseMediaObjectStream {
   stream: NodeJS.ReadableStream;
   contentType: string;
+}
+
+/** Website intake must confirm a private durable original, never disk-only success. */
+export async function writeCaseMediaPathToObjectStorage(
+  diskFilename: string, sourcePath: string, contentType: string, signal?: AbortSignal,
+): Promise<boolean> {
+  const file=getObjectFile(diskFilename);
+  if(!file)return false;
+  await writeProductionObjectStream(file,`case-media/${diskFilename}`,"lab-inbox",createReadStream(sourcePath,{signal}),{
+    contentType,resumable:true,validation:"crc32c",
+    metadata:{contentDisposition:`attachment; filename="${diskFilename}"`},
+  });
+  return true;
 }
 
 /**
