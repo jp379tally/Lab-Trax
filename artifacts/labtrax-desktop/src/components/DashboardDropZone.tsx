@@ -4722,7 +4722,7 @@ export function DashboardDropZone() {
                 {rxAssignmentUndo && <button type="button" className="text-xs underline" onClick={() => {
                   editRxClinical(rxAssignmentUndo); setRxAssignmentUndo(null); toast.success("Last assignment and bridge changes restored.");
                 }}>Undo last assignment and connector changes</button>}
-                {rxActiveTooth && <ToothActionDialog allowMarkMissing={false}
+                {rxActiveTooth && <ToothActionDialog allowMarkMissing={true}
                   key={rxActiveTooth}
                   toothId={rxActiveTooth}
                   caseShade={r.shade}
