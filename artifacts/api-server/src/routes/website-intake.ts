@@ -76,18 +76,29 @@ export function createWebsiteIntakeRouter(deps:WebsiteIntakeDependencies=product
       const files:WebsiteUpload[]=[];
       for(const [index,file] of [prescriptions[0]!,...supporting].entries()) files.push(await inspectWebsiteFile(file,index===0,controller.signal));
       const fingerprint=fingerprintSubmission(raw,files);
-      const result=await deps.transaction(config.labOrganizationId,order.submissionId,async tx=>{
+      const priorReceipt=async(tx:WebsiteIntakeTransaction)=>{
         const existing=await tx.find();
-        if(existing){if(existing.fingerprint!==fingerprint)throw new WebsiteIntakeError(409,"This reference belongs to different prescription data or files.");return {receipt:existing.receipt,replayed:true};}
+        if(!existing)return null;
+        if(existing.fingerprint!==fingerprint)throw new WebsiteIntakeError(409,"This reference belongs to different prescription data or files.");
+        return {receipt:existing.receipt,replayed:true};
+      };
+      let result=await deps.transaction(config.labOrganizationId,order.submissionId,priorReceipt);
+      if(!result){
+        // Scanning and cloud transfer must not occupy a database transaction.
+        // A second short, locked transaction rechecks the receipt before writes.
         for(const file of files)await deps.scan(file,controller.signal);
         const keys=files.map(file=>`${randomUUID()}${path.extname(file.originalFilename).toLowerCase()}`);
         for(const [i,file] of files.entries())await deps.store(file,keys[i]!,controller.signal);
         if(controller.signal.aborted)throw new WebsiteIntakeError(503,"Delivery was interrupted. Retry using the same reference.");
-        const ids:string[]=[];
-        for(const [i,file] of files.entries())ids.push(await tx.insert({labOrganizationId:config.labOrganizationId,uploadedByUserId:config.uploaderId,originalFilename:file.originalFilename,mimeType:file.mimeType,sizeBytes:file.sizeBytes,storagePath:keys[i]!,objectStorageKey:keys[i]!,note:`SDR website ${i===0?"signed prescription":"supporting original"}. Reference: ${order.submissionId}`}));
-        const receipt:WebsiteIntakeReceipt={ok:true,submissionId:order.submissionId,prescriptionDocumentId:ids[0]!,supportingDocumentIds:ids.slice(1)};
-        await tx.save(fingerprint,receipt);return {receipt,replayed:false};
-      });
+        await deps.ready();
+        result=await deps.transaction(config.labOrganizationId,order.submissionId,async tx=>{
+          const prior=await priorReceipt(tx);if(prior)return prior;
+          const ids:string[]=[];
+          for(const [i,file] of files.entries())ids.push(await tx.insert({labOrganizationId:config.labOrganizationId,uploadedByUserId:config.uploaderId,originalFilename:file.originalFilename,mimeType:file.mimeType,sizeBytes:file.sizeBytes,storagePath:keys[i]!,objectStorageKey:keys[i]!,note:`SDR website ${i===0?"signed prescription":"supporting original"}. Reference: ${order.submissionId}`}));
+          const receipt:WebsiteIntakeReceipt={ok:true,submissionId:order.submissionId,prescriptionDocumentId:ids[0]!,supportingDocumentIds:ids.slice(1)};
+          await tx.save(fingerprint,receipt);return {receipt,replayed:false};
+        });
+      }
       responseStatus=result.replayed?200:201;responseBody=result.receipt;
     }catch(error){
       if(!res.headersSent&&!res.destroyed){
