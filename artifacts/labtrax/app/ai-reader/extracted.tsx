@@ -2423,7 +2423,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                   setAssignmentUndo(null);
                 }}><Text style={styles.chipText}>Undo last unsaved assignment change</Text></Pressable>
               )}
-              <ToothActionSheet allowMarkMissing={false}
+              <ToothActionSheet allowMarkMissing={true}
                 toothId={activeAssignmentTooth as any}
                 labOrganizationId={selectedLabId || undefined}
                 existingRestorationId={activeAssignmentTooth && assignmentRoles[activeAssignmentTooth] ? activeAssignmentTooth : undefined}
