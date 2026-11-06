@@ -64,7 +64,7 @@ export function createLabInboxIntakeRouter(dependencies?:InboxIntakeDependencies
       const ordered=selection.ids.map(id=>documents.find(d=>d.id===id)!);
       const prescriptionDocumentId=selection.prescriptionDocumentId??ordered.find(d=>d.mimeType==="application/pdf"||["image/jpeg","image/png","image/webp"].includes(d.mimeType??""))?.id??null;
       return ok(res,{labOrganizationId,prescriptionDocumentId,documents:ordered.map(d=>({id:d.id,fileName:d.originalFilename??"Document",mimeType:d.mimeType??"application/octet-stream",sizeBytes:d.sizeBytes??0}))});
-    }catch(error){next(error);}
+    }catch(error){return next(error);}
   });
   router.post("/assign-batch",async(req,res,next)=>{
     try {
@@ -95,7 +95,7 @@ export function createLabInboxIntakeRouter(dependencies?:InboxIntakeDependencies
         return result;
       });
       return ok(res,{caseId,documentIds:selection.ids,attachmentIds});
-    }catch(error){next(error);}
+    }catch(error){return next(error);}
   });
   return router;
 }
