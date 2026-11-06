@@ -331,6 +331,7 @@ import { registerAiAgentRoutes } from "./ai-agent";
 import { registerAiTtsRoutes } from "./ai-tts";
 import { registerAiSttRoutes } from "./ai-stt";
 import labInboxRoutes from "./lab-inbox";
+import { createWebsiteIntakeRouter } from "./website-intake";
 import providerRoutes from "./provider";
 import providerMessengerRoutes from "./provider-messenger";
 import supportReportsRouter from "./support-reports";
@@ -1680,6 +1681,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/case-exceptions", caseExceptionRoutes);
   router.use("/vocabulary", vocabularyRoutes);
   router.use("/ai-memory", aiMemoryRoutes);
+  router.use("/lab-inbox", createWebsiteIntakeRouter());
   router.use("/lab-inbox", labInboxRoutes);
   router.use("/provider", providerRoutes);
   router.use("/provider-messenger", providerMessengerRoutes);
