@@ -92,6 +92,11 @@ vi.mock("../middlewares/auth", () => ({ requireAuth: (req: any, res: any, next: 
   req.auth = { userId: "fixture-user" }; next();
 } }));
 vi.mock("../lib/rbac", () => ({ requireMembership: h.authorize }));
+vi.mock("../lib/soft-delete", async () => {
+  const { isNull } = await import("drizzle-orm");
+  return { notDeleted: (table: any) => isNull(table.deletedAt) };
+});
+vi.mock("../lib/lab-inbox-storage-repair", () => ({ normalizeInboxStorageName: (value: string | null) => value && /^[a-z0-9._-]+$/i.test(value) && !value.includes("..") ? value : null }));
 vi.mock("../lib/production-media-multipart", () => ({ productionMediaDiskStorage: () => ({ _handleFile: vi.fn(), _removeFile: vi.fn() }) }));
 vi.mock("../lib/production-media-local-write", () => ({ copyProductionUpload: h.copy, deleteProductionUpload: h.remove, moveProductionUpload: h.move, writeProductionUpload: vi.fn() }));
 vi.mock("../lib/cross-lab-doctor", () => ({ getProviderOrgIdsForUserAndLinks: vi.fn() }));
