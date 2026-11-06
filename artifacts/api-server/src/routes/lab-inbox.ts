@@ -1,9 +1,9 @@
 import { productionMediaDiskStorage } from "../lib/production-media-multipart";
-import { copyProductionUpload, moveProductionUpload, writeProductionUpload } from "../lib/production-media-local-write";
+import { copyProductionUpload, deleteProductionUpload, moveProductionUpload, writeProductionUpload } from "../lib/production-media-local-write";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import multer from "multer";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -194,6 +194,32 @@ async function assertLabMembership(userId: string, labOrganizationId: string) {
   if (!org) throw new HttpError(404, "Lab not found.");
 
   return requireMembership(userId, labOrganizationId);
+}
+
+/** Keep the original in place until the row deletion commits. A rollback can
+ * leave an extra recoverable trash copy, but can never strand a live row. */
+async function preserveInboxDeletionSource(storagePath: string | null): Promise<string | null> {
+  const filename = normalizeInboxStorageName(storagePath);
+  if (!filename) return null;
+  const source = path.resolve(caseMediaDir, filename);
+  if (!fs.existsSync(source)) return null;
+  const trashDir = path.resolve(caseMediaDir, ".trash");
+  fs.mkdirSync(trashDir, { recursive: true });
+  const retained = path.resolve(trashDir, `${Date.now()}-${randomUUID()}__${filename}`);
+  await copyProductionUpload(source, retained, "lab-inbox");
+  return source;
+}
+
+async function cleanupDeletedInboxSources(sources: string[], req: Request): Promise<void> {
+  for (const source of sources) {
+    try { await deleteProductionUpload(source, "lab-inbox"); }
+    catch {
+      // The committed row is gone and its trash copy is durable. Keep an
+      // unremoved original rather than turning a successful delete into a
+      // misleading retry/error or risking any other file's bytes.
+      req.log?.warn("Lab inbox delete: recoverable original retained after disk cleanup failure.");
+    }
+  }
 }
 
 /**
@@ -838,22 +864,29 @@ router.delete(
       where: eq(labInboxFiles.id, fileId),
     });
     if (!inboxFile) throw new HttpError(404, "Inbox file not found.");
-    if (inboxFile.assignedAt) {
-      throw new HttpError(409, "Cannot delete a file that has already been assigned to a case.");
-    }
     await assertLabMembership(userId, inboxFile.labOrganizationId);
 
-    if (inboxFile.storagePath) {
-      const srcPath = path.resolve(caseMediaDir, inboxFile.storagePath);
-      if (fs.existsSync(srcPath)) {
-        const trashDir = path.resolve(caseMediaDir, ".trash");
-        fs.mkdirSync(trashDir, { recursive: true });
-        const trashName = `${Date.now()}__${path.basename(inboxFile.storagePath)}`;
-        await moveProductionUpload(srcPath, path.resolve(trashDir, trashName), "lab-inbox");
+    const source = await db.transaction(async (tx) => {
+      // Assignment and deletion must contend on the same row lock. A previous
+      // read (including the membership lookup above) is not an assignment guard.
+      const [current] = await tx.select().from(labInboxFiles).where(and(
+        eq(labInboxFiles.id, fileId),
+        eq(labInboxFiles.labOrganizationId, inboxFile.labOrganizationId),
+      )).for("update");
+      if (!current) throw new HttpError(404, "Inbox file not found.");
+      if (current.assignedAt || current.assignedToCaseId) {
+        throw new HttpError(409, "Cannot delete a file that has already been assigned to a case.");
       }
-    }
-
-    await db.delete(labInboxFiles).where(eq(labInboxFiles.id, fileId));
+      const retainedSource = await preserveInboxDeletionSource(current.storagePath);
+      const deleted = await tx.delete(labInboxFiles).where(and(
+        eq(labInboxFiles.id, fileId),
+        eq(labInboxFiles.labOrganizationId, current.labOrganizationId),
+        isNull(labInboxFiles.assignedAt), isNull(labInboxFiles.assignedToCaseId),
+      )).returning({ id: labInboxFiles.id });
+      if (deleted.length !== 1) throw new HttpError(409, "This document changed. Nothing was deleted.");
+      return retainedSource;
+    });
+    await cleanupDeletedInboxSources(source ? [source] : [], req);
 
     return ok(res, { deleted: true });
   }),
@@ -915,34 +948,31 @@ router.delete(
     const { fileIds, labOrganizationId } = parsed.data;
     await assertLabMembership(userId, labOrganizationId);
 
-    const rows = await db.query.labInboxFiles.findMany({
-      where: and(
+    const result = await db.transaction(async (tx) => {
+      // Match batch assignment's deterministic inbox-lock order. PostgreSQL
+      // rechecks the unassigned predicate after a competing assign commits.
+      const rows = await tx.select().from(labInboxFiles).where(and(
         inArray(labInboxFiles.id, fileIds),
         eq(labInboxFiles.labOrganizationId, labOrganizationId),
         isNull(labInboxFiles.assignedAt),
-      ),
-    });
-
-    if (rows.length > 0) {
-      const trashDir = path.resolve(caseMediaDir, ".trash");
-      fs.mkdirSync(trashDir, { recursive: true });
-
+        isNull(labInboxFiles.assignedToCaseId),
+      )).orderBy(asc(labInboxFiles.id)).for("update");
+      if (!rows.length) return { deletedCount: 0, sources: [] as string[] };
+      const sources: string[] = [];
       for (const file of rows) {
-        if (file.storagePath) {
-          const srcPath = path.resolve(caseMediaDir, file.storagePath);
-          if (fs.existsSync(srcPath)) {
-            const trashName = `${Date.now()}__${path.basename(file.storagePath)}`;
-            await moveProductionUpload(srcPath, path.resolve(trashDir, trashName), "lab-inbox");
-          }
-        }
+        const source = await preserveInboxDeletionSource(file.storagePath);
+        if (source) sources.push(source);
       }
-
-      await db
-        .delete(labInboxFiles)
-        .where(inArray(labInboxFiles.id, rows.map((r) => r.id)));
-    }
-
-    return ok(res, { deletedCount: rows.length });
+      const deleted = await tx.delete(labInboxFiles).where(and(
+        inArray(labInboxFiles.id, rows.map((file) => file.id)),
+        eq(labInboxFiles.labOrganizationId, labOrganizationId),
+        isNull(labInboxFiles.assignedAt), isNull(labInboxFiles.assignedToCaseId),
+      )).returning({ id: labInboxFiles.id });
+      if (deleted.length !== rows.length) throw new HttpError(409, "These documents changed. Nothing was deleted.");
+      return { deletedCount: deleted.length, sources };
+    });
+    await cleanupDeletedInboxSources(result.sources, req);
+    return ok(res, { deletedCount: result.deletedCount });
   }),
 );
 
@@ -980,21 +1010,22 @@ router.post(
 
     // Transactional assign — prevents double-assign races.
     const { attachment } = await db.transaction(async (tx) => {
-      // Re-read inbox file inside the transaction with a SELECT … FOR UPDATE equivalent
-      // (Drizzle doesn't expose advisory locks, but re-reading inside the tx ensures
-      // we see the committed state of assignedAt before mutating).
-      const inboxFile = await tx.query.labInboxFiles.findFirst({
-        where: eq(labInboxFiles.id, fileId),
-      });
+      // Keep the same case-then-inbox lock order as assign-batch. An ordinary
+      // transactional SELECT is not a row lock and cannot exclude deletion.
+      const [lockedTargetCase] = await tx.select({ id: cases.id, labOrganizationId: cases.labOrganizationId })
+        .from(cases).where(and(eq(cases.id, caseId), notDeleted(cases))).for("update");
+      if (!lockedTargetCase) throw new HttpError(404, "Case not found.");
+      const [inboxFile] = await tx.select().from(labInboxFiles)
+        .where(eq(labInboxFiles.id, fileId)).for("update");
 
       if (!inboxFile) throw new HttpError(404, "Inbox file not found.");
-      if (inboxFile.assignedAt) {
+      if (inboxFile.assignedAt || inboxFile.assignedToCaseId) {
         throw new HttpError(409, "This file has already been assigned to a case.");
       }
       if (!inboxFile.storagePath) {
         throw new HttpError(400, "This entry has no file and cannot be assigned to a case.");
       }
-      if (inboxFile.labOrganizationId !== targetCase.labOrganizationId) {
+      if (inboxFile.labOrganizationId !== lockedTargetCase.labOrganizationId) {
         throw new HttpError(403, "That case belongs to a different lab.");
       }
 
