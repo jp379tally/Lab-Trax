@@ -98,8 +98,8 @@ export function ToothSilhouette({
           <feMerge><feMergeNode in="outline" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
-      {/* Enlarged transparent hit area */}
-      <circle cx={x} cy={y} r={half + 4} fill="transparent" />
+      {/* Compact hit area prevents adjacent tooth targets from overlapping. */}
+      <circle cx={x} cy={y} r={14} fill="transparent" />
       <ellipse className="tooth-focus-ring" cx={x} cy={y} rx={half + 6} ry={half + 4} fill="none"
         stroke="#2563EB" strokeWidth={2.5} opacity={0} pointerEvents="none" />
       {billed && (
