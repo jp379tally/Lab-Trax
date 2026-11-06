@@ -38,8 +38,10 @@ import { deliverInAppNotification } from "../lib/in-app-notifications";
 import { assertProviderCapability } from "../lib/provider-capabilities";
 import { requireMembership } from "../lib/rbac";
 import { assertOrganizationMutationAllowed } from "../lib/entitlement-write-guard";
+import { createLabInboxIntakeRouter } from "./lab-inbox-intake";
 
 const router = Router();
+router.use(createLabInboxIntakeRouter());
 router.use(requireAuth);
 
 const caseMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
