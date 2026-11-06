@@ -103,6 +103,45 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     mockCreate.mockReset();
   });
 
+  it("keeps website-only access disabled without changing signed-in readers", async () => {
+    const response = await request(appMod.default).post("/api/website-intake/analyze-prescription").send({ imageBase64: VALID_IMAGE });
+    expect(response.status).toBe(503);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("routes only a lab-bound website service credential through the same accurate reader", async () => {
+    const previous={enabled:process.env.SDR_WEBSITE_READER_ENABLED,token:process.env.SDR_WEBSITE_READER_TOKEN,org:process.env.SDR_WEBSITE_LAB_ORG_ID};
+    process.env.SDR_WEBSITE_READER_ENABLED="true";
+    process.env.SDR_WEBSITE_READER_TOKEN="synthetic-website-reader-credential-for-route-test";
+    process.env.SDR_WEBSITE_LAB_ORG_ID="fixture-sdr-lab";
+    try {
+      mockCreate.mockResolvedValueOnce(aiJson({patientName:"Reader Fixture",shade:"A2",confidence:0.95}));
+      const image=`data:image/jpeg;base64,${Buffer.concat([Buffer.from([255,216,255]),Buffer.alloc(6000)]).toString("base64")}`;
+      const result=await request(appMod.default).post("/api/website-intake/analyze-prescription")
+        .set("Authorization",`Bearer ${process.env.SDR_WEBSITE_READER_TOKEN}`).set("X-SDR-Lab-Organization","fixture-sdr-lab").send({imageBase64:image,fast:true});
+      expect(result.status).toBe(200);expect(result.body.data.patientName).toBe("Reader Fixture");
+      expect(mockCreate.mock.calls[0][0].model).toBe("gpt-5.4");
+      expect(result.headers["cache-control"]).toBe("private, no-store");
+    } finally {
+      for(const [key,value] of [["SDR_WEBSITE_READER_ENABLED",previous.enabled],["SDR_WEBSITE_READER_TOKEN",previous.token],["SDR_WEBSITE_LAB_ORG_ID",previous.org]] as const) {
+        if(value===undefined) delete process.env[key];else process.env[key]=value;
+      }
+    }
+  });
+
+  it("extracts editable doctor contact and license fields, never a signature", async () => {
+    mockCreate.mockResolvedValueOnce(aiJson({doctorName:"Smith, Jane",doctorLicenseNumber:"DN-FIXTURE",practiceAddress:"123 Example St",practicePhone:"850-555-0100",practiceEmail:"fixture@example.com",restorationType:"Crown",patientName:"Doe, John",confidence:0.95}));
+    const result = await postAsUser("/api/analyze-prescription").send({imageBase64:VALID_IMAGE});
+    expect(result.status).toBe(200);
+    expect(result.body.data).toMatchObject({doctorName:"Jane Smith",patientName:"John Doe",doctorLicenseNumber:"DN-FIXTURE",practiceEmail:"fixture@example.com",restorationType:"Crown"});
+    const schema=mockCreate.mock.calls[0][0].response_format.json_schema.schema;
+    for(const field of ["doctorLicenseNumber","practiceEmail","restorationType"]) {
+      expect(schema.required).toContain(field);
+      expect(schema.properties[field].anyOf).toEqual([{type:"string"},{type:"null"}]);
+    }
+    expect(schema.properties.signature).toBeUndefined();
+  });
+
   it("sends every supplied page through the accurate desktop chain without hidden SDK retries", async () => {
     mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Fixture", confidence: 0.9 }));
     const result = await postAsUser("/api/analyze-prescription").send({
@@ -154,6 +193,16 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("IMAGE_TOO_SMALL");
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("renders a compact text PDF instead of applying the photo-size rejection", async () => {
+    const converter=vi.spyOn(await import("../lib/pdf-to-images"),"convertPdfBufferToImageDataUrls").mockResolvedValueOnce([VALID_IMAGE]);
+    mockCreate.mockResolvedValueOnce(aiJson({patientName:"Small PDF Fixture",confidence:0.95}));
+    try {
+      const bytes=Buffer.from("%PDF-1.7\ncompact fixture; renderer validates the actual document\n%%EOF");
+      const result=await postAsUser("/api/analyze-prescription").send({imageBase64:`data:application/pdf;base64,${bytes.toString("base64")}`});
+      expect(result.status).toBe(200);expect(converter).toHaveBeenCalled();expect(result.body.data.patientName).toBe("Small PDF Fixture");
+    } finally {converter.mockRestore();}
   });
 
   it("returns 400 for unsupported HEIC input", async () => {
