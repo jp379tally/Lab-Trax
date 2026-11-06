@@ -22,6 +22,14 @@ function labRows(s: string): Record<string, Row[]> {
   const lab = `lab-${s}`, practice = `practice-${s}`, actor = `owner-${s}`;
   const id = (name: string) => `${name}-${s}`;
   const owned = { lab_organization_id: lab, provider_organization_id: practice };
+  const websiteDocuments = [
+    { name: "website-rx", extension: "pdf", mime: "application/pdf" },
+    { name: "website-upper", extension: "stl", mime: "model/stl" },
+    { name: "website-lower", extension: "ply", mime: "model/ply" },
+    { name: "website-photo", extension: "jpg", mime: "image/jpeg" },
+    { name: "website-video", extension: "mp4", mime: "video/mp4" },
+  ];
+  const submissionId = s === "a" ? "10000000-0000-4000-8000-000000000001" : "10000000-0000-4000-8000-000000000002";
   return {
     users: [
       { id: actor, username: actor, password: `private-password-${s}` },
@@ -52,6 +60,22 @@ function labRows(s: string): Record<string, Row[]> {
     lab_pending_files: [{ id: id("pending"), organization_id: lab, uploader_user_id: actor,
       file_name: id("pending") + ".jpg", file_url: `/uploads/case-media/${id("pending")}.jpg`, mime_type: "image/jpeg" }],
     lab_pending_file_note_edits: [{ id: id("pending-note"), pending_file_id: id("pending"), editor_user_id: actor, new_notes: "Recovered note" }],
+    // One signed website Rx and separately addressable originals, still
+    // unassigned. Receipt JSON, UUID, exact keys and lab ownership must survive.
+    lab_inbox_files: websiteDocuments.map((document) => ({
+      id: id(document.name), lab_organization_id: lab, uploaded_by_user_id: actor,
+      original_filename: `${id(document.name)}.${document.extension}`,
+      mime_type: document.mime, size_bytes: Buffer.byteLength(`bytes:${id(document.name)}`),
+      storage_path: `${id(document.name)}.${document.extension}`,
+      object_storage_key: `${id(document.name)}.${document.extension}`,
+      note: "Synthetic website submission; do not create a live case.",
+    })),
+    website_intake_submissions: [{
+      id: id("website-submission"), lab_organization_id: lab, submission_id: submissionId,
+      fingerprint: s.repeat(64), document_ids: websiteDocuments.map((document) => id(document.name)),
+      receipt: { ok: true, submissionId, prescriptionDocumentId: id("website-rx"),
+        supportingDocumentIds: websiteDocuments.slice(1).map((document) => id(document.name)) },
+    }],
     invoices: [
       { id: id("invoice"), ...owned, case_id: id("case"), doctor_identity: id("doctor"),
         invoice_number: id("INV"), total: "100.00", subtotal: "100.00", balance_due: "30.00", created_by_user_id: actor },
@@ -192,6 +216,8 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
             VALUES (${columns.map((_, i) => `$${i + 1}`).join(",")})`,
           columns.map((column) => {
             const value = record[column];
+            // node-postgres encodes text[] itself; JSONB arrays still need JSON.
+            if (table === "website_intake_submissions" && column === "document_ids") return value;
             return typeof value === "object" && value !== null ? JSON.stringify(value) : value;
           }));
         }
@@ -208,6 +234,9 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
         const folder = group === "invoice" ? "invoice-attachments" : "case-media";
         await fs.mkdir(path.join(directory, "uploads", folder), { recursive: true });
         await fs.writeFile(path.join(directory, "uploads", folder, `${group}-${s}.jpg`), `bytes:${group}-${s}`);
+      }
+      for (const [name, extension] of [["website-rx", "pdf"], ["website-upper", "stl"], ["website-lower", "ply"], ["website-photo", "jpg"], ["website-video", "mp4"]]) {
+        await fs.writeFile(path.join(directory, "uploads", "case-media", `${name}-${s}.${extension}`), `bytes:${name}-${s}`);
       }
     }
     const sourceSnapshot = new Map<string, Row[]>();
@@ -284,20 +313,26 @@ export async function createFullSchemaLabBackupFixture(actual: typeof childProce
           count += expectedRows.length;
         }
         const manifest = JSON.parse(archive.readAsText("manifest.json"));
-        expect(manifest).toMatchObject({ labId: `lab-${s}`, rowCount: count, mediaFileCount: 5 });
+        expect(manifest).toMatchObject({ labId: `lab-${s}`, rowCount: count, mediaFileCount: 10 });
+        const restoredReceipt = await recovery.query("SELECT document_ids, receipt FROM website_intake_submissions WHERE lab_organization_id=$1", [`lab-${s}`]);
+        expect(restoredReceipt.rows).toHaveLength(1);
+        const expectedDocumentIds = ["website-rx", "website-upper", "website-lower", "website-photo", "website-video"].map((name) => `${name}-${s}`);
+        expect(restoredReceipt.rows[0].document_ids).toEqual(expectedDocumentIds);
+        expect(restoredReceipt.rows[0].receipt).toMatchObject({ prescriptionDocumentId: expectedDocumentIds[0], supportingDocumentIds: expectedDocumentIds.slice(1) });
+        expect((await recovery.query("SELECT count(*)::int AS count FROM lab_inbox_files WHERE lab_organization_id=$1 AND assigned_at IS NULL", [`lab-${s}`])).rows).toEqual([{ count: 5 }]);
         for (const table of ["subscriptions", "provider_auto_pay_attempts", "user_sessions", "statement_link_tokens"]) {
           expect(manifest.excludedTables).toContainEqual(expect.objectContaining({ table }));
         }
         const media = archive.getEntries().filter((entry) => entry.entryName.startsWith("media/") && !entry.isDirectory);
         const names = ["case", "embedded", "ledger", "pending"].map((group) => `media/${group}-${s}.jpg`)
-          .concat(`media/invoice-attachments/invoice-${s}.jpg`);
+          .concat(`media/invoice-attachments/invoice-${s}.jpg`, `media/website-rx-${s}.pdf`, `media/website-upper-${s}.stl`, `media/website-lower-${s}.ply`, `media/website-photo-${s}.jpg`, `media/website-video-${s}.mp4`);
         expect(media.map((entry) => entry.entryName).sort()).toEqual(names.sort());
         const extracted = path.join(directory, `recovered-media-${s}`);
         for (const entry of media) {
           const target = path.join(extracted, entry.entryName);
           await fs.mkdir(path.dirname(target), { recursive: true });
           await fs.writeFile(target, entry.getData());
-          const group = path.basename(target).replace(`-${s}.jpg`, "");
+          const group = path.basename(target).replace(new RegExp(`-${s}\\.[a-z0-9]+$`), "");
           expect(await fs.readFile(target, "utf8")).toBe(`bytes:${group}-${s}`);
         }
         // User triggers were restored and re-enabled, not disabled permanently.
