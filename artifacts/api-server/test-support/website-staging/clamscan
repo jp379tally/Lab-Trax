@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Private staging only. This launcher intentionally fails closed outside its owner.
+if [[ -z "${SDR_STAGING_EXPECTED_REPL_ID:-}" || "${REPL_ID:-}" != "$SDR_STAGING_EXPECTED_REPL_ID" ]]; then
+  exit 2
+fi
+scanner_db=/home/runner/workspace/s/.local/sdr-website-scanner/database
+if [[ ! -r "$scanner_db/daily.cvd" && ! -r "$scanner_db/daily.cld" ]]; then
+  exit 2
+fi
+exec /nix/store/npv69yg4knn2cx082lxs5db87z7h92ga-clamav-1.5.4/bin/clamscan \
+  --database="$scanner_db" --fail-if-cvd-older-than=2 \
+  --alert-exceeds-max=yes --alert-encrypted=yes \
+  --max-filesize=200M --max-scansize=500M "$@"
